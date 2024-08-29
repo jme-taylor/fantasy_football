@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "fantasy-football"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+requests = "^2.32.3"
+beautifulsoup4 = "^4.12.3"
+polars = "^1.6.0"
+python-dotenv = "^1.0.1"
+
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.6.2"
+
+[tool.ruff]
+line-length=79
+
+[tool.ruff.lint]
+select = ["F", "I", "D"]
+ignore = ["D100"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
