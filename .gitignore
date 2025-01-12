@@ -1,8 +1,10 @@
-# personal scribbling
+# personal scribbling + local testing
+test.py
 notes.txt
 
-# data folder
+# data folder + other local data
 data/
+*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
