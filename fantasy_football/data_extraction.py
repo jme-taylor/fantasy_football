@@ -38,6 +38,37 @@ def get_all_repo_files() -> dict:
     response_json = response.json()
     return response_json
 
+def get_github_file(url_path: str) -> dict:
+    """Get details about a file in the Fantasy Premier League repo.
+
+    This function uses the GitHub API to get details about a file in the 
+    Fantasy Premier League repo. The function will look for the GITHUB_API_KEY 
+    environment variable to use as the API key for the request.
+
+    Parameters
+    ----------
+    url_path : str
+        The path of the file in the repo.
+
+    Returns
+    -------
+    dict
+        A dictionary of the JSON response from the github API.
+
+    """
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {os.getenv('GITHUB_API_KEY')}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    response = requests.get(
+        f"https://api.github.com/repos/vaastav/Fantasy-Premier-League/contents/{url_path}",
+        headers=headers,
+    )
+    response.raise_for_status()
+    response_json = response.json()
+    return response_json
 
 def get_all_data_files() -> list:
     """Get details about all the CSV files in the data folder in the repo.
@@ -117,3 +148,9 @@ def save_all_data_files() -> None:
             save_data_file(file)
         except Exception as e:
             print(f"Error saving {file['path']}: {e}")
+
+def update_current_season_data(season: str) -> None:
+    formatted_filepath = f"data/{season}/gws/merged_gw.csv"
+    season_data = get_github_file(formatted_filepath)
+    save_data_file(season_data)
+
