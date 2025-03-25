@@ -43,3 +43,47 @@ For the data I've heavily leaned on the excellent Fantasy Premier League reposit
 This is very early state, and the code is very much a work in progress. The current state of the code is as follows:
 
 * `main.py` this script will download all the csv data within the `data` of the Fantasy Premier League repository and save it on your local filesystem using the same structure as the repository itself.
+* `fantasy_football/data_extraction.py` contains functions for downloading data from the FPL API.
+* `fantasy_football/data_transformation.py` contains functions for transforming the raw data into useful formats.
+* `fantasy_football/fpl.py` contains functions for interacting with the FPL API to get player data, team information, and fixtures.
+* `fantasy_football/prediction.py` contains a simple prediction model for player points.
+* `fantasy_football/optimization.py` contains functions for optimizing team selection using linear programming.
+
+## Usage
+
+### Downloading Data
+
+```bash
+# Download all historical data files
+python main.py --download-all
+
+# Update only the current season data
+python main.py --update-current-season
+```
+
+### Team Optimization
+
+You can use the optimization feature to generate the optimal team for a given gameweek:
+
+```bash
+# Optimize team for gameweek 5 with 1 free transfer
+python main.py --optimize-team 5 --free-transfers 1
+
+# Optimize team for gameweek 5 with 2 free transfers
+python main.py --optimize-team 5 --free-transfers 2
+```
+
+The optimization algorithm will:
+1. Use your current team as a starting point
+2. Consider transfer options to maximize expected points
+3. Select the best 15-player squad
+4. Choose the optimal starting 11
+5. Select captain and vice-captain
+6. Account for the penalty for extra transfers beyond your free allowance
+
+The output will show:
+- Recommended transfers (if any)
+- The full optimized 15-player squad
+- The suggested starting 11 (marked with *)
+- Captain (C) and vice-captain (V) selections
+- Expected points for the gameweek

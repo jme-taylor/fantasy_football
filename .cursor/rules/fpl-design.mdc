@@ -1,0 +1,43 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+# Fantasy Football Optimization Tool: Project Overview
+
+ A comprehensive fantasy football optimization tool that leverages player data, regression modeling, and optimization techniques to automatically build optimal FPL (Fantasy Premier League) teams each week. Here's the project overview and feature specification:
+
+## Key Features
+
+1. **Data Collection & Processing**
+   - Historical & current player performance data
+   - Fixture difficulty analysis
+   - Player status tracking (injuries, suspensions)
+   - Advanced metrics (xG, xA, etc.)
+
+2. **Predictive Modeling**
+   - Position-specific regression models
+   - Weekly prediction updates
+   - Form and fixture-based features
+   - Confidence intervals for predictions
+
+3. **Team Optimization**
+   - FPL constraint handling (budget, team composition)
+   - Multi-gameweek planning
+   - Transfer strategy optimization
+   - Captaincy selection
+
+4. **User Experience**
+   - Interactive dashboard
+   - Configurable risk tolerance
+   - Manual override options
+   - "What-if" scenario testing
+
+5. **Performance Tracking**
+   - Prediction accuracy monitoring
+   - Model refinement based on results
+   - Comparison against optimal hindsight selections
+
+The detailed specification provides a comprehensive roadmap for building this tool, from data collection to user interface design. The system is designed to balance immediate point maximization with long-term team value while respecting all FPL constraints.
+

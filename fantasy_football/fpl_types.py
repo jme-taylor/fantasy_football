@@ -5,6 +5,7 @@ config = ConfigDict(extra="forbid")
 
 @dataclass(config=config, frozen=True)
 class FplTeamInfo:
+    """Class for storing team information"""
     id: int
     code: int
     name: str
@@ -12,6 +13,7 @@ class FplTeamInfo:
 
 @dataclass(config=config, frozen=True)
 class FplPlayer:
+    """Class for storing player information"""
     id: int
     first_name: str 
     second_name: str
@@ -19,14 +21,18 @@ class FplPlayer:
     selected_by_percent: float
     now_cost: int
     team_id: int
+    element_type: int  # 1=GK, 2=DEF, 3=MID, 4=FWD
 
 @dataclass(config=config, frozen=True)
 class FplTeam:
+    """Class for storing team information."""
+
     team: FplTeamInfo
     players: list[FplPlayer]
 
 @dataclass(config=config, frozen=True)
 class FplSquadPlayer:
+    """Class for storing squad player information"""
     player: FplPlayer
     position: int
     is_captain: bool
@@ -96,4 +102,4 @@ class PlayerExpectedPoints:
     fpl_info: FplPlayer
     fixture: TeamFixture
     rolling_average_points: float
-    expected_points: float
+    expected_points: float 
