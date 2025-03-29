@@ -1,6 +1,7 @@
 # personal scribbling + local testing
 test.py
 notes.txt
+.cursor/
 
 # data folder + other local data
 data/
