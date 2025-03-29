@@ -7,22 +7,26 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
-requests = "^2.32.3"
+requests = "^2.31.0"
 beautifulsoup4 = "^4.12.3"
-polars = "^1.6.0"
-python-dotenv = "^1.0.1"
-pydantic = "^2.9.2"
+polars = "^0.20.3"
+python-dotenv = "^1.0.0"
+pydantic = "^2.5.3"
+pulp = "^2.7.0"
+numpy = "^2.2.4"
 
 
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.6.2"
+pytest = "^8.3.5"
+pytest-mock = "^3.14.0"
 
 [tool.ruff]
 line-length=79
 
 [tool.ruff.lint]
 select = ["F", "I", "D"]
-ignore = ["D100"]
+ignore = ["D100", "D413"]
 
 [tool.ruff.format]
 quote-style = "double"

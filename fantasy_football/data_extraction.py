@@ -150,6 +150,14 @@ def save_all_data_files() -> None:
             print(f"Error saving {file['path']}: {e}")
 
 def update_current_season_data(season: str) -> None:
+    """Update the current season data for the Fantasy Premier League.
+
+    Parameters
+    ----------
+    season : str
+        The season to update the data for.
+
+    """
     formatted_filepath = f"data/{season}/gws/merged_gw.csv"
     season_data = get_github_file(formatted_filepath)
     save_data_file(season_data)

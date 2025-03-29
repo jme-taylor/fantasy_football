@@ -2,7 +2,7 @@ import polars as pl
 
 from fantasy_football.types import FplPlayerFixtures, FplPlayer
 
-def predict_player_points(rolling_data: pl.DataFrame, player: FplPlayer, season: str = "2024-25") -> FplPlayerFixtures:
+def predict_player_points(rolling_data: pl.DataFrame, player: FplPlayer, season: str = "2024-25") -> float:
     """Predict a players points for a given gameweek.
 
     Parameters
@@ -12,14 +12,19 @@ def predict_player_points(rolling_data: pl.DataFrame, player: FplPlayer, season:
     player : FplPlayer
         The player to predict points for.
     season : str, optional
-        _description_, by default "2024-25"
+        The season to filter data for, by default "2024-25"
 
     Returns
     -------
-    FplPlayerFixtures
-        _description_
+    float
+        Predicted points based on 5-game rolling average
 
     """
     season_data = rolling_data.filter(pl.col("season") == season)
-    player_expected_points = season_data.filter(pl.col("element") == player.id).sort("gw", descending=True).select("total_points_rolling_5")[0, 0]
-    print(player_expected_points)
+    player_data = season_data.filter(pl.col("element") == player.id).sort("gw", descending=True)
+    
+    if len(player_data) == 0:
+        return 0.0
+    
+    # Return the most recent rolling average as the prediction
+    return player_data.select("total_points_rolling_5")[0, 0]

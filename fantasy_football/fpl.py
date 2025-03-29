@@ -1,13 +1,9 @@
 import requests
 import json
 
-import pydantic
 from pydantic import BaseModel
 from fantasy_football.constants import FPL_ID
-from fantasy_football.types import FplTeam, FplPlayer, FplTeamInfo, FplSquad, FplSquadPlayer, FplFixtures, FplFixture, TeamFixture, TeamFixtures, FplPlayerFixtures
-
-
-
+from fantasy_football.fpl_types import FplTeam, FplPlayer, FplTeamInfo, FplSquad, FplSquadPlayer, FplFixtures, FplFixture, TeamFixture, TeamFixtures, FplPlayerFixtures
     
 class FixtureResponse(BaseModel):
     
@@ -60,8 +56,9 @@ def get_teams(data: dict) -> list[FplTeamInfo]:
         teams.append(fpl_team)
     return teams
 
-def get_players(boostrap_dict: dict) -> list[FplPlayer]:
-    elements = boostrap_dict.get("elements")
+def get_players() -> list[FplPlayer]:
+    bootstrap_dict = get_boostrap_data()
+    elements = bootstrap_dict.get("elements")
     players = []
     for player in elements:
         fpl_player = FplPlayer(
@@ -71,7 +68,8 @@ def get_players(boostrap_dict: dict) -> list[FplPlayer]:
             web_name=player.get("web_name"),
             selected_by_percent=player.get("selected_by_percent"),
             now_cost=player.get("now_cost"),
-            team_id=player.get("team")
+            team_id=player.get("team"),
+            element_type=player.get("element_type")
         )
         players.append(fpl_player)
     return players
@@ -183,13 +181,13 @@ def get_player_fixtures(player: FplPlayer) -> FplPlayerFixtures:
 
 
 if __name__ == "__main__":
-    """
-    bootstrap_data = get_boostrap_data()
-    players = get_players(bootstrap_data)
-    team_response = get_manager_team_from_id(FPL_ID, 5, players)
+
+    players = get_players()
+    team_response = get_manager_team_from_id(FPL_ID, 29, players)
     print(team_response)
     """
     fixtures_raw = get_fixtures()
     fixtures = parse_fixtures(fixtures_raw)
     chelsea_fixtures = get_team_fixtures(6, fixtures)
     print(chelsea_fixtures)
+    """
