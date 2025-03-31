@@ -6,6 +6,7 @@ notes.txt
 # data folder + other local data
 data/
 *.json
+*.jsonl
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

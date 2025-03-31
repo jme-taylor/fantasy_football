@@ -18,14 +18,14 @@ class FixtureResponse(BaseModel):
         h: list[TeamStatistic]
 
     code: int
-    event: int
+    event: int | None = None
     finished: bool
     finished_provisional: bool
     id: int
-    kickoff_time: str
+    kickoff_time: str | None = None
     minutes: int
     provisional_start_time: bool
-    started: bool
+    started: bool | None = None
     team_a: int
     team_a_score: int | None = None
     team_h: int
@@ -57,6 +57,17 @@ def get_teams(data: dict) -> list[FplTeamInfo]:
     return teams
 
 def get_players() -> list[FplPlayer]:
+    """Get all players from the FPL API.
+
+    This function gets all players from the FPL API and returns a list of 
+    FplPlayer objects. This is used to get the player data for the current
+    season.
+
+    Returns
+    -------
+    list[FplPlayer]
+        A list of all players from the FPL API.
+    """
     bootstrap_dict = get_boostrap_data()
     elements = bootstrap_dict.get("elements")
     players = []
@@ -116,7 +127,7 @@ def get_manager_team_from_id(id: str, event: int, players: list[FplPlayer]) -> F
     return manager_squad
         
 
-def get_fixtures() -> FplFixtureResponses:
+def get_raw_fixtures() -> FplFixtureResponses:
     url = "https://fantasy.premierleague.com/api/fixtures/"
     response = requests.get(url)
     response.raise_for_status()
@@ -130,6 +141,8 @@ def get_fixtures() -> FplFixtureResponses:
 def parse_fixtures(fixtures: FplFixtureResponses) -> FplFixtures:
     all_fixtures = []
     for fixture in fixtures.fixtures:
+        if fixture.event is None:
+            continue
         fpl_fixture = FplFixture(
             code=fixture.code,
             event=fixture.event,
@@ -143,6 +156,10 @@ def parse_fixtures(fixtures: FplFixtureResponses) -> FplFixtures:
         )
         all_fixtures.append(fpl_fixture)
     return FplFixtures(fixtures=all_fixtures)
+
+def get_fixtures() -> FplFixtures:
+    raw_fixtures = get_raw_fixtures()
+    return parse_fixtures(raw_fixtures)
 
 def get_team_fixtures(team_id: int, fixtures: FplFixtures) -> TeamFixtures:
     team_fixtures = []

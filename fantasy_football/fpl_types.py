@@ -1,3 +1,5 @@
+from typing import Iterator
+
 from pydantic import ConfigDict
 from pydantic.dataclasses import dataclass
 
@@ -21,7 +23,7 @@ class FplPlayer:
     selected_by_percent: float
     now_cost: int
     team_id: int
-    element_type: int  # 1=GK, 2=DEF, 3=MID, 4=FWD
+    element_type: int
 
 @dataclass(config=config, frozen=True)
 class FplTeam:
@@ -77,6 +79,9 @@ class FplFixture:
 class FplFixtures:
     fixtures: list[FplFixture]
 
+    def __iter__(self) -> Iterator[FplFixture]:
+        return iter(self.fixtures)
+
 @dataclass(config=config, frozen=True)
 class TeamFixture:
     round: int
@@ -99,7 +104,7 @@ class FplPlayerFixtures:
 
 @dataclass(config=config, frozen=True)
 class PlayerExpectedPoints:
-    fpl_info: FplPlayer
+    player: FplPlayer
     fixture: TeamFixture
-    rolling_average_points: float
+    rolling_points: float
     expected_points: float 
