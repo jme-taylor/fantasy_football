@@ -13,9 +13,9 @@ RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 def get_all_repo_files() -> dict:
     """Get details about all the files in the fantasy premier league repo.
 
-    This function uses the GitHub API to get all files in the tree of the 
+    This function uses the GitHub API to get all files in the tree of the
     master branch of the Fantasy Premier League repo, and will return this as
-    a dictionary. The function will look for the GITHUB_API_KEY environment 
+    a dictionary. The function will look for the GITHUB_API_KEY environment
     variable to use as the API key for the request.
 
     Returns
@@ -38,11 +38,12 @@ def get_all_repo_files() -> dict:
     response_json = response.json()
     return response_json
 
+
 def get_github_file(url_path: str) -> dict:
     """Get details about a file in the Fantasy Premier League repo.
 
-    This function uses the GitHub API to get details about a file in the 
-    Fantasy Premier League repo. The function will look for the GITHUB_API_KEY 
+    This function uses the GitHub API to get details about a file in the
+    Fantasy Premier League repo. The function will look for the GITHUB_API_KEY
     environment variable to use as the API key for the request.
 
     Parameters
@@ -70,17 +71,18 @@ def get_github_file(url_path: str) -> dict:
     response_json = response.json()
     return response_json
 
+
 def get_all_data_files() -> list:
     """Get details about all the CSV files in the data folder in the repo.
 
-    This function will use the get_all_repo_files function to get all files in 
-    the repo, and then filter this list to only include files that are in the 
+    This function will use the get_all_repo_files function to get all files in
+    the repo, and then filter this list to only include files that are in the
     data folder and have a .csv extension.
 
     Returns
     -------
     list
-        A list of dictionaries, each containing details about a CSV file in the 
+        A list of dictionaries, each containing details about a CSV file in the
         data folder of the Fantasy Premier League repo.
 
     """
@@ -96,7 +98,7 @@ def get_all_data_files() -> list:
 def get_data_file_url(file: dict) -> str:
     """Get the raw URL for a data file.
 
-    This function takes a dictionary representing a file in the Fantasy 
+    This function takes a dictionary representing a file in the Fantasy
     Premier League repo and returns the raw URL for that file.
 
     Parameters
@@ -116,9 +118,9 @@ def get_data_file_url(file: dict) -> str:
 def save_data_file(file: dict) -> None:
     """Save a data file to the local filesystem.
 
-    Using a dictionary representing a file in the Fantasy Premier League repo, 
-    this function will download the file and save it to the local filesystem. 
-    The file will be saved in a folder structure that mirrors the structure of 
+    Using a dictionary representing a file in the Fantasy Premier League repo,
+    this function will download the file and save it to the local filesystem.
+    The file will be saved in a folder structure that mirrors the structure of
     the data folder.
 
     Parameters
@@ -149,6 +151,7 @@ def save_all_data_files() -> None:
         except Exception as e:
             print(f"Error saving {file['path']}: {e}")
 
+
 def update_current_season_data(season: str) -> None:
     """Update the current season data for the Fantasy Premier League.
 
@@ -161,4 +164,3 @@ def update_current_season_data(season: str) -> None:
     formatted_filepath = f"data/{season}/gws/merged_gw.csv"
     season_data = get_github_file(formatted_filepath)
     save_data_file(season_data)
-
