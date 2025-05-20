@@ -1,15 +1,18 @@
-from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
 
-from fantasy_football.fpl_types import FplPlayer, FplFixture, FplFixtures
-from fantasy_football.prediction import get_player_fixtures, get_player_rolling_points
+from fantasy_football.fpl_types import FplFixture, FplFixtures, FplPlayer
+from fantasy_football.prediction import (
+    get_player_fixtures,
+    get_player_rolling_points,
+)
+
 
 @pytest.fixture
 def sample_fixtures() -> FplFixtures:
     """Create sample fixtures for testing.
-    
+
     Returns
     -------
     FplFixtures
@@ -68,10 +71,11 @@ def sample_fixtures() -> FplFixtures:
         ]
     )
 
+
 @pytest.fixture
 def sample_player() -> FplPlayer:
     """Create a sample player for testing.
-    
+
     Returns
     -------
     FplPlayer
@@ -85,28 +89,34 @@ def sample_player() -> FplPlayer:
         selected_by_percent=10.5,
         now_cost=75,
         team_id=1,
-        element_type=3
+        element_type=3,
     )
+
 
 @pytest.fixture
 def sample_rolling_data() -> pl.DataFrame:
     """Create sample rolling data for testing.
-    
+
     Returns
     -------
     pl.DataFrame
         Sample rolling points data.
     """
-    return pl.DataFrame({
-        "season": ["2024-25", "2024-25", "2023-24"],
-        "element": [101, 101, 101],
-        "gw": [2, 1, 38],
-        "total_points_rolling_5": [6.5, 4.2, 5.8]
-    })
+    return pl.DataFrame(
+        {
+            "season": ["2024-25", "2024-25", "2023-24"],
+            "element": [101, 101, 101],
+            "gw": [2, 1, 38],
+            "total_points_rolling_5": [6.5, 4.2, 5.8],
+        }
+    )
 
-def test_get_player_fixtures(sample_fixtures: FplFixtures, sample_player: FplPlayer) -> None:
+
+def test_get_player_fixtures(
+    sample_fixtures: FplFixtures, sample_player: FplPlayer
+) -> None:
     """Test the get_player_fixtures function.
-    
+
     Parameters
     ----------
     sample_fixtures : FplFixtures
@@ -115,28 +125,32 @@ def test_get_player_fixtures(sample_fixtures: FplFixtures, sample_player: FplPla
         Sample player for testing.
     """
     result = get_player_fixtures(sample_fixtures, sample_player)
-    
+
     # Assertions
     assert isinstance(result, FplFixtures)
     assert len(result.fixtures) == 2  # Only unfinished fixtures for team 1
-    
+
     # Verify we only have unfinished fixtures
     assert all(not fixture.finished for fixture in result.fixtures)
-    
+
     # Verify all fixtures involve the player's team
     assert all(
-        fixture.team_h == sample_player.team_id or fixture.team_a == sample_player.team_id
+        fixture.team_h == sample_player.team_id
+        or fixture.team_a == sample_player.team_id
         for fixture in result.fixtures
     )
-    
+
     # Check fixture IDs are as expected (2 and 3 from our sample data)
     fixture_ids = [fixture.id for fixture in result.fixtures]
     assert 2 in fixture_ids
     assert 3 in fixture_ids
 
-def test_get_player_rolling_points(sample_rolling_data: pl.DataFrame, sample_player: FplPlayer) -> None:
+
+def test_get_player_rolling_points(
+    sample_rolling_data: pl.DataFrame, sample_player: FplPlayer
+) -> None:
     """Test the get_player_rolling_points function.
-    
+
     Parameters
     ----------
     sample_rolling_data : pl.DataFrame
@@ -147,11 +161,13 @@ def test_get_player_rolling_points(sample_rolling_data: pl.DataFrame, sample_pla
     # Test with default season
     result = get_player_rolling_points(sample_rolling_data, sample_player)
     assert result == 6.5  # Most recent GW in 2024-25
-    
+
     # Test with specific season
-    result = get_player_rolling_points(sample_rolling_data, sample_player, season="2023-24")
+    result = get_player_rolling_points(
+        sample_rolling_data, sample_player, season="2023-24"
+    )
     assert result == 5.8  # Most recent GW in 2023-24
-    
+
     # Test with player not in data
     other_player = FplPlayer(
         id=999,
@@ -161,7 +177,7 @@ def test_get_player_rolling_points(sample_rolling_data: pl.DataFrame, sample_pla
         selected_by_percent=5.0,
         now_cost=50,
         team_id=2,
-        element_type=2
+        element_type=2,
     )
     result = get_player_rolling_points(sample_rolling_data, other_player)
-    assert result == 0.0  # Player not found 
+    assert result == 0.0  # Player not found

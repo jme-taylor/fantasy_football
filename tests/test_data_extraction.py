@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-import requests
 from pytest_mock import MockerFixture
 
 from fantasy_football.data_extraction import (
@@ -13,7 +12,6 @@ from fantasy_football.data_extraction import (
     save_data_file,
     update_current_season_data,
 )
-
 
 
 @pytest.fixture
@@ -100,7 +98,9 @@ def test_get_github_file(mocker: MockerFixture) -> None:
     mock_response.json.assert_called_once()
 
 
-def test_get_all_data_files(mocker: MockerFixture, mock_github_response: dict) -> None:
+def test_get_all_data_files(
+    mocker: MockerFixture, mock_github_response: dict
+) -> None:
     """Test getting all data files from the repo.
 
     Parameters
@@ -110,7 +110,10 @@ def test_get_all_data_files(mocker: MockerFixture, mock_github_response: dict) -
     mock_github_response : dict
         Mock GitHub API response.
     """
-    mocker.patch("fantasy_football.data_extraction.get_all_repo_files", return_value=mock_github_response)
+    mocker.patch(
+        "fantasy_football.data_extraction.get_all_repo_files",
+        return_value=mock_github_response,
+    )
 
     result = get_all_data_files()
     assert len(result) == 2
@@ -149,7 +152,9 @@ def test_save_data_file(mocker: MockerFixture, tmp_path: Path) -> None:
     assert expected_file.read_bytes() == b"test content"
 
 
-def test_save_all_data_files(mocker: MockerFixture, mock_github_response: dict, tmp_path: Path) -> None:
+def test_save_all_data_files(
+    mocker: MockerFixture, mock_github_response: dict, tmp_path: Path
+) -> None:
     """Test saving all data files.
 
     Parameters
@@ -161,7 +166,10 @@ def test_save_all_data_files(mocker: MockerFixture, mock_github_response: dict, 
     tmp_path : Path
         Pytest fixture providing a temporary directory.
     """
-    mocker.patch("fantasy_football.data_extraction.get_all_repo_files", return_value=mock_github_response)
+    mocker.patch(
+        "fantasy_football.data_extraction.get_all_repo_files",
+        return_value=mock_github_response,
+    )
     mocker.patch("fantasy_football.data_extraction.RAW_DATA_FOLDER", tmp_path)
     mocker.patch("fantasy_football.data_extraction.save_data_file")
 
@@ -169,7 +177,9 @@ def test_save_all_data_files(mocker: MockerFixture, mock_github_response: dict, 
     assert tmp_path.exists()
 
 
-def test_update_current_season_data(mocker: MockerFixture, mock_github_file_response: dict) -> None:
+def test_update_current_season_data(
+    mocker: MockerFixture, mock_github_file_response: dict
+) -> None:
     """Test updating current season data.
 
     Parameters
@@ -179,10 +189,17 @@ def test_update_current_season_data(mocker: MockerFixture, mock_github_file_resp
     mock_github_file_response : dict
         Mock GitHub file response.
     """
-    mock_get_github_file = mocker.patch("fantasy_football.data_extraction.get_github_file", return_value=mock_github_file_response)
-    mock_save_data_file = mocker.patch("fantasy_football.data_extraction.save_data_file")
+    mock_get_github_file = mocker.patch(
+        "fantasy_football.data_extraction.get_github_file",
+        return_value=mock_github_file_response,
+    )
+    mock_save_data_file = mocker.patch(
+        "fantasy_football.data_extraction.save_data_file"
+    )
 
     update_current_season_data("2023-24")
-    
-    mock_get_github_file.assert_called_once_with("data/2023-24/gws/merged_gw.csv")
-    mock_save_data_file.assert_called_once_with(mock_github_file_response) 
+
+    mock_get_github_file.assert_called_once_with(
+        "data/2023-24/gws/merged_gw.csv"
+    )
+    mock_save_data_file.assert_called_once_with(mock_github_file_response)
