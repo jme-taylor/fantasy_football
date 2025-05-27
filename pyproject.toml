@@ -11,8 +11,9 @@ dependencies = [
     "polars>=0.20.3,<0.21",
     "python-dotenv>=1.0.0,<2",
     "pydantic>=2.5.3,<3",
-    "pulp>=2.7.0,<3",
     "numpy>=2.2.4,<3",
+    "scikit-learn>=1.6.1",
+    "mlflow==2.21.2",
 ]
 
 [dependency-groups]
@@ -23,6 +24,9 @@ dev = [
     "mypy>=1.15.0",
     "pytest-cov>=6.1.1",
     "ty>=0.0.1a5",
+    "ipykernel>=6.29.5",
+    "matplotlib>=3.10.3",
+    "seaborn>=0.13.2",
 ]
 
 [build-system]

@@ -1,7 +1,7 @@
 import polars as pl
 
 from fantasy_football.constants import DATA_FOLDER
-from fantasy_football.fpl import get_fixtures, get_players
+from fantasy_football.fpl import FplAPI
 from fantasy_football.fpl_types import (
     FplFixtures,
     FplPlayer,
@@ -172,8 +172,9 @@ def predict_all_players_future_points() -> list[PlayerExpectedPoints]:
     list[PlayerExpectedPoints]
         A list of predicted points for the players.
     """
-    players = get_players()
-    fixtures = get_fixtures()
+    fpl_api = FplAPI()
+    players = fpl_api.get_players()
+    fixtures = fpl_api.get_fixtures()
     player_expected_points = []
     for player in players:
         player_fixtures = get_player_fixtures(fixtures, player)
