@@ -3,11 +3,16 @@ test.py
 notes.txt
 .cursor/
 project_plan.md
+structure.txt
 
 # data folder + other local data
 data/
 *.json
 *.jsonl
+
+# models 
+models/
+mlruns/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
