@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+from typing import Dict, List
 
 import requests
 from dotenv import load_dotenv
@@ -10,157 +12,278 @@ load_dotenv()
 RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 
 
-def get_all_repo_files() -> dict:
+class GitHubAPIClient:
+    """Client for interacting with the GitHub API for Fantasy Premier League data."""
+
+    def __init__(self, api_key: str | None = None) -> None:
+        """Initialize the GitHub API client.
+        
+        Parameters
+        ----------
+        api_key : str | None, optional
+            GitHub API key. If None, will try to get from GITHUB_API_KEY environment variable.
+            
+        Raises
+        ------
+        ValueError
+            If no API key is provided and GITHUB_API_KEY environment variable is not set.
+        """
+        self.api_key = api_key or os.getenv("GITHUB_API_KEY")
+        if not self.api_key:
+            raise ValueError("GitHub API key is required. Set GITHUB_API_KEY environment variable or pass api_key parameter.")
+        
+        self.base_url = "https://api.github.com/repos/vaastav/Fantasy-Premier-League"
+        self.raw_base_url = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master"
+        self.headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self.api_key}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    def get_all_repo_files(self) -> Dict:
+        """Get details about all files in the Fantasy Premier League repo tree.
+        
+        Returns
+        -------
+        Dict
+            Dictionary containing the JSON response from the GitHub API.
+            
+        Raises
+        ------
+        requests.HTTPError
+            If the API request fails.
+        """
+        response = requests.get(
+            f"{self.base_url}/git/trees/master?recursive=1",
+            headers=self.headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_file_details(self, path: str) -> Dict:
+        """Get details about a specific file in the Fantasy Premier League repo.
+        
+        Parameters
+        ----------
+        path : str
+            The path of the file in the repo.
+            
+        Returns
+        -------
+        Dict
+            Dictionary containing file details from the GitHub API.
+            
+        Raises
+        ------
+        requests.HTTPError
+            If the API request fails.
+        """
+        response = requests.get(
+            f"{self.base_url}/contents/{path}",
+            headers=self.headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def get_raw_file_url(self, path: str) -> str:
+        """Get the raw download URL for a file.
+        
+        Parameters
+        ----------
+        path : str
+            The path of the file in the repo.
+            
+        Returns
+        -------
+        str
+            The raw download URL for the file.
+        """
+        return f"{self.raw_base_url}/{path}"
+
+
+class DataExtractor:
+    """Extracts and manages Fantasy Premier League data files."""
+
+    def __init__(self, api_client: GitHubAPIClient | None = None) -> None:
+        """Initialize the data extractor.
+        
+        Parameters
+        ----------
+        api_client : GitHubAPIClient | None, optional
+            GitHub API client. If None, creates a new client instance.
+        """
+        self.api_client = api_client or GitHubAPIClient()
+        self.raw_data_folder = RAW_DATA_FOLDER
+
+    def get_all_data_files(self) -> List[Dict]:
+        """Get details about all CSV files in the data folder.
+        
+        Returns
+        -------
+        List[Dict]
+            List of dictionaries containing details about CSV files in the data folder.
+        """
+        all_files = self.api_client.get_all_repo_files()
+        return [
+            file
+            for file in all_files["tree"]
+            if file["path"].startswith("data") and file["path"].endswith(".csv")
+        ]
+
+    def _create_local_path(self, file_path: str) -> Path:
+        """Create local path structure for a given file path.
+        
+        Parameters
+        ----------
+        file_path : str
+            The file path from the repo.
+            
+        Returns
+        -------
+        Path
+            The local path where the file should be saved.
+        """
+        filename = Path(file_path).name
+        folder = Path(file_path).parent.relative_to("data")
+        local_folder = self.raw_data_folder / folder
+        local_folder.mkdir(parents=True, exist_ok=True)
+        return local_folder / filename
+
+    def save_file(self, file_info: Dict) -> None:
+        """Save a single data file to the local filesystem.
+        
+        Parameters
+        ----------
+        file_info : Dict
+            Dictionary containing file information from GitHub API.
+            
+        Raises
+        ------
+        requests.HTTPError
+            If the file download fails.
+        """
+        local_path = self._create_local_path(file_info["path"])
+        url = self.api_client.get_raw_file_url(file_info["path"])
+        
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        with open(local_path, "wb") as f:
+            f.write(response.content)
+
+    def save_all_data_files(self) -> None:
+        """Save all data files from the Fantasy Premier League repo to local storage."""
+        self.raw_data_folder.mkdir(parents=True, exist_ok=True)
+        data_files = self.get_all_data_files()
+        
+        for file_info in data_files:
+            try:
+                self.save_file(file_info)
+                print(f"Successfully saved: {file_info['path']}")
+            except Exception as e:
+                print(f"Error saving {file_info['path']}: {e}")
+
+    def update_current_season_data(self, season: str) -> None:
+        """Update the current season data for the Fantasy Premier League.
+        
+        Parameters
+        ----------
+        season : str
+            The season to update the data for (e.g., '2023-24').
+        """
+        file_path = f"data/{season}/gws/merged_gw.csv"
+        try:
+            season_data = self.api_client.get_file_details(file_path)
+            self.save_file(season_data)
+            print(f"Successfully updated season data for {season}")
+        except Exception as e:
+            print(f"Error updating season data for {season}: {e}")
+
+
+# Convenience functions to maintain backward compatibility
+def get_all_repo_files() -> Dict:
     """Get details about all the files in the fantasy premier league repo.
-
-    This function uses the GitHub API to get all files in the tree of the
-    master branch of the Fantasy Premier League repo, and will return this as
-    a dictionary. The function will look for the GITHUB_API_KEY environment
-    variable to use as the API key for the request.
-
+    
     Returns
     -------
-    dict
+    Dict
         A dictionary of the JSON response from the github API.
-
     """
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {os.getenv("GITHUB_API_KEY")}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    response = requests.get(
-        "https://api.github.com/repos/vaastav/Fantasy-Premier-League/git/trees/master?recursive=1",
-        headers=headers,
-    )
-    response.raise_for_status()
-    response_json = response.json()
-    return response_json
+    client = GitHubAPIClient()
+    return client.get_all_repo_files()
 
 
-def get_github_file(url_path: str) -> dict:
+def get_github_file(url_path: str) -> Dict:
     """Get details about a file in the Fantasy Premier League repo.
-
-    This function uses the GitHub API to get details about a file in the
-    Fantasy Premier League repo. The function will look for the GITHUB_API_KEY
-    environment variable to use as the API key for the request.
-
+    
     Parameters
     ----------
     url_path : str
         The path of the file in the repo.
-
+        
     Returns
     -------
-    dict
+    Dict
         A dictionary of the JSON response from the github API.
-
     """
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {os.getenv('GITHUB_API_KEY')}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    response = requests.get(
-        f"https://api.github.com/repos/vaastav/Fantasy-Premier-League/contents/{url_path}",
-        headers=headers,
-    )
-    response.raise_for_status()
-    response_json = response.json()
-    return response_json
+    client = GitHubAPIClient()
+    return client.get_file_details(url_path)
 
 
-def get_all_data_files() -> list:
+def get_all_data_files() -> List[Dict]:
     """Get details about all the CSV files in the data folder in the repo.
-
-    This function will use the get_all_repo_files function to get all files in
-    the repo, and then filter this list to only include files that are in the
-    data folder and have a .csv extension.
-
+    
     Returns
     -------
-    list
-        A list of dictionaries, each containing details about a CSV file in the
-        data folder of the Fantasy Premier League repo.
-
+    List[Dict]
+        A list of dictionaries, each containing details about a CSV file.
     """
-    all_files = get_all_repo_files()
-    data_files = [
-        file
-        for file in all_files["tree"]
-        if file["path"].startswith("data") and file["path"].endswith(".csv")
-    ]
-    return data_files
+    extractor = DataExtractor()
+    return extractor.get_all_data_files()
 
 
-def get_data_file_url(file: dict) -> str:
+def get_data_file_url(file: Dict) -> str:
     """Get the raw URL for a data file.
-
-    This function takes a dictionary representing a file in the Fantasy
-    Premier League repo and returns the raw URL for that file.
-
+    
     Parameters
     ----------
-    file : dict
+    file : Dict
         A dictionary representing a file in the Fantasy Premier League repo.
-
+        
     Returns
     -------
     str
         The raw URL for the file.
-
     """
-    return f"https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/{file['path']}"
+    client = GitHubAPIClient()
+    return client.get_raw_file_url(file["path"])
 
 
-def save_data_file(file: dict) -> None:
+def save_data_file(file: Dict) -> None:
     """Save a data file to the local filesystem.
-
-    Using a dictionary representing a file in the Fantasy Premier League repo,
-    this function will download the file and save it to the local filesystem.
-    The file will be saved in a folder structure that mirrors the structure of
-    the data folder.
-
+    
     Parameters
     ----------
-    file : dict
+    file : Dict
         A dictionary representing a file in the Fantasy Premier League repo.
-
     """
-    filename = file["path"].split("/")[-1]
-    folder = file["path"].split(filename)[0].split("data/")[1]
-    local_folder = RAW_DATA_FOLDER.joinpath(folder)
-    local_folder.mkdir(parents=True, exist_ok=True)
-    local_filepath = local_folder.joinpath(filename)
-    url = get_data_file_url(file)
-    result = requests.get(url)
-    result.raise_for_status()
-    with open(local_filepath, "wb") as f:
-        f.write(result.content)
+    extractor = DataExtractor()
+    extractor.save_file(file)
 
 
 def save_all_data_files() -> None:
     """Save all data files from the Fantasy Premier League repo to local."""
-    RAW_DATA_FOLDER.mkdir(parents=True, exist_ok=True)
-    data_files = get_all_data_files()
-    for file in data_files:
-        try:
-            save_data_file(file)
-        except Exception as e:
-            print(f"Error saving {file['path']}: {e}")
+    extractor = DataExtractor()
+    extractor.save_all_data_files()
 
 
 def update_current_season_data(season: str) -> None:
     """Update the current season data for the Fantasy Premier League.
-
+    
     Parameters
     ----------
     season : str
         The season to update the data for.
-
     """
-    formatted_filepath = f"data/{season}/gws/merged_gw.csv"
-    season_data = get_github_file(formatted_filepath)
-    save_data_file(season_data)
+    extractor = DataExtractor()
+    extractor.update_current_season_data(season)
