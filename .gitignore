@@ -7,7 +7,7 @@ structure.txt
 notepad.md
 
 # docs
-docs/*
+docs/
 
 # data folder + other local data
 data/
