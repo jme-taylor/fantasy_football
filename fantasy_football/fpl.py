@@ -199,10 +199,11 @@ class FplAPI:
         FplSquad
             The manager team from the FPL API.
         """
-        bank = response.get("entry_history").get("bank")
-        value = response.get("entry_history").get("value")
-        total_points = response.get("entry_history").get("total_points")
-        squad_players = response.get("picks")
+        entry_history = response["entry_history"]
+        bank = entry_history.get("bank")
+        value = entry_history.get("value")
+        total_points = entry_history.get("total_points")
+        squad_players = response["picks"]
         manager_squad_players = []
         for squad_player in squad_players:
             player_id = squad_player.get("element")
@@ -257,7 +258,7 @@ class FplAPI:
         all_fixtures = []
         all_fixtures_response = response.json()
         for fixture in all_fixtures_response:
-            fixture_response = FixtureResponse(**fixture)
+            fixture_response = FixtureResponse.model_validate(fixture)
             all_fixtures.append(fixture_response)
         return FplFixtureResponses(fixtures=all_fixtures)
 
@@ -276,14 +277,16 @@ class FplAPI:
         """
         all_fixtures = []
         for fixture in fixtures.fixtures:
-            if fixture.event is None:
+            event = fixture.event
+            kickoff_time = fixture.kickoff_time
+            if event is None or kickoff_time is None:
                 continue
             fpl_fixture = FplFixture(
                 code=fixture.code,
-                event=fixture.event,
+                event=event,
                 finished=fixture.finished,
                 id=fixture.id,
-                kickoff_time=fixture.kickoff_time,
+                kickoff_time=kickoff_time,
                 team_a=fixture.team_a,
                 team_a_difficulty=fixture.team_a_difficulty,
                 team_h=fixture.team_h,
