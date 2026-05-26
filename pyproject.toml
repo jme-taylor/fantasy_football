@@ -21,7 +21,6 @@ dev = [
     "ruff>=0.6.2,<0.7",
     "pytest>=8.3.5,<9",
     "pytest-mock>=3.14.0,<4",
-    "mypy>=1.15.0",
     "pytest-cov>=6.1.1",
     "ty>=0.0.1a5",
     "ipykernel>=6.29.5",
