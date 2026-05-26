@@ -3,10 +3,6 @@ name: CI
 on:
   push:
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   checks:
     name: Lint, format, type, test
