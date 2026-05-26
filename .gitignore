@@ -4,6 +4,10 @@ notes.txt
 .cursor/
 project_plan.md
 structure.txt
+notepad.md
+
+# docs
+docs/*
 
 # data folder + other local data
 data/
@@ -11,8 +15,10 @@ data/
 *.jsonl
 
 # models 
-models/
+/models/
 mlruns/
+
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

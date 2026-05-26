@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
+from fantasy_football import data_transformation
 from fantasy_football.data_transformation import (
     create_rolling_average_column,
     create_rolling_points_data,
@@ -28,7 +29,7 @@ def sample_gw_data() -> pl.DataFrame:
         {
             "season": ["2020-21", "2020-21", "2020-21", "2021-22", "2021-22"],
             "name": ["Player1", "Player1", "Player1", "Player2", "Player2"],
-            "position": ["GKP", "GKP", "GKP", "DEF", "DEF"],
+            "position": ["GK", "GK", "GK", "DEF", "DEF"],
             "bonus": [1, 2, 0, 1, 3],
             "element": [1, 1, 1, 2, 2],
             "minutes": [90, 90, 90, 90, 90],
@@ -39,19 +40,24 @@ def sample_gw_data() -> pl.DataFrame:
     )
 
 
-def test_load_gw_data(tmp_path: Path) -> None:
+def test_load_gw_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Test the load_gw_data function.
 
     Parameters
     ----------
     tmp_path : Path
         A temporary directory path provided by pytest.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest monkeypatch fixture used to redirect the module's data folders.
     """
     # Create temporary data structure
     raw_data = tmp_path / "raw"
     current_season = "2023-24"
     season_data = raw_data / current_season / "gws"
     season_data.mkdir(parents=True)
+    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
 
     # Create sample data files
     previous_seasons_data = pl.DataFrame(
@@ -72,7 +78,7 @@ def test_load_gw_data(tmp_path: Path) -> None:
     current_season_data = pl.DataFrame(
         {
             "name": ["Player2", "Player2"],
-            "position": ["GKP", "GKP"],
+            "position": ["GK", "GK"],
             "bonus": [1, 2],
             "element": [2, 2],
             "minutes": [90, 90],
@@ -95,7 +101,7 @@ def test_load_gw_data(tmp_path: Path) -> None:
     assert "gw" in result.columns
     assert (
         result.filter(pl.col("position") == "GKP").height == 0
-    )  # Should be converted to "GK"
+    )
     assert result.filter(pl.col("position") == "GK").height > 0
 
 
@@ -122,8 +128,9 @@ def test_create_rolling_average_column(sample_gw_data: pl.DataFrame) -> None:
         .select("total_points_rolling_2")
         .mean()
         .item(0, 0)
-        == 7.0
-    )  # (8 + 4) / 2
+        == 6.5 
+    )
+    # GW1 = Null, GW2 = (6+8)/2 = 7, GW3 = (8+4)/2 = 6 -> avg = 6.5
 
 
 def test_fill_missing_values_by_position(sample_gw_data: pl.DataFrame) -> None:
@@ -134,9 +141,9 @@ def test_fill_missing_values_by_position(sample_gw_data: pl.DataFrame) -> None:
     sample_gw_data : pl.DataFrame
         Sample gameweek data for testing.
     """
-    # Add some missing values
+    # Null only Player1's gw=1 row so a GK average is still computable
     data_with_nulls = sample_gw_data.with_columns(
-        pl.when(pl.col("name") == "Player1")
+        pl.when((pl.col("name") == "Player1") & (pl.col("gw") == 1))
         .then(None)
         .otherwise(pl.col("total_points"))
         .alias("total_points")
@@ -147,22 +154,26 @@ def test_fill_missing_values_by_position(sample_gw_data: pl.DataFrame) -> None:
     # Assertions
     assert isinstance(result, pl.DataFrame)
     assert not result["total_points"].is_null().any()
+    # GK average of non-null values (8 + 4) / 2 = 6.0, used to fill gw=1
     assert (
-        result.filter(pl.col("name") == "Player1")
+        result.filter((pl.col("name") == "Player1") & (pl.col("gw") == 1))
         .select("total_points")
-        .mean()
         .item(0, 0)
         == 6.0
-    )  # Average of GK position
+    )
 
 
-def test_create_rolling_points_data(tmp_path: Path) -> None:
+def test_create_rolling_points_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Test the create_rolling_points_data function.
 
     Parameters
     ----------
     tmp_path : Path
         A temporary directory path provided by pytest.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest monkeypatch fixture used to redirect the module's data folders.
     """
     # Create temporary data structure
     raw_data = tmp_path / "raw"
@@ -171,13 +182,17 @@ def test_create_rolling_points_data(tmp_path: Path) -> None:
     season_data = raw_data / current_season / "gws"
     season_data.mkdir(parents=True)
     transformed_data.mkdir(parents=True)
+    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
+    monkeypatch.setattr(
+        data_transformation, "TRANSFORMED_DATA_FOLDER", transformed_data
+    )
 
     # Create sample data files
     previous_seasons_data = pl.DataFrame(
         {
             "season_x": ["2020-21", "2020-21"],
             "name": ["Player1", "Player1"],
-            "position": ["GKP", "GKP"],
+            "position": ["GK", "GK"],
             "bonus": [1, 2],
             "element": [1, 1],
             "minutes": [90, 90],
@@ -191,7 +206,7 @@ def test_create_rolling_points_data(tmp_path: Path) -> None:
     current_season_data = pl.DataFrame(
         {
             "name": ["Player2", "Player2"],
-            "position": ["GKP", "GKP"],
+            "position": ["GK", "GK"],
             "bonus": [1, 2],
             "element": [2, 2],
             "minutes": [90, 90],

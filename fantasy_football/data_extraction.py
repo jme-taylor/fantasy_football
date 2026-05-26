@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Dict, List
 
 import requests
 from dotenv import load_dotenv
@@ -40,7 +39,7 @@ class GitHubAPIClient:
             "X-GitHub-Api-Version": "2022-11-28",
         }
 
-    def get_all_repo_files(self) -> Dict:
+    def get_all_repo_files(self) -> dict:
         """Get details about all files in the Fantasy Premier League repo tree.
         
         Returns
@@ -60,7 +59,7 @@ class GitHubAPIClient:
         response.raise_for_status()
         return response.json()
 
-    def get_file_details(self, path: str) -> Dict:
+    def get_file_details(self, path: str) -> dict:
         """Get details about a specific file in the Fantasy Premier League repo.
         
         Parameters
@@ -70,7 +69,7 @@ class GitHubAPIClient:
             
         Returns
         -------
-        Dict
+        dict
             Dictionary containing file details from the GitHub API.
             
         Raises
@@ -115,19 +114,19 @@ class DataExtractor:
         self.api_client = api_client or GitHubAPIClient()
         self.raw_data_folder = RAW_DATA_FOLDER
 
-    def get_all_data_files(self) -> List[Dict]:
+    def get_all_data_files(self) -> list[dict]:
         """Get details about all CSV files in the data folder.
         
         Returns
         -------
-        List[Dict]
-            List of dictionaries containing details about CSV files in the data folder.
+        list[dict]
+            list of dictionaries containing details about CSV files in the data folder.
         """
         all_files = self.api_client.get_all_repo_files()
         return [
             file
             for file in all_files["tree"]
-            if file["path"].startswith("data") and file["path"].endswith(".csv")
+            if file["path"].startswith("data/") and file["path"].endswith(".csv")
         ]
 
     def _create_local_path(self, file_path: str) -> Path:
@@ -149,12 +148,12 @@ class DataExtractor:
         local_folder.mkdir(parents=True, exist_ok=True)
         return local_folder / filename
 
-    def save_file(self, file_info: Dict) -> None:
+    def save_file(self, file_info: dict) -> None:
         """Save a single data file to the local filesystem.
         
         Parameters
         ----------
-        file_info : Dict
+        file_info : dict
             Dictionary containing file information from GitHub API.
             
         Raises
@@ -198,92 +197,3 @@ class DataExtractor:
             print(f"Successfully updated season data for {season}")
         except Exception as e:
             print(f"Error updating season data for {season}: {e}")
-
-
-# Convenience functions to maintain backward compatibility
-def get_all_repo_files() -> Dict:
-    """Get details about all the files in the fantasy premier league repo.
-    
-    Returns
-    -------
-    Dict
-        A dictionary of the JSON response from the github API.
-    """
-    client = GitHubAPIClient()
-    return client.get_all_repo_files()
-
-
-def get_github_file(url_path: str) -> Dict:
-    """Get details about a file in the Fantasy Premier League repo.
-    
-    Parameters
-    ----------
-    url_path : str
-        The path of the file in the repo.
-        
-    Returns
-    -------
-    Dict
-        A dictionary of the JSON response from the github API.
-    """
-    client = GitHubAPIClient()
-    return client.get_file_details(url_path)
-
-
-def get_all_data_files() -> List[Dict]:
-    """Get details about all the CSV files in the data folder in the repo.
-    
-    Returns
-    -------
-    List[Dict]
-        A list of dictionaries, each containing details about a CSV file.
-    """
-    extractor = DataExtractor()
-    return extractor.get_all_data_files()
-
-
-def get_data_file_url(file: Dict) -> str:
-    """Get the raw URL for a data file.
-    
-    Parameters
-    ----------
-    file : Dict
-        A dictionary representing a file in the Fantasy Premier League repo.
-        
-    Returns
-    -------
-    str
-        The raw URL for the file.
-    """
-    client = GitHubAPIClient()
-    return client.get_raw_file_url(file["path"])
-
-
-def save_data_file(file: Dict) -> None:
-    """Save a data file to the local filesystem.
-    
-    Parameters
-    ----------
-    file : Dict
-        A dictionary representing a file in the Fantasy Premier League repo.
-    """
-    extractor = DataExtractor()
-    extractor.save_file(file)
-
-
-def save_all_data_files() -> None:
-    """Save all data files from the Fantasy Premier League repo to local."""
-    extractor = DataExtractor()
-    extractor.save_all_data_files()
-
-
-def update_current_season_data(season: str) -> None:
-    """Update the current season data for the Fantasy Premier League.
-    
-    Parameters
-    ----------
-    season : str
-        The season to update the data for.
-    """
-    extractor = DataExtractor()
-    extractor.update_current_season_data(season)
