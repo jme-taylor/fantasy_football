@@ -4,7 +4,13 @@ from fantasy_football.constants import DATA_FOLDER
 
 RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
-TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
+
+KNOWN_POSITIONS: tuple[str, ...] = ("GK", "DEF", "MID", "FWD")
+
+
+def rolling_column_name(rolling_column: str, rolling_window: int) -> str:
+    """Return the output column name produced by a rolling-average step."""
+    return f"{rolling_column}_rolling_{rolling_window}"
 
 
 def load_gw_data(current_season: str) -> pl.DataFrame:
@@ -100,7 +106,9 @@ def create_rolling_average_column(
         The original dataframe with the rolling average column added.
 
     """
-    rolling_average_column_name = f"{rolling_column}_rolling_{rolling_window}"
+    rolling_average_column_name = rolling_column_name(
+        rolling_column, rolling_window
+    )
     data = data.sort(["season", "gw"]).with_columns(
         pl.col(rolling_column)
         .rolling_mean(window_size=rolling_window)
@@ -128,7 +136,15 @@ def fill_missing_values_by_position(
         The original dataframe with the missing values filled.
 
     """
-    for position in ["GK", "DEF", "MID", "FWD"]:
+    positions_in_data = set(data.get_column("position").unique().to_list())
+    unknown_positions = positions_in_data - set(KNOWN_POSITIONS)
+    if unknown_positions:
+        print(
+            f"WARNING: fill_missing_values_by_position encountered unknown "
+            f"position(s) {sorted(unknown_positions)}; rows with these "
+            f"positions will not have nulls in '{column_to_fill}' filled."
+        )
+    for position in KNOWN_POSITIONS:
         position_data = data.filter(pl.col("position") == position)
         position_average = (
             position_data.select(pl.col(column_to_fill)).mean().item(0, 0)
@@ -167,10 +183,10 @@ def create_rolling_points_data(
 
     """
     gw_data = load_gw_data(current_season)
+    rolling_column = rolling_column_name("total_points", rolling_window)
     gw_data = create_rolling_average_column(
         gw_data, "name", "total_points", rolling_window
     )
-    gw_data = fill_missing_values_by_position(
-        gw_data, "total_points_rolling_5"
-    )
+    gw_data = fill_missing_values_by_position(gw_data, rolling_column)
+    TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
     gw_data.write_csv(TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"))
