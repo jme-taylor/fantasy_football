@@ -27,11 +27,23 @@ def mock_github_response() -> dict:
     """
     return {
         "tree": [
-            {"path": "data/2023-24/gws/gw1.csv", "type": "blob", "sha": "abc123"},
-            {"path": "data/2023-24/gws/gw2.csv", "type": "blob", "sha": "def456"},
+            {
+                "path": "data/2023-24/gws/gw1.csv",
+                "type": "blob",
+                "sha": "abc123",
+            },
+            {
+                "path": "data/2023-24/gws/gw2.csv",
+                "type": "blob",
+                "sha": "def456",
+            },
             {"path": "README.md", "type": "blob", "sha": "ghi789"},
             {"path": "database/players.csv", "type": "blob", "sha": "jkl012"},
-            {"path": "data/2023-24/gws/gw1.json", "type": "blob", "sha": "mno345"},
+            {
+                "path": "data/2023-24/gws/gw1.json",
+                "type": "blob",
+                "sha": "mno345",
+            },
             {"path": "notdata/x.csv", "type": "blob", "sha": "pqr678"},
         ]
     }
@@ -67,15 +79,15 @@ def mock_api_client() -> GitHubAPIClient:
     return GitHubAPIClient(api_key="test_key")
 
 
-@pytest.fixture  
+@pytest.fixture
 def mock_data_extractor(mock_api_client: GitHubAPIClient) -> DataExtractor:
     """Create a DataExtractor with mocked API client.
-    
+
     Parameters
     ----------
     mock_api_client : GitHubAPIClient
         The mocked API client.
-        
+
     Returns
     -------
     DataExtractor
@@ -97,7 +109,9 @@ def test_github_api_client_init_no_key() -> None:
         GitHubAPIClient()
 
 
-def test_get_all_repo_files(mocker: MockerFixture, mock_api_client: GitHubAPIClient) -> None:
+def test_get_all_repo_files(
+    mocker: MockerFixture, mock_api_client: GitHubAPIClient
+) -> None:
     """Test getting all repo files from GitHub API.
 
     Parameters
@@ -119,11 +133,16 @@ def test_get_all_repo_files(mocker: MockerFixture, mock_api_client: GitHubAPICli
         "https://api.github.com/repos/vaastav/Fantasy-Premier-League/git/trees/master?recursive=1",
         headers=mock_api_client.headers,
     )
-    assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer test_key"
+    assert (
+        mock_get.call_args.kwargs["headers"]["Authorization"]
+        == "Bearer test_key"
+    )
     mock_response.raise_for_status.assert_called_once()
 
 
-def test_get_file_details(mocker: MockerFixture, mock_api_client: GitHubAPIClient) -> None:
+def test_get_file_details(
+    mocker: MockerFixture, mock_api_client: GitHubAPIClient
+) -> None:
     """Test getting a single file from GitHub API.
 
     Parameters
@@ -145,7 +164,10 @@ def test_get_file_details(mocker: MockerFixture, mock_api_client: GitHubAPIClien
         "https://api.github.com/repos/vaastav/Fantasy-Premier-League/contents/data/2023-24/gws/gw1.csv",
         headers=mock_api_client.headers,
     )
-    assert mock_get.call_args.kwargs["headers"]["Authorization"] == "Bearer test_key"
+    assert (
+        mock_get.call_args.kwargs["headers"]["Authorization"]
+        == "Bearer test_key"
+    )
     mock_response.raise_for_status.assert_called_once()
 
 
@@ -191,20 +213,23 @@ def test_get_file_details_propagates_http_error(
 
 def test_get_raw_file_url(mock_api_client: GitHubAPIClient) -> None:
     """Test generating the raw file URL.
-    
+
     Parameters
     ----------
     mock_api_client : GitHubAPIClient
         Mocked API client.
     """
     expected_url = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2023-24/gws/gw1.csv"
-    assert mock_api_client.get_raw_file_url("data/2023-24/gws/gw1.csv") == expected_url
+    assert (
+        mock_api_client.get_raw_file_url("data/2023-24/gws/gw1.csv")
+        == expected_url
+    )
 
 
 def test_get_all_data_files(
-    mocker: MockerFixture, 
-    mock_data_extractor: DataExtractor, 
-    mock_github_response: dict
+    mocker: MockerFixture,
+    mock_data_extractor: DataExtractor,
+    mock_github_response: dict,
 ) -> None:
     """Test getting all data files from the repo.
 
@@ -231,9 +256,7 @@ def test_get_all_data_files(
 
 
 def test_save_file(
-    mocker: MockerFixture, 
-    mock_data_extractor: DataExtractor, 
-    tmp_path: Path
+    mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path: Path
 ) -> None:
     """Test saving a data file locally.
 
@@ -250,7 +273,7 @@ def test_save_file(
     mock_response.content = b"test content"
     mock_response.raise_for_status.return_value = None
     mocker.patch("requests.get", return_value=mock_response)
-    
+
     mock_data_extractor.raw_data_folder = tmp_path
 
     file_info = {"path": "data/2023-24/gws/gw1.csv"}
@@ -320,7 +343,9 @@ def test_save_all_data_files_calls_save_file_per_data_file(
 
     assert mock_data_extractor.raw_data_folder.is_dir()
     assert mock_save_file.call_count == 2
-    saved_paths = [call.args[0]["path"] for call in mock_save_file.call_args_list]
+    saved_paths = [
+        call.args[0]["path"] for call in mock_save_file.call_args_list
+    ]
     assert saved_paths == [
         "data/2023-24/gws/gw1.csv",
         "data/2023-24/gws/gw2.csv",
@@ -365,9 +390,9 @@ def test_save_all_data_files_continues_after_failure(
 
 
 def test_update_current_season_data(
-    mocker: MockerFixture, 
+    mocker: MockerFixture,
     mock_data_extractor: DataExtractor,
-    mock_github_file_response: dict
+    mock_github_file_response: dict,
 ) -> None:
     """Test updating current season data.
 
@@ -389,7 +414,9 @@ def test_update_current_season_data(
 
     mock_data_extractor.update_current_season_data("2023-24")
 
-    mock_get_file_details.assert_called_once_with("data/2023-24/gws/merged_gw.csv")
+    mock_get_file_details.assert_called_once_with(
+        "data/2023-24/gws/merged_gw.csv"
+    )
     mock_save_file.assert_called_once_with(mock_github_file_response)
 
 
@@ -425,12 +452,14 @@ def test_data_extractor_with_custom_client() -> None:
     """Test DataExtractor initialization with custom API client."""
     custom_client = GitHubAPIClient(api_key="custom_key")
     extractor = DataExtractor(api_client=custom_client)
-    
+
     assert extractor.api_client is custom_client
     assert extractor.api_client.api_key == "custom_key"
 
 
-def test_data_extractor_default_client(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_data_extractor_default_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test DataExtractor initialization with default client reads key from env."""
     monkeypatch.setenv("GITHUB_API_KEY", "env_key")
 

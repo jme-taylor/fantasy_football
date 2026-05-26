@@ -16,12 +16,12 @@ class GitHubAPIClient:
 
     def __init__(self, api_key: str | None = None) -> None:
         """Initialize the GitHub API client.
-        
+
         Parameters
         ----------
         api_key : str | None, optional
             GitHub API key. If None, will try to get from GITHUB_API_KEY environment variable.
-            
+
         Raises
         ------
         ValueError
@@ -29,9 +29,13 @@ class GitHubAPIClient:
         """
         self.api_key = api_key or os.getenv("GITHUB_API_KEY")
         if not self.api_key:
-            raise ValueError("GitHub API key is required. Set GITHUB_API_KEY environment variable or pass api_key parameter.")
-        
-        self.base_url = "https://api.github.com/repos/vaastav/Fantasy-Premier-League"
+            raise ValueError(
+                "GitHub API key is required. Set GITHUB_API_KEY environment variable or pass api_key parameter."
+            )
+
+        self.base_url = (
+            "https://api.github.com/repos/vaastav/Fantasy-Premier-League"
+        )
         self.raw_base_url = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master"
         self.headers = {
             "Accept": "application/vnd.github+json",
@@ -41,12 +45,12 @@ class GitHubAPIClient:
 
     def get_all_repo_files(self) -> dict:
         """Get details about all files in the Fantasy Premier League repo tree.
-        
+
         Returns
         -------
         Dict
             Dictionary containing the JSON response from the GitHub API.
-            
+
         Raises
         ------
         requests.HTTPError
@@ -61,17 +65,17 @@ class GitHubAPIClient:
 
     def get_file_details(self, path: str) -> dict:
         """Get details about a specific file in the Fantasy Premier League repo.
-        
+
         Parameters
         ----------
         path : str
             The path of the file in the repo.
-            
+
         Returns
         -------
         dict
             Dictionary containing file details from the GitHub API.
-            
+
         Raises
         ------
         requests.HTTPError
@@ -86,12 +90,12 @@ class GitHubAPIClient:
 
     def get_raw_file_url(self, path: str) -> str:
         """Get the raw download URL for a file.
-        
+
         Parameters
         ----------
         path : str
             The path of the file in the repo.
-            
+
         Returns
         -------
         str
@@ -105,7 +109,7 @@ class DataExtractor:
 
     def __init__(self, api_client: GitHubAPIClient | None = None) -> None:
         """Initialize the data extractor.
-        
+
         Parameters
         ----------
         api_client : GitHubAPIClient | None, optional
@@ -116,7 +120,7 @@ class DataExtractor:
 
     def get_all_data_files(self) -> list[dict]:
         """Get details about all CSV files in the data folder.
-        
+
         Returns
         -------
         list[dict]
@@ -126,17 +130,18 @@ class DataExtractor:
         return [
             file
             for file in all_files["tree"]
-            if file["path"].startswith("data/") and file["path"].endswith(".csv")
+            if file["path"].startswith("data/")
+            and file["path"].endswith(".csv")
         ]
 
     def _create_local_path(self, file_path: str) -> Path:
         """Create local path structure for a given file path.
-        
+
         Parameters
         ----------
         file_path : str
             The file path from the repo.
-            
+
         Returns
         -------
         Path
@@ -150,12 +155,12 @@ class DataExtractor:
 
     def save_file(self, file_info: dict) -> None:
         """Save a single data file to the local filesystem.
-        
+
         Parameters
         ----------
         file_info : dict
             Dictionary containing file information from GitHub API.
-            
+
         Raises
         ------
         requests.HTTPError
@@ -163,10 +168,10 @@ class DataExtractor:
         """
         local_path = self._create_local_path(file_info["path"])
         url = self.api_client.get_raw_file_url(file_info["path"])
-        
+
         response = requests.get(url)
         response.raise_for_status()
-        
+
         with open(local_path, "wb") as f:
             f.write(response.content)
 
@@ -174,7 +179,7 @@ class DataExtractor:
         """Save all data files from the Fantasy Premier League repo to local storage."""
         self.raw_data_folder.mkdir(parents=True, exist_ok=True)
         data_files = self.get_all_data_files()
-        
+
         for file_info in data_files:
             try:
                 self.save_file(file_info)
@@ -184,7 +189,7 @@ class DataExtractor:
 
     def update_current_season_data(self, season: str) -> None:
         """Update the current season data for the Fantasy Premier League.
-        
+
         Parameters
         ----------
         season : str

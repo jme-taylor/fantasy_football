@@ -24,5 +24,6 @@ def main(download_all_data: bool = False) -> None:
 
     create_rolling_points_data(CURRENT_SEASON)
 
+
 if __name__ == "__main__":
     main()

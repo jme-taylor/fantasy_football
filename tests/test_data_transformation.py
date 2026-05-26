@@ -40,9 +40,7 @@ def sample_gw_data() -> pl.DataFrame:
     )
 
 
-def test_load_gw_data(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_gw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test the load_gw_data function.
 
     Parameters
@@ -99,9 +97,7 @@ def test_load_gw_data(
     assert "position" in result.columns
     assert "total_points" in result.columns
     assert "gw" in result.columns
-    assert (
-        result.filter(pl.col("position") == "GKP").height == 0
-    )
+    assert result.filter(pl.col("position") == "GKP").height == 0
     assert result.filter(pl.col("position") == "GK").height > 0
 
 
@@ -128,7 +124,7 @@ def test_create_rolling_average_column(sample_gw_data: pl.DataFrame) -> None:
         .select("total_points_rolling_2")
         .mean()
         .item(0, 0)
-        == 6.5 
+        == 6.5
     )
     # GW1 = Null, GW2 = (6+8)/2 = 7, GW3 = (8+4)/2 = 6 -> avg = 6.5
 
