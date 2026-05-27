@@ -1,6 +1,7 @@
 from fantasy_football.constants import CURRENT_SEASON
 from fantasy_football.data_extraction import DataExtractor
 from fantasy_football.data_transformation import create_rolling_points_data
+from fantasy_football.logging_config import configure_logging
 
 
 def main(download_all_data: bool = False) -> None:
@@ -16,6 +17,7 @@ def main(download_all_data: bool = False) -> None:
         If True, download all data from the Fantasy Premier League repository.
         If False, update the current season data.
     """
+    configure_logging()
     extractor = DataExtractor()
     if download_all_data:
         extractor.save_all_data_files()

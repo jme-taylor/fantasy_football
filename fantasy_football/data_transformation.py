@@ -1,6 +1,10 @@
+import logging
+
 import polars as pl
 
 from fantasy_football.constants import DATA_FOLDER
+
+logger = logging.getLogger(__name__)
 
 RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
@@ -139,10 +143,12 @@ def fill_missing_values_by_position(
     positions_in_data = set(data.get_column("position").unique().to_list())
     unknown_positions = positions_in_data - set(KNOWN_POSITIONS)
     if unknown_positions:
-        print(
-            f"WARNING: fill_missing_values_by_position encountered unknown "
-            f"position(s) {sorted(unknown_positions)}; rows with these "
-            f"positions will not have nulls in '{column_to_fill}' filled."
+        logger.warning(
+            "fill_missing_values_by_position encountered unknown "
+            "position(s) %s; rows with these positions will not have "
+            "nulls in '%s' filled.",
+            sorted(unknown_positions),
+            column_to_fill,
         )
     for position in KNOWN_POSITIONS:
         position_data = data.filter(pl.col("position") == position)
