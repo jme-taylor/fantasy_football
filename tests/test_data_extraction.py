@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -423,7 +424,7 @@ def test_update_current_season_data(
 def test_update_current_season_data_swallows_errors(
     mocker: MockerFixture,
     mock_data_extractor: DataExtractor,
-    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Errors in update_current_season_data should be swallowed and logged, not raised.
 
@@ -433,8 +434,8 @@ def test_update_current_season_data_swallows_errors(
         Pytest fixture for mocking.
     mock_data_extractor : DataExtractor
         Mocked data extractor.
-    capsys : pytest.CaptureFixture[str]
-        Pytest fixture for capturing stdout/stderr.
+    caplog : pytest.LogCaptureFixture
+        Pytest fixture for capturing log records.
     """
     mocker.patch.object(
         mock_data_extractor.api_client,
@@ -442,10 +443,15 @@ def test_update_current_season_data_swallows_errors(
         side_effect=requests.HTTPError("404"),
     )
 
-    mock_data_extractor.update_current_season_data("2023-24")
+    with caplog.at_level(
+        logging.ERROR, logger="fantasy_football.data_extraction"
+    ):
+        mock_data_extractor.update_current_season_data("2023-24")
 
-    captured = capsys.readouterr()
-    assert "Error updating season data for 2023-24" in captured.out
+    assert any(
+        "Error updating season data for 2023-24" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_data_extractor_with_custom_client() -> None:

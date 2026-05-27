@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from dotenv import load_dotenv
 from fantasy_football.constants import DATA_FOLDER
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 
@@ -183,9 +186,9 @@ class DataExtractor:
         for file_info in data_files:
             try:
                 self.save_file(file_info)
-                print(f"Successfully saved: {file_info['path']}")
-            except Exception as e:
-                print(f"Error saving {file_info['path']}: {e}")
+                logger.info("Successfully saved: %s", file_info["path"])
+            except Exception:
+                logger.exception("Error saving %s", file_info["path"])
 
     def update_current_season_data(self, season: str) -> None:
         """Update the current season data for the Fantasy Premier League.
@@ -199,6 +202,6 @@ class DataExtractor:
         try:
             season_data = self.api_client.get_file_details(file_path)
             self.save_file(season_data)
-            print(f"Successfully updated season data for {season}")
-        except Exception as e:
-            print(f"Error updating season data for {season}: {e}")
+            logger.info("Successfully updated season data for %s", season)
+        except Exception:
+            logger.exception("Error updating season data for %s", season)

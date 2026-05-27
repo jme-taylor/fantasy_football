@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -106,8 +107,12 @@ def test_load_gw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.filter(pl.col("position") == "GK").height == 4
     # Previous-season rows keep their original season, current-season rows
     # have ``current_season`` written into the season column.
-    assert result.filter(pl.col("name") == "Player1")["season"].unique().to_list() == ["2020-21"]
-    assert result.filter(pl.col("name") == "Player2")["season"].unique().to_list() == [current_season]
+    assert result.filter(pl.col("name") == "Player1")[
+        "season"
+    ].unique().to_list() == ["2020-21"]
+    assert result.filter(pl.col("name") == "Player2")[
+        "season"
+    ].unique().to_list() == [current_season]
 
 
 def test_load_gw_data_missing_previous_seasons_file(
@@ -368,21 +373,23 @@ def test_fill_missing_values_by_position_all_null_for_position() -> None:
 
     result = fill_missing_values_by_position(data, "total_points")
 
-    gk_values = (
-        result.filter(pl.col("position") == "GK")["total_points"].to_list()
-    )
+    gk_values = result.filter(pl.col("position") == "GK")[
+        "total_points"
+    ].to_list()
     assert gk_values == [None, None]
-    assert result.filter(pl.col("position") == "DEF")["total_points"].to_list() == [5]
+    assert result.filter(pl.col("position") == "DEF")[
+        "total_points"
+    ].to_list() == [5]
 
 
 def test_fill_missing_values_by_position_warns_on_unknown_position(
-    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Unknown positions are not filled, but a warning is printed.
+    """Unknown positions are not filled, but a warning is logged.
 
     The function only iterates over ``["GK", "DEF", "MID", "FWD"]``. Any other
     position string (e.g. ``"MNG"`` for the manager chip introduced in
-    2024-25) leaves its nulls in place, but the function must emit a printed
+    2024-25) leaves its nulls in place, but the function must emit a logged
     warning naming the unknown position(s) so silent gaps in the output are
     visible.
     """
@@ -397,23 +404,29 @@ def test_fill_missing_values_by_position_warns_on_unknown_position(
         }
     )
 
-    result = fill_missing_values_by_position(data, "total_points")
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.data_transformation"
+    ):
+        result = fill_missing_values_by_position(data, "total_points")
 
     assert result["total_points"].to_list() == [None, 12]
-    captured = capsys.readouterr()
-    assert "WARNING" in captured.out
-    assert unknown in captured.out
+    assert any(
+        record.levelno == logging.WARNING and unknown in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_fill_missing_values_by_position_no_warning_for_known_positions(
     sample_gw_data: pl.DataFrame,
-    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Inputs that only contain known positions must not trigger a warning."""
-    fill_missing_values_by_position(sample_gw_data, "total_points")
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.data_transformation"
+    ):
+        fill_missing_values_by_position(sample_gw_data, "total_points")
 
-    captured = capsys.readouterr()
-    assert "WARNING" not in captured.out
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 @pytest.mark.parametrize("rolling_window", [2, 3, 5])
@@ -486,10 +499,7 @@ def test_create_rolling_points_data_respects_rolling_window(
         .to_list()
     )
     expected_mean = sum(player1_tail_points) / rolling_window
-    actual = (
-        result.filter(pl.col("name") == "Player1")
-        .sort(["season", "gw"])[expected_column][-1]
-    )
+    actual = result.filter(pl.col("name") == "Player1").sort(["season", "gw"])[
+        expected_column
+    ][-1]
     assert actual == pytest.approx(expected_mean)
-
-
