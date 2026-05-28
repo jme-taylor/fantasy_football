@@ -74,7 +74,11 @@ def test_predict_points_formula_correct(
 ) -> None:
     """Verify predicted_points matches the baseline × ELO-ratio × home/away formula."""
     _setup_artifacts(
-        tmp_path, monkeypatch, _baseline_rolling(), _baseline_fixtures(), _baseline_elo()
+        tmp_path,
+        monkeypatch,
+        _baseline_rolling(),
+        _baseline_fixtures(),
+        _baseline_elo(),
     )
     monkeypatch.setattr(prediction, "OPPONENT_FACTOR_EXPONENT", 2.0)
     monkeypatch.setattr(prediction, "HOME_FACTOR", 1.25)
@@ -83,11 +87,15 @@ def test_predict_points_formula_correct(
     result = predict_points("2025-26", horizon_n=2)
 
     home = result.filter(pl.col("gw") == 11).row(0, named=True)
-    assert home["predicted_points"] == pytest.approx(4.0 * (2000 / 1800) ** 2.0 * 1.25)
+    assert home["predicted_points"] == pytest.approx(
+        4.0 * (2000 / 1800) ** 2.0 * 1.25
+    )
     assert home["opponent_team"] == "Chelsea"
     assert home["is_home"] is True
     away = result.filter(pl.col("gw") == 12).row(0, named=True)
-    assert away["predicted_points"] == pytest.approx(4.0 * (2000 / 1900) ** 2.0 * 0.75)
+    assert away["predicted_points"] == pytest.approx(
+        4.0 * (2000 / 1900) ** 2.0 * 0.75
+    )
 
 
 def test_predict_points_uses_most_recent_baseline_row(
@@ -105,7 +113,9 @@ def test_predict_points_uses_most_recent_baseline_row(
             "total_points_rolling_5": [3.0, 3.5, 4.0],
         }
     )
-    _setup_artifacts(tmp_path, monkeypatch, rolling, _baseline_fixtures(), _baseline_elo())
+    _setup_artifacts(
+        tmp_path, monkeypatch, rolling, _baseline_fixtures(), _baseline_elo()
+    )
 
     result = predict_points("2025-26", horizon_n=1)
 
@@ -118,7 +128,11 @@ def test_predict_points_horizon_truncates_when_fixtures_run_out(
 ) -> None:
     """Verify horizon_n does not produce rows beyond available fixtures."""
     _setup_artifacts(
-        tmp_path, monkeypatch, _baseline_rolling(), _baseline_fixtures(), _baseline_elo()
+        tmp_path,
+        monkeypatch,
+        _baseline_rolling(),
+        _baseline_fixtures(),
+        _baseline_elo(),
     )
 
     result = predict_points("2025-26", horizon_n=10)
@@ -140,7 +154,9 @@ def test_predict_points_double_gameweek_produces_two_rows(
             "gw": [11, 11],
         }
     )
-    _setup_artifacts(tmp_path, monkeypatch, _baseline_rolling(), fixtures, _baseline_elo())
+    _setup_artifacts(
+        tmp_path, monkeypatch, _baseline_rolling(), fixtures, _baseline_elo()
+    )
 
     result = predict_points("2025-26", horizon_n=1)
 
@@ -162,7 +178,9 @@ def test_predict_points_blank_gameweek_produces_no_row(
             "gw": [12],
         }
     )
-    _setup_artifacts(tmp_path, monkeypatch, _baseline_rolling(), fixtures, _baseline_elo())
+    _setup_artifacts(
+        tmp_path, monkeypatch, _baseline_rolling(), fixtures, _baseline_elo()
+    )
 
     result = predict_points("2025-26", horizon_n=2)
 
@@ -183,9 +201,13 @@ def test_predict_points_missing_opponent_elo_uses_median_and_warns(
             "to_date": [date(2025, 12, 31)] * 3,
         }
     )
-    _setup_artifacts(tmp_path, monkeypatch, _baseline_rolling(), _baseline_fixtures(), elo)
+    _setup_artifacts(
+        tmp_path, monkeypatch, _baseline_rolling(), _baseline_fixtures(), elo
+    )
 
-    with caplog.at_level(logging.WARNING, logger="fantasy_football.prediction"):
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.prediction"
+    ):
         result = predict_points("2025-26", horizon_n=1)
 
     row = result.filter(pl.col("gw") == 11).row(0, named=True)

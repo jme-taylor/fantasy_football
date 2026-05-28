@@ -84,7 +84,9 @@ def predict_points(current_season: str, horizon_n: int) -> pl.DataFrame:
     last_completed = (
         rolling.filter(pl.col("season") == current_season)["gw"].max() or 0
     )
-    horizon_gws = list(range(last_completed + 1, last_completed + 1 + horizon_n))
+    horizon_gws = list(
+        range(last_completed + 1, last_completed + 1 + horizon_n)
+    )
     fixtures = fixtures.filter(pl.col("gw").is_in(horizon_gws))
     if fixtures.is_empty():
         logger.info("No fixtures found in horizon %s", horizon_gws)

@@ -21,11 +21,29 @@ ELO_CACHE_TTL_HOURS: int = 24
 # URL slugs passed to ScraperFC ClubElo's scrape_team(name).
 # Update this when team set changes (promotions/relegations).
 CLUBELO_SCRAPE_NAMES: list[str] = [
-    "Arsenal", "AstonVilla", "Bournemouth", "Brentford", "Brighton",
-    "Burnley", "Chelsea", "CrystalPalace", "Everton", "Fulham",
-    "Ipswich", "Leeds", "Leicester", "Liverpool", "ManCity",
-    "ManUnited", "Newcastle", "Forest", "Southampton", "Sunderland",
-    "Tottenham", "WestHam", "Wolves",
+    "Arsenal",
+    "AstonVilla",
+    "Bournemouth",
+    "Brentford",
+    "Brighton",
+    "Burnley",
+    "Chelsea",
+    "CrystalPalace",
+    "Everton",
+    "Fulham",
+    "Ipswich",
+    "Leeds",
+    "Leicester",
+    "Liverpool",
+    "ManCity",
+    "ManUnited",
+    "Newcastle",
+    "Forest",
+    "Southampton",
+    "Sunderland",
+    "Tottenham",
+    "WestHam",
+    "Wolves",
 ]
 
 # Mapping from the `Club` column value (as returned by ClubElo) to the

@@ -82,13 +82,18 @@ def build_team_elo(*, force: bool = False) -> pl.DataFrame:
         if cache_path.exists():
             logger.warning(
                 "ELO scrape failed (%s); falling back to cache at %s",
-                exc, cache_path,
+                exc,
+                cache_path,
             )
             return pl.read_csv(cache_path, try_parse_dates=True)
         raise
 
-    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
-        columns=["Rank", "Club", "Country", "Level", "Elo", "From", "To"]
+    combined = (
+        pd.concat(frames, ignore_index=True)
+        if frames
+        else pd.DataFrame(
+            columns=["Rank", "Club", "Country", "Level", "Elo", "From", "To"]
+        )
     )
     df = normalize_elo_frame(combined)
     df.write_csv(cache_path)
