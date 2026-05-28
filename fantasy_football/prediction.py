@@ -1,7 +1,3 @@
-"""Apply the baseline heuristic to produce per-player point predictions."""
-
-from __future__ import annotations
-
 import logging
 
 import polars as pl
@@ -21,7 +17,20 @@ TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 
 
 def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
-    """Return one row per player: latest current-season rolling value + team."""
+    """Return one row per player: latest current-season rolling value + team.
+
+    Parameters
+    ----------
+    rolling: pl.DataFrame
+        The rolling points DataFrame.
+    current_season: str
+        The current season.
+
+    Returns
+    -------
+    pl.DataFrame
+        The baselines DataFrame.
+    """
     rolling_col = rolling_column_name("total_points", ROLLING_WINDOW)
     current = rolling.filter(pl.col("season") == current_season)
     if current.is_empty():
@@ -53,7 +62,24 @@ def _elo_as_of(
     team_col: str,
     out_col: str,
 ) -> pl.DataFrame:
-    """Attach as-of ELO for ``team_col`` into ``fixtures`` as ``out_col``."""
+    """Attach as-of ELO for ``team_col`` into ``fixtures`` as ``out_col``.
+
+    Parameters
+    ----------
+    team_elo: pl.DataFrame
+        The team ELO DataFrame.
+    fixtures: pl.DataFrame
+        The fixtures DataFrame.
+    team_col: str
+        The column name to use for the team.
+    out_col: str
+        The column name to use for the output.
+
+    Returns
+    -------
+    pl.DataFrame
+        The joined DataFrame.
+    """
     intervals = team_elo.rename({"team": team_col, "elo": out_col})
     joined = fixtures.sort("kickoff_date").join_asof(
         intervals.sort("from_date"),
@@ -65,8 +91,30 @@ def _elo_as_of(
     return joined.drop("to_date", "from_date")
 
 
-def predict_points(current_season: str, horizon_n: int) -> pl.DataFrame:
-    """Produce per-(player, future_gw) point predictions and write CSV."""
+def predict_points(
+    current_season: str, horizon_n: int | None = None
+) -> pl.DataFrame:
+    """Produce per-(player, future_gw) point predictions and write CSV.
+
+    Loads the three input tables: rolling points, fixtures, and team ELO, then
+    gets each player's baseline (latest current rolling points) and figures
+    out which gameweeks require prediction. If `horizon_n` is not provided, it
+    will predict on all future gameweeks. It then attaches ELO ratings for
+    each fixture and calculates the predicted points for each player.
+
+    Parameters
+    ----------
+    current_season: str
+        The current season.
+    horizon_n: int | None
+        The number of future gameweeks to predict. If None, all future gameweeks
+        will be predicted.
+
+    Returns
+    -------
+    pl.DataFrame
+        The predictions DataFrame.
+    """
     rolling = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
         try_parse_dates=True,
@@ -84,6 +132,16 @@ def predict_points(current_season: str, horizon_n: int) -> pl.DataFrame:
     last_completed = (
         rolling.filter(pl.col("season") == current_season)["gw"].max() or 0
     )
+    if horizon_n is None:
+        max_future_gw = fixtures.filter(pl.col("gw") > last_completed)[
+            "gw"
+        ].max()
+        horizon_n = (
+            (max_future_gw - last_completed)
+            if max_future_gw is not None
+            else 0
+        )
+    # gameweeks to predict on
     horizon_gws = list(
         range(last_completed + 1, last_completed + 1 + horizon_n)
     )

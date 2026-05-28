@@ -1,9 +1,6 @@
-"""Build a (team, date) ELO table from ScraperFC ClubElo."""
-
-from __future__ import annotations
-
 import logging
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import polars as pl
@@ -28,6 +25,16 @@ def normalize_elo_frame(raw: pd.DataFrame) -> pl.DataFrame:
 
     Maps `Club` -> `team` using ``CLUBELO_TO_FPL``. Unknown clubs are dropped
     with a logged warning.
+
+    Parameters
+    ----------
+    raw: pd.DataFrame
+        The raw ClubElo DataFrame to normalize.
+
+    Returns
+    -------
+    pl.DataFrame
+        The normalized ClubElo DataFrame.
     """
     if raw.empty:
         return pl.DataFrame(
@@ -57,7 +64,7 @@ def normalize_elo_frame(raw: pd.DataFrame) -> pl.DataFrame:
     )
 
 
-def _cache_is_fresh(path) -> bool:
+def _cache_is_fresh(path: Path) -> bool:
     if not path.exists():
         return False
     age_hours = (datetime.now().timestamp() - path.stat().st_mtime) / 3600
@@ -70,6 +77,16 @@ def build_team_elo(*, force: bool = False) -> pl.DataFrame:
     Reads cached CSV if it exists and is fresher than ``ELO_CACHE_TTL_HOURS``
     (unless ``force=True``). On scrape failure, falls back to the existing
     cache if one exists; otherwise re-raises.
+
+    Parameters
+    ----------
+    force: bool
+        If True, force a re-scrape of ClubElo.
+
+    Returns
+    -------
+    pl.DataFrame
+        The Team ELO DataFrame.
     """
     TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
     cache_path = TRANSFORMED_DATA_FOLDER.joinpath(_OUTPUT_FILE)

@@ -1,7 +1,3 @@
-"""Build a per-(team, gw) fixtures dataset for the prediction model."""
-
-from __future__ import annotations
-
 import logging
 from datetime import datetime
 
@@ -21,6 +17,18 @@ def enrich_fixtures(api: FplAPI, season: str) -> pl.DataFrame:
     Each fixture produces two rows: one for the home team and one for the
     away team. Double gameweeks (a team playing twice in one event) produce
     two rows for that team-gw.
+
+    Parameters
+    ----------
+    api: FplAPI
+        The FPL API client.
+    season: str
+        The season to build the fixtures for.
+
+    Returns
+    -------
+    pl.DataFrame
+        The enriched fixtures DataFrame.
     """
     teams = {team.id: team.name for team in api.get_teams()}
     rows: list[dict] = []
@@ -65,7 +73,18 @@ def enrich_fixtures(api: FplAPI, season: str) -> pl.DataFrame:
 
 
 def build_fixtures_enriched(season: str) -> pl.DataFrame:
-    """Build the enriched fixtures table and write it to CSV."""
+    """Build the enriched fixtures table and write it to CSV.
+
+    Parameters
+    ----------
+    season: str
+        The season to build the fixtures for.
+
+    Returns
+    -------
+    pl.DataFrame
+        The enriched fixtures DataFrame.
+    """
     df = enrich_fixtures(FplAPI(), season)
     TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
     df.write_csv(TRANSFORMED_DATA_FOLDER.joinpath("fixtures_enriched.csv"))

@@ -10,7 +10,6 @@ FPL_ID = "7515957"
 CURRENT_SEASON = "2025-26"
 
 # Prediction model tunables
-HORIZON_N: int = 5
 ROLLING_WINDOW: int = 5
 OPPONENT_FACTOR_EXPONENT: float = 1.0
 HOME_FACTOR: float = 1.10

@@ -1,5 +1,3 @@
-"""Logging configuration for the fantasy_football package."""
-
 import logging
 
 LOG_LEVEL = logging.INFO

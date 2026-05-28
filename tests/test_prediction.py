@@ -258,3 +258,61 @@ def test_predict_points_as_of_elo_picks_most_recent_pre_fixture_row(
 
     assert result["player_team_elo"] == pytest.approx(1900.0)
     assert result["opponent_team_elo"] == pytest.approx(1700.0)
+
+
+def test_predict_points_default_horizon_covers_all_future_gameweeks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify horizon_n=None predicts every remaining gameweek of the season."""
+    fixtures = pl.DataFrame(
+        {
+            "team": ["Arsenal"] * 4,
+            "opponent_team": ["Chelsea", "Spurs", "Liverpool", "Everton"],
+            "is_home": [True, False, True, False],
+            "kickoff_date": [
+                date(2025, 11, 1),
+                date(2025, 11, 8),
+                date(2025, 11, 15),
+                date(2025, 11, 22),
+            ],
+            "season": ["2025-26"] * 4,
+            "gw": [11, 12, 13, 14],
+        }
+    )
+    elo = pl.DataFrame(
+        {
+            "team": ["Arsenal", "Chelsea", "Spurs", "Liverpool", "Everton"],
+            "elo": [2000.0, 1800.0, 1900.0, 1950.0, 1700.0],
+            "from_date": [date(2025, 10, 1)] * 5,
+            "to_date": [date(2025, 12, 31)] * 5,
+        }
+    )
+    _setup_artifacts(tmp_path, monkeypatch, _baseline_rolling(), fixtures, elo)
+
+    result = predict_points("2025-26")
+
+    assert sorted(result["gw"].to_list()) == [11, 12, 13, 14]
+
+
+def test_predict_points_default_horizon_with_no_future_fixtures_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify horizon_n=None returns empty result (no crash) when season is over."""
+    # All fixtures are at or before last_completed gw (10).
+    fixtures = pl.DataFrame(
+        {
+            "team": ["Arsenal", "Arsenal"],
+            "opponent_team": ["Chelsea", "Spurs"],
+            "is_home": [True, False],
+            "kickoff_date": [date(2025, 8, 1), date(2025, 9, 1)],
+            "season": ["2025-26", "2025-26"],
+            "gw": [1, 2],
+        }
+    )
+    _setup_artifacts(
+        tmp_path, monkeypatch, _baseline_rolling(), fixtures, _baseline_elo()
+    )
+
+    result = predict_points("2025-26")
+
+    assert result.is_empty()
