@@ -11,6 +11,7 @@ from fantasy_football.constants import (
     DATA_FOLDER,
     HOME_FACTOR,
     OPPONENT_FACTOR_EXPONENT,
+    ROLLING_WINDOW,
 )
 from fantasy_football.data_transformation import rolling_column_name
 
@@ -18,17 +19,11 @@ logger = logging.getLogger(__name__)
 
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 
-ROLLING_WINDOW = 5
 
-
-def _baselines(current_season: str) -> pl.DataFrame:
+def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
     """Return one row per player: latest current-season rolling value + team."""
     rolling_col = rolling_column_name("total_points", ROLLING_WINDOW)
-    df = pl.read_csv(
-        TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
-        try_parse_dates=True,
-    )
-    current = df.filter(pl.col("season") == current_season)
+    current = rolling.filter(pl.col("season") == current_season)
     if current.is_empty():
         return current.select(
             "name",
@@ -36,6 +31,11 @@ def _baselines(current_season: str) -> pl.DataFrame:
             "team",
             pl.col(rolling_col).alias("baseline"),
         )
+    dropped = sorted(
+        current.filter(pl.col("team").is_null())["name"].unique().to_list()
+    )
+    for name in dropped:
+        logger.debug("Dropping player %r — no team in current season", name)
     with_team = current.filter(pl.col("team").is_not_null())
     latest_gw = with_team.group_by("name").agg(pl.col("gw").max().alias("gw"))
     latest = with_team.join(latest_gw, on=["name", "gw"], how="inner")
@@ -67,7 +67,11 @@ def _elo_as_of(
 
 def predict_points(current_season: str, horizon_n: int) -> pl.DataFrame:
     """Produce per-(player, future_gw) point predictions and write CSV."""
-    baselines = _baselines(current_season)
+    rolling = pl.read_csv(
+        TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
+        try_parse_dates=True,
+    )
+    baselines = _baselines(rolling, current_season)
     fixtures = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("fixtures_enriched.csv"),
         try_parse_dates=True,
@@ -77,9 +81,6 @@ def predict_points(current_season: str, horizon_n: int) -> pl.DataFrame:
         try_parse_dates=True,
     )
 
-    rolling = pl.read_csv(
-        TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv")
-    )
     last_completed = (
         rolling.filter(pl.col("season") == current_season)["gw"].max() or 0
     )

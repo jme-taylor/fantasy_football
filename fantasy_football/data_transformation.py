@@ -2,7 +2,7 @@ import logging
 
 import polars as pl
 
-from fantasy_football.constants import DATA_FOLDER
+from fantasy_football.constants import DATA_FOLDER, ROLLING_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +170,7 @@ def fill_missing_values_by_position(
 
 
 def create_rolling_points_data(
-    current_season: str, rolling_window: int = 5
+    current_season: str, rolling_window: int = ROLLING_WINDOW
 ) -> None:
     """Create a rolling average column for player points over a given window.
 
