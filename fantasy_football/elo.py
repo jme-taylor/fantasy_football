@@ -10,6 +10,7 @@ import polars as pl
 from ScraperFC import ClubElo
 
 from fantasy_football.constants import (
+    CLUBELO_SCRAPE_NAMES,
     CLUBELO_TO_FPL,
     DATA_FOLDER,
     ELO_CACHE_TTL_HOURS,
@@ -75,8 +76,8 @@ def build_team_elo(*, force: bool = False) -> pl.DataFrame:
     client = ClubElo()
     frames: list[pd.DataFrame] = []
     try:
-        for clubelo_name in CLUBELO_TO_FPL:
-            frames.append(client.scrape_team(clubelo_name))
+        for slug in CLUBELO_SCRAPE_NAMES:
+            frames.append(client.scrape_team(slug))
     except Exception as exc:
         if cache_path.exists():
             logger.warning(

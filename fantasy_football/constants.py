@@ -17,8 +17,17 @@ AWAY_FACTOR: float = 0.90
 # ELO scrape cache
 ELO_CACHE_TTL_HOURS: int = 24
 
-# ClubElo team-name -> FPL team-name mapping.
-# ClubElo uses short names; FPL uses the names in data/raw/<season>/teams.csv.
+# URL slugs passed to ScraperFC ClubElo's scrape_team(name).
+# Update this when team set changes (promotions/relegations).
+CLUBELO_SCRAPE_NAMES: list[str] = [
+    "Arsenal", "AstonVilla", "Bournemouth", "Brentford", "Brighton",
+    "Chelsea", "CrystalPalace", "Everton", "Fulham", "Ipswich",
+    "Leicester", "Liverpool", "ManCity", "ManUnited", "Newcastle",
+    "Forest", "Southampton", "Tottenham", "WestHam", "Wolves",
+]
+
+# Mapping from the `Club` column value (as returned by ClubElo) to the
+# team name used in our FPL data (data/raw/<season>/teams.csv).
 # Update this when team set changes (promotions/relegations).
 CLUBELO_TO_FPL: dict[str, str] = {
     "Arsenal": "Arsenal",

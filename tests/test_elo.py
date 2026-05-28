@@ -89,6 +89,7 @@ def test_build_team_elo_force_bypasses_cache(
         }
     ).write_csv(cache)
     monkeypatch.setattr(elo, "TRANSFORMED_DATA_FOLDER", tmp_path)
+    monkeypatch.setattr(elo, "CLUBELO_SCRAPE_NAMES", ["Arsenal"])
     monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": "Arsenal"})
 
     class FakeClubElo:
@@ -124,6 +125,7 @@ def test_build_team_elo_falls_back_to_cache_on_scrape_failure(
     os.utime(cache, (stale, stale))
 
     monkeypatch.setattr(elo, "TRANSFORMED_DATA_FOLDER", tmp_path)
+    monkeypatch.setattr(elo, "CLUBELO_SCRAPE_NAMES", ["Arsenal"])
     monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": "Arsenal"})
     monkeypatch.setattr(elo, "ELO_CACHE_TTL_HOURS", 24)
 
@@ -146,6 +148,7 @@ def test_build_team_elo_scrape_failure_no_cache_raises(
 ) -> None:
     """Verify build_team_elo raises when scrape fails and no cache exists."""
     monkeypatch.setattr(elo, "TRANSFORMED_DATA_FOLDER", tmp_path)
+    monkeypatch.setattr(elo, "CLUBELO_SCRAPE_NAMES", ["Arsenal"])
     monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": "Arsenal"})
 
     class ExplodingClubElo:
