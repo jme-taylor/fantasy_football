@@ -1,22 +1,14 @@
-from fantasy_football.constants import CURRENT_SEASON
+from fantasy_football.constants import CURRENT_SEASON, HORIZON_N
 from fantasy_football.data_extraction import DataExtractor
 from fantasy_football.data_transformation import create_rolling_points_data
+from fantasy_football.elo import build_team_elo
+from fantasy_football.fixtures import build_fixtures_enriched
 from fantasy_football.logging_config import configure_logging
+from fantasy_football.prediction import predict_points
 
 
 def main(download_all_data: bool = False) -> None:
-    """Download Fantasy Premier League data based on configuration.
-
-    This function will download all data from the Fantasy Premier League repository
-    if `download_all_data` is True, otherwise it will update the current season data.
-    It will then create a rolling points dataset for the current season.
-
-    Parameters
-    ----------
-    download_all_data: bool, optional
-        If True, download all data from the Fantasy Premier League repository.
-        If False, update the current season data.
-    """
+    """Download FPL data, transform it, and produce baseline predictions."""
     configure_logging()
     extractor = DataExtractor()
     if download_all_data:
@@ -25,6 +17,9 @@ def main(download_all_data: bool = False) -> None:
         extractor.update_current_season_data(CURRENT_SEASON)
 
     create_rolling_points_data(CURRENT_SEASON)
+    build_fixtures_enriched(CURRENT_SEASON)
+    build_team_elo()
+    predict_points(CURRENT_SEASON, HORIZON_N)
 
 
 if __name__ == "__main__":
