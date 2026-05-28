@@ -21,9 +21,10 @@ ELO_CACHE_TTL_HOURS: int = 24
 # Update this when team set changes (promotions/relegations).
 CLUBELO_SCRAPE_NAMES: list[str] = [
     "Arsenal", "AstonVilla", "Bournemouth", "Brentford", "Brighton",
-    "Chelsea", "CrystalPalace", "Everton", "Fulham", "Ipswich",
-    "Leicester", "Liverpool", "ManCity", "ManUnited", "Newcastle",
-    "Forest", "Southampton", "Tottenham", "WestHam", "Wolves",
+    "Burnley", "Chelsea", "CrystalPalace", "Everton", "Fulham",
+    "Ipswich", "Leeds", "Leicester", "Liverpool", "ManCity",
+    "ManUnited", "Newcastle", "Forest", "Southampton", "Sunderland",
+    "Tottenham", "WestHam", "Wolves",
 ]
 
 # Mapping from the `Club` column value (as returned by ClubElo) to the
@@ -35,11 +36,13 @@ CLUBELO_TO_FPL: dict[str, str] = {
     "Bournemouth": "Bournemouth",
     "Brentford": "Brentford",
     "Brighton": "Brighton",
+    "Burnley": "Burnley",
     "Chelsea": "Chelsea",
     "Crystal Palace": "Crystal Palace",
     "Everton": "Everton",
     "Fulham": "Fulham",
     "Ipswich": "Ipswich",
+    "Leeds": "Leeds",
     "Leicester": "Leicester",
     "Liverpool": "Liverpool",
     "Man City": "Man City",
@@ -47,6 +50,7 @@ CLUBELO_TO_FPL: dict[str, str] = {
     "Newcastle": "Newcastle",
     "Forest": "Nott'm Forest",
     "Southampton": "Southampton",
+    "Sunderland": "Sunderland",
     "Tottenham": "Spurs",
     "West Ham": "West Ham",
     "Wolves": "Wolves",
