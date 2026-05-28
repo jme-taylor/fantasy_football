@@ -40,6 +40,7 @@ def load_gw_data(current_season: str) -> pl.DataFrame:
         "season_x",
         "name",
         "position",
+        "team_x",
         "bonus",
         "element",
         "minutes",
@@ -50,10 +51,11 @@ def load_gw_data(current_season: str) -> pl.DataFrame:
     previous_seasons = pl.read_csv(
         RAW_DATA_FOLDER.joinpath("cleaned_merged_seasons.csv"),
         columns=previous_seasons_columns,
-    ).rename({"season_x": "season", "GW": "gw"})
+    ).rename({"season_x": "season", "GW": "gw", "team_x": "team"})
     current_season_columns = [
         "name",
         "position",
+        "team",
         "bonus",
         "element",
         "minutes",
