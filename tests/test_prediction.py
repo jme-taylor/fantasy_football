@@ -76,18 +76,18 @@ def test_predict_points_formula_correct(
     _setup_artifacts(
         tmp_path, monkeypatch, _baseline_rolling(), _baseline_fixtures(), _baseline_elo()
     )
-    monkeypatch.setattr(prediction, "OPPONENT_FACTOR_EXPONENT", 1.0)
-    monkeypatch.setattr(prediction, "HOME_FACTOR", 1.10)
-    monkeypatch.setattr(prediction, "AWAY_FACTOR", 0.90)
+    monkeypatch.setattr(prediction, "OPPONENT_FACTOR_EXPONENT", 2.0)
+    monkeypatch.setattr(prediction, "HOME_FACTOR", 1.25)
+    monkeypatch.setattr(prediction, "AWAY_FACTOR", 0.75)
 
     result = predict_points("2025-26", horizon_n=2)
 
     home = result.filter(pl.col("gw") == 11).row(0, named=True)
-    assert home["predicted_points"] == pytest.approx(4.0 * (2000 / 1800) * 1.10)
+    assert home["predicted_points"] == pytest.approx(4.0 * (2000 / 1800) ** 2.0 * 1.25)
     assert home["opponent_team"] == "Chelsea"
     assert home["is_home"] is True
     away = result.filter(pl.col("gw") == 12).row(0, named=True)
-    assert away["predicted_points"] == pytest.approx(4.0 * (2000 / 1900) * 0.90)
+    assert away["predicted_points"] == pytest.approx(4.0 * (2000 / 1900) ** 2.0 * 0.75)
 
 
 def test_predict_points_uses_most_recent_baseline_row(
@@ -189,6 +189,7 @@ def test_predict_points_missing_opponent_elo_uses_median_and_warns(
         result = predict_points("2025-26", horizon_n=1)
 
     row = result.filter(pl.col("gw") == 11).row(0, named=True)
+    assert row["player_team_elo"] == pytest.approx(2000.0)
     assert row["opponent_team_elo"] == pytest.approx(1900.0)
     assert any(
         "Chelsea" in r.getMessage()

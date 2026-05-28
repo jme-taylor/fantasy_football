@@ -62,7 +62,7 @@ def _elo_as_of(
         by=team_col,
         strategy="backward",
     )
-    return joined.drop("to_date")
+    return joined.drop("to_date", "from_date")
 
 
 def predict_points(current_season: str, horizon_n: int) -> pl.DataFrame:
