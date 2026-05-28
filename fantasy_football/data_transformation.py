@@ -2,7 +2,7 @@ import logging
 
 import polars as pl
 
-from fantasy_football.constants import DATA_FOLDER
+from fantasy_football.constants import DATA_FOLDER, ROLLING_WINDOW
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ def load_gw_data(current_season: str) -> pl.DataFrame:
         "season_x",
         "name",
         "position",
+        "team_x",
         "bonus",
         "element",
         "minutes",
@@ -50,10 +51,11 @@ def load_gw_data(current_season: str) -> pl.DataFrame:
     previous_seasons = pl.read_csv(
         RAW_DATA_FOLDER.joinpath("cleaned_merged_seasons.csv"),
         columns=previous_seasons_columns,
-    ).rename({"season_x": "season", "GW": "gw"})
+    ).rename({"season_x": "season", "GW": "gw", "team_x": "team"})
     current_season_columns = [
         "name",
         "position",
+        "team",
         "bonus",
         "element",
         "minutes",
@@ -168,7 +170,7 @@ def fill_missing_values_by_position(
 
 
 def create_rolling_points_data(
-    current_season: str, rolling_window: int = 5
+    current_season: str, rolling_window: int = ROLLING_WINDOW
 ) -> None:
     """Create a rolling average column for player points over a given window.
 

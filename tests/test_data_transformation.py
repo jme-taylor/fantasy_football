@@ -66,6 +66,7 @@ def test_load_gw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             "season_x": ["2020-21", "2020-21"],
             "name": ["Player1", "Player1"],
             "position": ["GKP", "GKP"],
+            "team_x": ["Arsenal", "Arsenal"],
             "bonus": [1, 2],
             "element": [1, 1],
             "minutes": [90, 90],
@@ -80,6 +81,7 @@ def test_load_gw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         {
             "name": ["Player2", "Player2"],
             "position": ["GK", "GK"],
+            "team": ["Chelsea", "Chelsea"],
             "bonus": [1, 2],
             "element": [2, 2],
             "minutes": [90, 90],
@@ -113,6 +115,13 @@ def test_load_gw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.filter(pl.col("name") == "Player2")[
         "season"
     ].unique().to_list() == [current_season]
+    assert "team" in result.columns
+    assert result.filter(pl.col("name") == "Player1")[
+        "team"
+    ].unique().to_list() == ["Arsenal"]
+    assert result.filter(pl.col("name") == "Player2")[
+        "team"
+    ].unique().to_list() == ["Chelsea"]
 
 
 def test_load_gw_data_missing_previous_seasons_file(
@@ -165,6 +174,7 @@ def test_load_gw_data_missing_current_season_file(
             "season_x": ["2020-21"],
             "name": ["Player1"],
             "position": ["GKP"],
+            "team_x": ["Arsenal"],
             "bonus": [1],
             "element": [1],
             "minutes": [90],
@@ -462,6 +472,7 @@ def test_create_rolling_points_data_respects_rolling_window(
             "season_x": ["2020-21"] * 6,
             "name": ["Player1"] * 6,
             "position": ["GK"] * 6,
+            "team_x": ["Arsenal"] * 6,
             "bonus": [0, 1, 2, 0, 1, 2],
             "element": [1] * 6,
             "minutes": [90] * 6,
@@ -476,6 +487,7 @@ def test_create_rolling_points_data_respects_rolling_window(
         {
             "name": ["Player2"] * 6,
             "position": ["GK"] * 6,
+            "team": ["Chelsea"] * 6,
             "bonus": [0, 1, 2, 0, 1, 2],
             "element": [2] * 6,
             "minutes": [90] * 6,
