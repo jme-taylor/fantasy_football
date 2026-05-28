@@ -46,12 +46,14 @@ def normalize_elo_frame(raw: pd.DataFrame) -> pl.DataFrame:
     for name in unknown:
         logger.warning("Unknown ClubElo team %r — dropping rows", name)
     df = df.filter(pl.col("club").is_in(list(known)))
-    return df.with_columns(
-        pl.col("club").replace(CLUBELO_TO_FPL).alias("team"),
-        pl.col("from_date").str.strptime(pl.Date, "%Y-%m-%d"),
-        pl.col("to_date").str.strptime(pl.Date, "%Y-%m-%d"),
-    ).filter(pl.col("to_date") >= ELO_HISTORY_START).select(
-        "team", "elo", "from_date", "to_date"
+    return (
+        df.with_columns(
+            pl.col("club").replace(CLUBELO_TO_FPL).alias("team"),
+            pl.col("from_date").str.strptime(pl.Date, "%Y-%m-%d"),
+            pl.col("to_date").str.strptime(pl.Date, "%Y-%m-%d"),
+        )
+        .filter(pl.col("to_date") >= ELO_HISTORY_START)
+        .select("team", "elo", "from_date", "to_date")
     )
 
 

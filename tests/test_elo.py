@@ -79,14 +79,37 @@ def test_normalize_elo_frame_warns_and_drops_unknown_teams(
 
 def test_normalize_elo_frame_drops_rows_before_history_start() -> None:
     """Verify rows whose to_date is before ELO_HISTORY_START are dropped."""
-    raw = _clubelo_df([
-        {"Rank": 1.0, "Club": "Arsenal", "Country": "ENG", "Level": 1,
-         "Elo": 1500.0, "From": "1950-01-01", "To": "1950-01-08"},
-        {"Rank": 1.0, "Club": "Arsenal", "Country": "ENG", "Level": 1,
-         "Elo": 1900.0, "From": "2016-08-01", "To": "2016-08-07"},
-        {"Rank": 1.0, "Club": "Arsenal", "Country": "ENG", "Level": 1,
-         "Elo": 2000.0, "From": "2025-08-01", "To": "2025-08-07"},
-    ])
+    raw = _clubelo_df(
+        [
+            {
+                "Rank": 1.0,
+                "Club": "Arsenal",
+                "Country": "ENG",
+                "Level": 1,
+                "Elo": 1500.0,
+                "From": "1950-01-01",
+                "To": "1950-01-08",
+            },
+            {
+                "Rank": 1.0,
+                "Club": "Arsenal",
+                "Country": "ENG",
+                "Level": 1,
+                "Elo": 1900.0,
+                "From": "2016-08-01",
+                "To": "2016-08-07",
+            },
+            {
+                "Rank": 1.0,
+                "Club": "Arsenal",
+                "Country": "ENG",
+                "Level": 1,
+                "Elo": 2000.0,
+                "From": "2025-08-01",
+                "To": "2025-08-07",
+            },
+        ]
+    )
 
     result = normalize_elo_frame(raw)
 
