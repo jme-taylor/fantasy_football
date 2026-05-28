@@ -15,6 +15,7 @@ def _clubelo_df(rows: list[dict]) -> pd.DataFrame:
 
 
 def test_normalize_elo_frame_maps_names_and_renames_columns() -> None:
+    """Verify normalize_elo_frame maps team names and renames columns correctly."""
     raw = _clubelo_df([
         {"Rank": 1.0, "Club": "Arsenal", "Country": "ENG", "Level": 1,
          "Elo": 2000.0, "From": "2025-08-01", "To": "2025-08-07"},
@@ -30,6 +31,7 @@ def test_normalize_elo_frame_maps_names_and_renames_columns() -> None:
 
 
 def test_normalize_elo_frame_warns_and_drops_unknown_teams(caplog: pytest.LogCaptureFixture) -> None:
+    """Verify normalize_elo_frame warns and drops unknown teams."""
     raw = _clubelo_df([
         {"Rank": 1.0, "Club": "Mystery FC", "Country": "ENG", "Level": 1,
          "Elo": 1500.0, "From": "2025-08-01", "To": "2025-08-07"},
@@ -45,6 +47,7 @@ def test_normalize_elo_frame_warns_and_drops_unknown_teams(caplog: pytest.LogCap
 def test_build_team_elo_uses_cache_when_fresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Verify build_team_elo uses cache when it is fresh."""
     cache = tmp_path / "team_elo.csv"
     pl.DataFrame(
         {
@@ -75,6 +78,7 @@ def test_build_team_elo_uses_cache_when_fresh(
 def test_build_team_elo_force_bypasses_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Verify build_team_elo force flag bypasses cache."""
     cache = tmp_path / "team_elo.csv"
     pl.DataFrame(
         {
@@ -104,6 +108,7 @@ def test_build_team_elo_force_bypasses_cache(
 def test_build_team_elo_falls_back_to_cache_on_scrape_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    """Verify build_team_elo falls back to cache when scrape fails."""
     cache = tmp_path / "team_elo.csv"
     pl.DataFrame(
         {
@@ -139,6 +144,7 @@ def test_build_team_elo_falls_back_to_cache_on_scrape_failure(
 def test_build_team_elo_scrape_failure_no_cache_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Verify build_team_elo raises when scrape fails and no cache exists."""
     monkeypatch.setattr(elo, "TRANSFORMED_DATA_FOLDER", tmp_path)
     monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": "Arsenal"})
 

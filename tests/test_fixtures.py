@@ -34,6 +34,7 @@ def _api(teams: list[FplTeamInfo], fixtures: list[FplFixture]) -> MagicMock:
 
 
 def test_enrich_fixtures_emits_one_row_per_team_per_fixture() -> None:
+    """Verify enrich_fixtures emits one row per team per fixture."""
     teams = [_team(1, "Arsenal"), _team(2, "Chelsea")]
     fixtures = [_fix(event=1, team_h=1, team_a=2, kickoff="2025-08-16T15:00:00Z")]
 
@@ -53,6 +54,7 @@ def test_enrich_fixtures_emits_one_row_per_team_per_fixture() -> None:
 
 
 def test_enrich_fixtures_handles_double_gameweek() -> None:
+    """Verify enrich_fixtures correctly handles double gameweeks."""
     teams = [_team(1, "Arsenal"), _team(2, "Chelsea"), _team(3, "Spurs")]
     fixtures = [
         _fix(event=29, team_h=1, team_a=2, kickoff="2026-03-14T15:00:00Z", id=1),
@@ -67,6 +69,7 @@ def test_enrich_fixtures_handles_double_gameweek() -> None:
 
 
 def test_enrich_fixtures_skips_fixtures_with_no_event() -> None:
+    """Verify enrich_fixtures returns empty frame for fixtures with no event."""
     teams = [_team(1, "Arsenal"), _team(2, "Chelsea")]
     fixtures = []  # parse_fixtures already drops event-less fixtures
     result = enrich_fixtures(_api(teams, fixtures), season="2025-26")
@@ -74,6 +77,7 @@ def test_enrich_fixtures_skips_fixtures_with_no_event() -> None:
 
 
 def test_enrich_fixtures_unknown_team_id_raises() -> None:
+    """Verify enrich_fixtures raises KeyError for unknown team IDs."""
     teams = [_team(1, "Arsenal")]  # team id 2 not registered
     fixtures = [_fix(event=1, team_h=1, team_a=2, kickoff="2025-08-16T15:00:00Z")]
     with pytest.raises(KeyError):
