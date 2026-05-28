@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -17,6 +18,11 @@ AWAY_FACTOR: float = 0.90
 
 # ELO scrape cache
 ELO_CACHE_TTL_HOURS: int = 24
+
+# Earliest date for which we care about historic ELO ratings.
+# Chosen to be slightly before 2016-17 GW1 (2016-08-13), the earliest fixture
+# in our raw FPL data.
+ELO_HISTORY_START: date = date(2016, 8, 1)
 
 # URL slugs passed to ScraperFC ClubElo's scrape_team(name).
 # Update this when team set changes (promotions/relegations).

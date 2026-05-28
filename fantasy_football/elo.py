@@ -14,6 +14,7 @@ from fantasy_football.constants import (
     CLUBELO_TO_FPL,
     DATA_FOLDER,
     ELO_CACHE_TTL_HOURS,
+    ELO_HISTORY_START,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,9 @@ def normalize_elo_frame(raw: pd.DataFrame) -> pl.DataFrame:
         pl.col("club").replace(CLUBELO_TO_FPL).alias("team"),
         pl.col("from_date").str.strptime(pl.Date, "%Y-%m-%d"),
         pl.col("to_date").str.strptime(pl.Date, "%Y-%m-%d"),
-    ).select("team", "elo", "from_date", "to_date")
+    ).filter(pl.col("to_date") >= ELO_HISTORY_START).select(
+        "team", "elo", "from_date", "to_date"
+    )
 
 
 def _cache_is_fresh(path) -> bool:
