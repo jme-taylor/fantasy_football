@@ -15,6 +15,7 @@ dependencies = [
     "scikit-learn>=1.6.1",
     "mlflow==2.21.2",
     "scraperfc>=4.5.0",
+    "pulp>=3.3.2",
 ]
 
 [dependency-groups]
