@@ -74,3 +74,32 @@ class Plan:
                 for g in self.gameweeks
             ]
         )
+
+
+def _load_prices(season: str, start_gw: int) -> dict[str, int]:
+    """Return each player's price (tenths) as of the latest GW <= start_gw.
+
+    Parameters
+    ----------
+    season: str
+        The season whose raw gameweek data to read.
+    start_gw: int
+        The pivot gameweek treated as "now".
+
+    Returns
+    -------
+    dict[str, int]
+        Mapping of player name to price in tenths of a million.
+    """
+    merged = pl.read_csv(
+        RAW_DATA_FOLDER.joinpath(season, "gws", "merged_gw.csv")
+    ).filter(pl.col("GW") <= start_gw)
+    latest_gw = merged.group_by("name").agg(pl.col("GW").max().alias("GW"))
+    latest = merged.join(latest_gw, on=["name", "GW"], how="inner")
+    return dict(
+        zip(
+            latest["name"].to_list(),
+            latest["value"].to_list(),
+            strict=True,
+        )
+    )
