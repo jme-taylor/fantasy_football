@@ -297,3 +297,67 @@ def _solve_problem(prob: pulp.LpProblem) -> str:
     """
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
     return pulp.LpStatus[prob.status]
+
+
+def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
+    """Convert solved MILP variables into a Plan.
+
+    Parameters
+    ----------
+    variables: dict
+        The container returned by `_build_problem`.
+    weeks: list[int]
+        The gameweeks that were optimised, in any order.
+    start_gw: int
+        The first (free-build) gameweek.
+
+    Returns
+    -------
+    Plan
+        The structured per-gameweek plan.
+    """
+    own, start, cap = variables["own"], variables["start"], variables["cap"]
+    buy, sell = variables["buy"], variables["sell"]
+    ft, paid = variables["ft"], variables["paid"]
+    points = variables["points"]
+
+    def chosen(container, t):
+        return [
+            name
+            for (name, week), var in container.items()
+            if week == t and round(var.value()) == 1
+        ]
+
+    gameweeks: list[GameweekPlan] = []
+    total = 0.0
+    for t in sorted(weeks):
+        squad = chosen(own, t)
+        xi = chosen(start, t)
+        captain = chosen(cap, t)[0]
+        ins = [] if t == start_gw else chosen(buy, t)
+        outs = [] if t == start_gw else chosen(sell, t)
+        hits = int(round(paid[t].value())) * HIT_COST
+        xi_pts = sum(points.get((n, t), 0.0) for n in xi)
+        captain_pts = points.get((captain, t), 0.0)
+        bench_pts = sum(points.get((n, t), 0.0) for n in squad if n not in xi)
+        expected = xi_pts + captain_pts + BENCH_WEIGHT * bench_pts - hits
+        total += expected
+        gameweeks.append(
+            GameweekPlan(
+                gw=t,
+                squad=squad,
+                starting_xi=xi,
+                captain=captain,
+                transfers_in=ins,
+                transfers_out=outs,
+                hits=hits,
+                free_transfers=int(round(ft[t].value())),
+                expected_points=expected,
+            )
+        )
+    return Plan(
+        start_gw=start_gw,
+        horizon=len(weeks),
+        gameweeks=gameweeks,
+        total_expected_points=total,
+    )

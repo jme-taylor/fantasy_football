@@ -156,3 +156,22 @@ def test_single_week_squad_is_legal() -> None:
     assert 3 <= start_pos.count("DEF") <= 5
     assert 2 <= start_pos.count("MID") <= 5
     assert 1 <= start_pos.count("FWD") <= 3
+
+
+from fantasy_football.optimisation import _extract_plan
+
+
+def test_extract_plan_reads_solved_variables() -> None:
+    """A solved single-week problem converts to a populated Plan."""
+    predictions, prices = _feasible_universe([10])
+    prob, v = _build_problem(predictions, prices, weeks=[10], start_gw=10)
+    assert _solve_problem(prob) == "Optimal"
+    plan = _extract_plan(v, weeks=[10], start_gw=10)
+    assert plan.start_gw == 10
+    gw = plan.gameweeks[0]
+    assert len(gw.squad) == 15
+    assert len(gw.starting_xi) == 11
+    assert gw.captain in gw.starting_xi
+    assert gw.hits == 0
+    assert gw.expected_points > 0
+    assert plan.total_expected_points == pytest.approx(gw.expected_points)
