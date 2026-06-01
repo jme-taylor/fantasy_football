@@ -209,3 +209,94 @@ def test_optimise_plan_writes_csv_and_returns_plan(
     assert (transformed / "optimisation_plan.csv").exists()
     written = pl.read_csv(transformed / "optimisation_plan.csv")
     assert written.height == 2
+
+
+def test_first_week_is_a_free_build_with_no_hits() -> None:
+    """The opening squad costs no transfer hit and records no transfers."""
+    predictions, prices = _feasible_universe([10])
+    prob, v = _build_problem(predictions, prices, weeks=[10], start_gw=10)
+    assert _solve_problem(prob) == "Optimal"
+    plan = _extract_plan(v, weeks=[10], start_gw=10)
+    assert plan.gameweeks[0].hits == 0
+    assert plan.gameweeks[0].transfers_in == []
+    assert plan.gameweeks[0].transfers_out == []
+
+
+def test_extra_transfers_incur_hits() -> None:
+    """Free-transfer depletion in one week forces paid hits the next.
+
+    Over a three-week horizon the solver:
+    - GW10 (free build): ft=1, 0 transfers recorded.
+    - GW11: banks 2 FTs, makes 2 transfers (both free) to acquire five
+      GW11-specialists, depleting the banked FT allowance.
+    - GW12: only ft=1 remains; all five MID slots need swapping for
+      GW12-specialists, requiring 4 paid transfers — a hits penalty of 16.
+
+    The scenario uses five GW11-specialist MIDs (score 0/101/0 across
+    GW10/11/12) and five GW12-specialist MIDs (score 0/0/100), each pair
+    sharing a club with existing base players so the club-ownership cap
+    (3 per club) limits how many can be carried in the free build.
+    """
+    gw11_rows: dict = {
+        "name": [],
+        "position": [],
+        "team": [],
+        "gw": [],
+        "predicted_points": [],
+    }
+    prices: dict = {}
+    counts = {"GK": 3, "DEF": 7, "MID": 7, "FWD": 5}
+    clubs = ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+    idx = 0
+    for pos, n in counts.items():
+        for j in range(n):
+            name = f"{pos}{j}"
+            prices[name] = 50
+            for gw in [10, 11, 12]:
+                gw11_rows["name"].append(name)
+                gw11_rows["position"].append(pos)
+                gw11_rows["team"].append(clubs[idx % len(clubs)])
+                gw11_rows["gw"].append(gw)
+                gw11_rows["predicted_points"].append(10.0 - j)
+            idx += 1
+
+    # Five GW11-specialist MIDs (one per club C0-C4).
+    for i, club in enumerate(["C0", "C1", "C2", "C3", "C4"]):
+        name = f"GW11S{i}"
+        prices[name] = 50
+        for gw, pts in [(10, 0.0), (11, 101.0), (12, 0.0)]:
+            gw11_rows["name"].append(name)
+            gw11_rows["position"].append("MID")
+            gw11_rows["team"].append(club)
+            gw11_rows["gw"].append(gw)
+            gw11_rows["predicted_points"].append(pts)
+
+    # Five GW12-specialist MIDs (one per club C0-C4).
+    for i, club in enumerate(["C0", "C1", "C2", "C3", "C4"]):
+        name = f"GW12S{i}"
+        prices[name] = 50
+        for gw, pts in [(10, 0.0), (11, 0.0), (12, 100.0)]:
+            gw11_rows["name"].append(name)
+            gw11_rows["position"].append("MID")
+            gw11_rows["team"].append(club)
+            gw11_rows["gw"].append(gw)
+            gw11_rows["predicted_points"].append(pts)
+
+    predictions = pl.DataFrame(gw11_rows)
+    prob, v = _build_problem(
+        predictions, prices, weeks=[10, 11, 12], start_gw=10
+    )
+    assert _solve_problem(prob) == "Optimal"
+    plan = _extract_plan(v, weeks=[10, 11, 12], start_gw=10)
+
+    gw10, gw11, gw12 = plan.gameweeks
+    # Free build: no transfers, no hits.
+    assert gw10.hits == 0
+    assert gw10.transfers_in == []
+    # GW11: uses banked FTs (2 available), no hit.
+    assert gw11.hits == 0
+    assert gw11.free_transfers == 2
+    assert len(gw11.transfers_in) == 2
+    # GW12: only 1 FT left; 5 MID swaps needed → 4 paid → hits=16.
+    assert gw12.hits == 16
+    assert len(gw12.transfers_in) == 5
