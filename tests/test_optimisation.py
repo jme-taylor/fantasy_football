@@ -68,3 +68,25 @@ def test_load_prices_uses_latest_value_at_or_before_start_gw(
     prices = _load_prices("2025-26", start_gw=10)
     assert prices["P1"] == 55  # GW10 value, not the later GW11=60
     assert prices["P2"] == 80
+
+
+from fantasy_football.optimisation import _prune_players
+
+
+def test_prune_players_keeps_top_k_per_position_by_mean_points() -> None:
+    """_prune_players keeps the top-k players per position by mean predicted points."""
+    predictions = pl.DataFrame(
+        {
+            "name": ["A", "A", "B", "C", "G1", "G2", "G3"],
+            "position": ["MID", "MID", "MID", "MID", "GK", "GK", "GK"],
+            "team": ["T"] * 7,
+            "gw": [10, 11, 10, 10, 10, 10, 10],
+            "predicted_points": [9.0, 9.0, 5.0, 1.0, 4.0, 3.0, 2.0],
+        }
+    )
+    kept = _prune_players(predictions, k=2)
+    names = set(kept["name"].to_list())
+    # Top-2 MIDs by mean are A (9.0) and B (5.0); C is dropped.
+    assert "A" in names and "B" in names and "C" not in names
+    # Top-2 GKs are G1 and G2; G3 dropped.
+    assert "G1" in names and "G2" in names and "G3" not in names

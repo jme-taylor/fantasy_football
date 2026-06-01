@@ -103,3 +103,31 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
             strict=True,
         )
     )
+
+
+def _prune_players(predictions: pl.DataFrame, k: int) -> pl.DataFrame:
+    """Keep only the top-k players per position by mean predicted points.
+
+    Parameters
+    ----------
+    predictions: pl.DataFrame
+        Rows of (name, position, team, gw, predicted_points).
+    k: int
+        Number of players to keep per position.
+
+    Returns
+    -------
+    pl.DataFrame
+        The input filtered to the retained players (all their rows kept).
+    """
+    means = predictions.group_by("name", "position").agg(
+        pl.col("predicted_points").mean().alias("mean_points")
+    )
+    ranked = means.with_columns(
+        pl.col("mean_points")
+        .rank("ordinal", descending=True)
+        .over("position")
+        .alias("rank")
+    )
+    keep = ranked.filter(pl.col("rank") <= k)["name"]
+    return predictions.filter(pl.col("name").is_in(keep))
