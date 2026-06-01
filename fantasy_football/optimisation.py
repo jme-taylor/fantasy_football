@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, field
 
 import polars as pl
+import pulp
 
 from fantasy_football.constants import DATA_FOLDER
 
@@ -131,3 +132,168 @@ def _prune_players(predictions: pl.DataFrame, k: int) -> pl.DataFrame:
     )
     keep = ranked.filter(pl.col("rank") <= k)["name"]
     return predictions.filter(pl.col("name").is_in(keep))
+
+
+def _build_problem(
+    predictions: pl.DataFrame,
+    prices: dict[str, int],
+    weeks: list[int],
+    start_gw: int,
+    initial_squad: list[str] | None = None,
+    bench_weight: float = BENCH_WEIGHT,
+) -> tuple[pulp.LpProblem, dict]:
+    """Construct the multi-week FPL MILP.
+
+    Decision variables, per player p and week t:
+      own[p,t], start[p,t], cap[p,t], buy[p,t], sell[p,t]  (all binary)
+      ft[t]   integer free transfers banked at the start of week t (0..5)
+      paid[t] integer transfers paid for as hits in week t (>= 0)
+
+    Free-transfer banking is enforced with upper bounds only:
+      ft[t+1] <= 5  and  ft[t+1] <= ft[t] - transfers[t] + paid[t] + 1.
+    The objective rewards banked transfers indirectly (they relax future
+    `paid` constraints), so the solver drives ft to min(5, earned) without
+    needing auxiliary binaries.
+
+    Returns the problem plus a dict of variable containers for extraction.
+
+    Parameters
+    ----------
+    predictions : pl.DataFrame
+        Rows of (name, position, team, gw, predicted_points).
+    prices : dict[str, int]
+        Mapping of player name to price in tenths of a million.
+    weeks : list[int]
+        Gameweek numbers to optimise over.
+    start_gw : int
+        The first gameweek of the horizon (no squad carried in).
+    initial_squad : list[str] or None, optional
+        Players already owned before the horizon starts. If None and
+        start_gw equals the first week, a fresh squad is built.
+    bench_weight : float, optional
+        Weight applied to bench players' predicted points.
+
+    Returns
+    -------
+    tuple[pulp.LpProblem, dict]
+        The PuLP problem and a dict of variable containers keyed by
+        ``own``, ``start``, ``cap``, ``buy``, ``sell``, ``ft``,
+        ``paid``, ``points``, and ``pos``.
+    """
+    players = predictions["name"].unique().to_list()
+    pos = dict(zip(predictions["name"], predictions["position"], strict=False))
+    club = dict(zip(predictions["name"], predictions["team"], strict=False))
+    points = {
+        (row["name"], row["gw"]): row["predicted_points"]
+        for row in predictions.iter_rows(named=True)
+    }
+    idx = {name: i for i, name in enumerate(players)}
+
+    prob = pulp.LpProblem("fpl_optimisation", pulp.LpMaximize)
+
+    own, start, cap, buy, sell = {}, {}, {}, {}, {}
+    for t in weeks:
+        for p in players:
+            i = idx[p]
+            own[p, t] = pulp.LpVariable(f"own_{i}_{t}", cat="Binary")
+            start[p, t] = pulp.LpVariable(f"start_{i}_{t}", cat="Binary")
+            cap[p, t] = pulp.LpVariable(f"cap_{i}_{t}", cat="Binary")
+            buy[p, t] = pulp.LpVariable(f"buy_{i}_{t}", cat="Binary")
+            sell[p, t] = pulp.LpVariable(f"sell_{i}_{t}", cat="Binary")
+
+    ft, paid, transfers = {}, {}, {}
+    for t in weeks:
+        ft[t] = pulp.LpVariable(
+            f"ft_{t}",
+            lowBound=0,
+            upBound=MAX_FREE_TRANSFERS,
+            cat="Integer",
+        )
+        paid[t] = pulp.LpVariable(f"paid_{t}", lowBound=0, cat="Integer")
+        transfers[t] = pulp.lpSum(buy[p, t] for p in players)
+
+    for t in weeks:
+        prob += pulp.lpSum(own[p, t] for p in players) == SQUAD_SIZE
+        for position, n in SQUAD_BY_POSITION.items():
+            prob += (
+                pulp.lpSum(own[p, t] for p in players if pos[p] == position)
+                == n
+            )
+        prob += pulp.lpSum(prices[p] * own[p, t] for p in players) <= BUDGET
+        for c in set(club.values()):
+            prob += (
+                pulp.lpSum(own[p, t] for p in players if club[p] == c)
+                <= MAX_PER_CLUB
+            )
+        prob += pulp.lpSum(start[p, t] for p in players) == XI_SIZE
+        for p in players:
+            prob += start[p, t] <= own[p, t]
+            prob += cap[p, t] <= start[p, t]
+        for position, (lo, hi) in FORMATION_BOUNDS.items():
+            count = pulp.lpSum(
+                start[p, t] for p in players if pos[p] == position
+            )
+            prob += count >= lo
+            prob += count <= hi
+        prob += pulp.lpSum(cap[p, t] for p in players) == 1
+
+    ordered = sorted(weeks)
+    for k, t in enumerate(ordered):
+        if k == 0:
+            if t == start_gw:
+                prob += ft[t] == 1
+                prob += paid[t] == 0
+                for p in players:
+                    prob += buy[p, t] == own[p, t]
+                    prob += sell[p, t] == 0
+            continue
+        prev = ordered[k - 1]
+        for p in players:
+            prob += own[p, t] == own[p, prev] + buy[p, t] - sell[p, t]
+        prob += paid[t] >= transfers[t] - ft[t]
+        prob += ft[t] <= MAX_FREE_TRANSFERS
+        prob += ft[t] <= ft[prev] - transfers[prev] + paid[prev] + 1
+
+    xi_points = pulp.lpSum(
+        points.get((p, t), 0.0) * start[p, t] for t in weeks for p in players
+    )
+    captain_points = pulp.lpSum(
+        points.get((p, t), 0.0) * cap[p, t] for t in weeks for p in players
+    )
+    bench_points = pulp.lpSum(
+        points.get((p, t), 0.0) * (own[p, t] - start[p, t])
+        for t in weeks
+        for p in players
+    )
+    hit_cost = pulp.lpSum(HIT_COST * paid[t] for t in weeks)
+    prob += xi_points + captain_points + bench_weight * bench_points - hit_cost
+
+    variables = {
+        "own": own,
+        "start": start,
+        "cap": cap,
+        "buy": buy,
+        "sell": sell,
+        "ft": ft,
+        "paid": paid,
+        "points": points,
+        "pos": pos,
+    }
+    return prob, variables
+
+
+def _solve_problem(prob: pulp.LpProblem) -> str:
+    """Solve the problem with CBC (silently) and return the status name.
+
+    Parameters
+    ----------
+    prob : pulp.LpProblem
+        A fully-constructed PuLP optimisation problem.
+
+    Returns
+    -------
+    str
+        The solver status string, e.g. ``"Optimal"``.
+    """
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    return pulp.LpStatus[prob.status]

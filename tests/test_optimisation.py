@@ -90,3 +90,69 @@ def test_prune_players_keeps_top_k_per_position_by_mean_points() -> None:
     assert "A" in names and "B" in names and "C" not in names
     # Top-2 GKs are G1 and G2; G3 dropped.
     assert "G1" in names and "G2" in names and "G3" not in names
+
+
+from fantasy_football.optimisation import _build_problem, _solve_problem
+
+
+def _feasible_universe(gws):
+    """Return (predictions_df, prices) with a legal 15-man squad available."""
+    counts = {"GK": 3, "DEF": 7, "MID": 7, "FWD": 5}
+    rows = {
+        "name": [],
+        "position": [],
+        "team": [],
+        "gw": [],
+        "predicted_points": [],
+    }
+    prices = {}
+    clubs = ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+    idx = 0
+    for pos, n in counts.items():
+        for j in range(n):
+            name = f"{pos}{j}"
+            prices[name] = 50
+            for gw in gws:
+                rows["name"].append(name)
+                rows["position"].append(pos)
+                rows["team"].append(clubs[idx % len(clubs)])
+                rows["gw"].append(gw)
+                rows["predicted_points"].append(10.0 - j + gw * 0.0)
+            idx += 1
+    return pl.DataFrame(rows), prices
+
+
+def test_single_week_squad_is_legal() -> None:
+    """The optimiser returns a rules-legal squad, XI, and captain."""
+    predictions, prices = _feasible_universe([10])
+    prob, v = _build_problem(predictions, prices, weeks=[10], start_gw=10)
+    status = _solve_problem(prob)
+    assert status == "Optimal"
+    own = [
+        name
+        for (name, t), var in v["own"].items()
+        if t == 10 and round(var.value()) == 1
+    ]
+    start = [
+        name
+        for (name, t), var in v["start"].items()
+        if t == 10 and round(var.value()) == 1
+    ]
+    cap = [
+        name
+        for (name, t), var in v["cap"].items()
+        if t == 10 and round(var.value()) == 1
+    ]
+    pos = dict(zip(predictions["name"], predictions["position"], strict=False))
+    assert len(own) == 15
+    assert sorted(pos[n] for n in own) == (
+        ["DEF"] * 5 + ["FWD"] * 3 + ["GK"] * 2 + ["MID"] * 5
+    )
+    assert len(start) == 11
+    assert all(n in own for n in start)
+    assert len(cap) == 1 and cap[0] in start
+    start_pos = [pos[n] for n in start]
+    assert start_pos.count("GK") == 1
+    assert 3 <= start_pos.count("DEF") <= 5
+    assert 2 <= start_pos.count("MID") <= 5
+    assert 1 <= start_pos.count("FWD") <= 3
