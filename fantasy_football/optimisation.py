@@ -252,7 +252,9 @@ def _build_problem(
             prob += own[p, t] == own[p, prev] + buy[p, t] - sell[p, t]
         prob += paid[t] >= transfers[t] - ft[t]
         prob += ft[t] <= MAX_FREE_TRANSFERS
-        prob += ft[t] <= ft[prev] - transfers[prev] + paid[prev] + 1
+        prev_transfers = 0 if prev == start_gw else transfers[prev]
+        prev_paid = 0 if prev == start_gw else paid[prev]
+        prob += ft[t] <= ft[prev] - prev_transfers + prev_paid + 1
 
     xi_points = pulp.lpSum(
         points.get((p, t), 0.0) * start[p, t] for t in weeks for p in players
@@ -361,3 +363,82 @@ def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
         gameweeks=gameweeks,
         total_expected_points=total,
     )
+
+
+def optimise_plan(
+    season: str,
+    start_gw: int,
+    horizon: int | None = None,
+    initial_squad: list[str] | None = None,
+    k: int = 30,
+) -> Plan:
+    """Optimise the squad/XI/captain/transfers over a future horizon.
+
+    Loads predictions and prices, prunes to the top-k players per position,
+    builds and solves the MILP, then writes and returns the plan.
+
+    Parameters
+    ----------
+    season: str
+        The season to optimise (e.g. "2025-26").
+    start_gw: int
+        The gameweek treated as "now"; the first free-build week.
+    horizon: int | None
+        Number of gameweeks to plan from start_gw inclusive. Defaults to
+        DEFAULT_HORIZON, clamped to the gameweeks available in predictions.
+    initial_squad: list[str] | None
+        Reserved for future use (a pre-existing squad). None means a free
+        build at start_gw.
+    k: int
+        Players retained per position before solving.
+
+    Returns
+    -------
+    Plan
+        The structured optimisation plan, also written to CSV.
+    """
+    predictions = pl.read_csv(
+        TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv")
+    )
+    if horizon is None:
+        horizon = DEFAULT_HORIZON
+    weeks = [
+        gw
+        for gw in range(start_gw, start_gw + horizon)
+        if gw in predictions["gw"].to_list()
+    ]
+    if not weeks:
+        raise ValueError(
+            f"No prediction rows for gameweeks "
+            f"{start_gw}..{start_gw + horizon - 1}"
+        )
+    predictions = predictions.filter(pl.col("gw").is_in(weeks))
+    predictions = _prune_players(predictions, k)
+    prices = _load_prices(season, start_gw)
+    missing = set(predictions["name"].to_list()) - set(prices)
+    if missing:
+        logger.warning(
+            "Dropping %d players with no price: %s",
+            len(missing),
+            sorted(missing)[:5],
+        )
+        predictions = predictions.filter(~pl.col("name").is_in(list(missing)))
+
+    prob, variables = _build_problem(
+        predictions, prices, weeks, start_gw, initial_squad
+    )
+    status = _solve_problem(prob)
+    if status != "Optimal":
+        raise RuntimeError(f"Solver finished with status {status!r}")
+    plan = _extract_plan(variables, weeks, start_gw)
+
+    TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
+    plan.to_frame().write_csv(
+        TRANSFORMED_DATA_FOLDER.joinpath("optimisation_plan.csv")
+    )
+    logger.info(
+        "Optimised gws %s, total expected points %.1f",
+        weeks,
+        plan.total_expected_points,
+    )
+    return plan

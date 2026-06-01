@@ -158,7 +158,7 @@ def test_single_week_squad_is_legal() -> None:
     assert 1 <= start_pos.count("FWD") <= 3
 
 
-from fantasy_football.optimisation import _extract_plan
+from fantasy_football.optimisation import _extract_plan, optimise_plan
 
 
 def test_extract_plan_reads_solved_variables() -> None:
@@ -175,3 +175,37 @@ def test_extract_plan_reads_solved_variables() -> None:
     assert gw.hits == 0
     assert gw.expected_points > 0
     assert plan.total_expected_points == pytest.approx(gw.expected_points)
+
+
+def _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws):
+    """Write predictions/merged_gw to a temp tree and patch folder constants."""
+    transformed = tmp_path / "transformed"
+    transformed.mkdir()
+    predictions.write_csv(transformed / "predictions.csv")
+    raw = tmp_path / "raw" / "2025-26" / "gws"
+    raw.mkdir(parents=True)
+    rows = {"name": [], "value": [], "GW": []}
+    for name, value in prices.items():
+        for gw in gws:
+            rows["name"].append(name)
+            rows["value"].append(value)
+            rows["GW"].append(gw)
+    pl.DataFrame(rows).write_csv(raw / "merged_gw.csv")
+    monkeypatch.setattr(optimisation, "TRANSFORMED_DATA_FOLDER", transformed)
+    monkeypatch.setattr(optimisation, "RAW_DATA_FOLDER", tmp_path / "raw")
+    return transformed
+
+
+def test_optimise_plan_writes_csv_and_returns_plan(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: optimise_plan returns a plan and writes the CSV."""
+    predictions, prices = _feasible_universe([10, 11])
+    transformed = _setup_artifacts(
+        tmp_path, monkeypatch, predictions, prices, gws=[9, 10, 11]
+    )
+    plan = optimise_plan(season="2025-26", start_gw=10, horizon=2, k=20)
+    assert [g.gw for g in plan.gameweeks] == [10, 11]
+    assert (transformed / "optimisation_plan.csv").exists()
+    written = pl.read_csv(transformed / "optimisation_plan.csv")
+    assert written.height == 2
