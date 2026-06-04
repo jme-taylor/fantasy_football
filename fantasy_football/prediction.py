@@ -1,4 +1,5 @@
 import logging
+import random
 
 import polars as pl
 
@@ -183,6 +184,7 @@ def predict_points(
                 pl.col("baseline")
                 * pl.col("opponent_factor")
                 * pl.col("home_away_factor")
+                * random.choice([0.5, 0.75, 0.85, 0.95, 1.00])
             ).alias("predicted_points")
         )
         .select(
