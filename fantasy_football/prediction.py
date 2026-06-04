@@ -39,6 +39,7 @@ def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
             "name",
             "position",
             "team",
+            "element",
             pl.col(rolling_col).alias("baseline"),
         )
     dropped = sorted(
@@ -53,6 +54,7 @@ def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
         "name",
         "position",
         "team",
+        "element",
         pl.col(rolling_col).alias("baseline"),
     ).unique(subset=["name"], keep="first")
 
@@ -189,6 +191,7 @@ def predict_points(
         )
         .select(
             "name",
+            pl.col("element").alias("player_id"),
             "position",
             "team",
             "season",
