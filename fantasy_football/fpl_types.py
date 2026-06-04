@@ -326,7 +326,7 @@ class PlayerGameweekExpectedPoints:
     player_id: int
         The id player in question, from FPL api
     player_name: str
-        The web name of the player in question
+        The player's name.
     expected_points: float
         How many points we expect them to get in the gameweek.
     """
@@ -342,15 +342,15 @@ class GameWeekPlan:
     ----------
     gameweek: int
         The gameweek in question
-    squad: list[PlayerExpectedPoints]
+    squad: list[PlayerGameweekExpectedPoints]
         A list of our whole squad with expected points in the gameweek
-    starting_xi: list[PlayerExpectedPoints]
+    starting_xi: list[PlayerGameweekExpectedPoints]
         A list of the starting xi with expected points for the gameweek
-    captain: PlayerExpectedPoints
+    captain: PlayerGameweekExpectedPoints
         The player selected as captain for the gameweek
-    transfers_in: list[PlayerExpectedPoints]
+    transfers_in: list[PlayerGameweekExpectedPoints]
         A list of the players we want to transfer in this gameweekk.
-    transfers_out: list[PlayerExpectedPoints]
+    transfers_out: list[PlayerGameweekExpectedPoints]
         A list of the players we want to transfer out this gameweek.
     hits: int
         The amount of transfer hits we took.
