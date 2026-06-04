@@ -317,10 +317,11 @@ class PlayerExpectedPoints:
     rolling_points: float
     expected_points: float
 
+
 @dataclass(config=config, frozen=True)
 class PlayerGameweekExpectedPoints:
     """Class for storing a player's expected points over a gamweek.
-    
+
     Attributes
     ----------
     player_id: int
@@ -330,9 +331,11 @@ class PlayerGameweekExpectedPoints:
     expected_points: float
         How many points we expect them to get in the gameweek.
     """
+
     player_id: int
     player_name: str
-    expected_points: float 
+    expected_points: float
+
 
 @dataclass(config=config, frozen=True)
 class GameWeekPlan:
@@ -354,11 +357,12 @@ class GameWeekPlan:
         A list of the players we want to transfer out this gameweek.
     hits: int
         The amount of transfer hits we took.
-    free_transfers: int 
+    free_transfers: int
         The amount of free transfers we'll have left this gameweek.
     expected_points: float
         How many points we expect this gameweek.
     """
+
     gameweek: int
     squad: list[PlayerGameweekExpectedPoints]
     starting_xi: list[PlayerGameweekExpectedPoints]
@@ -368,4 +372,3 @@ class GameWeekPlan:
     hits: int
     free_transfers: int
     expected_points: float
-
