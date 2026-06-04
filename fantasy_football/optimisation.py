@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 import polars as pl
 import pulp
+from pydantic import TypeAdapter
 
 from fantasy_football.constants import RAW_DATA_FOLDER, TRANSFORMED_DATA_FOLDER
 from fantasy_football.fpl_types import (
@@ -425,11 +426,11 @@ def optimise_plan(
     horizon: int | None = None,
     initial_squad: list[str] | None = None,
     k: int = 30,
-) -> Plan:
+) -> list[GameWeekPlan]:
     """Optimise the squad/XI/captain/transfers over a future horizon.
 
     Loads predictions and prices, prunes to the top-k players per position,
-    builds and solves the MILP, then writes and returns the plan.
+    builds and solves the MILP, then writes and returns the plans.
 
     Parameters
     ----------
@@ -448,8 +449,9 @@ def optimise_plan(
 
     Returns
     -------
-    Plan
-        The structured optimisation plan, also written to CSV.
+    list[GameWeekPlan]
+        One typed plan per gameweek. The same plans are written to
+        ``optimisation_plan.jsonl`` (one GameWeekPlan per line).
     """
     predictions = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv")
@@ -486,13 +488,26 @@ def optimise_plan(
         raise RuntimeError(f"Solver finished with status {status!r}")
     plan = _extract_plan(variables, weeks, start_gw)
 
-    TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
-    plan.to_frame().write_csv(
-        TRANSFORMED_DATA_FOLDER.joinpath("optimisation_plan.csv")
+    player_id_map = dict(
+        zip(
+            predictions["name"].to_list(),
+            predictions["player_id"].to_list(),
+            strict=True,
+        )
     )
+    points = variables["points"]
+    gameweek_plans = _to_gameweek_plans(plan, player_id_map, points)
+
+    TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
+    adapter = TypeAdapter(GameWeekPlan)
+    out_path = TRANSFORMED_DATA_FOLDER.joinpath("optimisation_plan.jsonl")
+    with out_path.open("wb") as f:
+        for gw_plan in gameweek_plans:
+            f.write(adapter.dump_json(gw_plan))
+            f.write(b"\n")
     logger.info(
         "Optimised gws %s, total expected points %.1f",
         weeks,
         plan.total_expected_points,
     )
-    return plan
+    return gameweek_plans

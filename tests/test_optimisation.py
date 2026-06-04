@@ -98,6 +98,7 @@ def _feasible_universe(gws):
     counts = {"GK": 3, "DEF": 7, "MID": 7, "FWD": 5}
     rows = {
         "name": [],
+        "player_id": [],
         "position": [],
         "team": [],
         "gw": [],
@@ -112,6 +113,7 @@ def _feasible_universe(gws):
             prices[name] = 50
             for gw in gws:
                 rows["name"].append(name)
+                rows["player_id"].append(idx + 1)
                 rows["position"].append(pos)
                 rows["team"].append(clubs[idx % len(clubs)])
                 rows["gw"].append(gw)
@@ -194,19 +196,32 @@ def _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws):
     return transformed
 
 
-def test_optimise_plan_writes_csv_and_returns_plan(
+def test_optimise_plan_writes_jsonl_and_returns_gameweek_plans(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: optimise_plan returns a plan and writes the CSV."""
+    """End-to-end: optimise_plan returns typed plans and writes JSON Lines."""
+    import json
+
     predictions, prices = _feasible_universe([10, 11])
     transformed = _setup_artifacts(
         tmp_path, monkeypatch, predictions, prices, gws=[9, 10, 11]
     )
-    plan = optimise_plan(season="2025-26", start_gw=10, horizon=2, k=20)
-    assert [g.gw for g in plan.gameweeks] == [10, 11]
-    assert (transformed / "optimisation_plan.csv").exists()
-    written = pl.read_csv(transformed / "optimisation_plan.csv")
-    assert written.height == 2
+    plans = optimise_plan(season="2025-26", start_gw=10, horizon=2, k=20)
+
+    assert [p.gameweek for p in plans] == [10, 11]
+    assert not (transformed / "optimisation_plan.csv").exists()
+    out = transformed / "optimisation_plan.jsonl"
+    assert out.exists()
+
+    lines = out.read_text().splitlines()
+    assert len(lines) == 2
+    first = json.loads(lines[0])
+    assert first["gameweek"] == 10
+    assert len(first["squad"]) == 15
+    assert len(first["starting_xi"]) == 11
+    assert all(p["player_id"] is not None for p in first["squad"])
+    xi_names = {p["player_name"] for p in first["starting_xi"]}
+    assert first["captain"]["player_name"] in xi_names
 
 
 def test_first_week_is_a_free_build_with_no_hits() -> None:
