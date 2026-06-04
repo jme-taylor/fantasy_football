@@ -5,6 +5,10 @@ import polars as pl
 import pulp
 
 from fantasy_football.constants import RAW_DATA_FOLDER, TRANSFORMED_DATA_FOLDER
+from fantasy_football.fpl_types import (
+    GameWeekPlan,
+    PlayerGameweekExpectedPoints,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +362,61 @@ def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
         gameweeks=gameweeks,
         total_expected_points=total,
     )
+
+
+def _to_gameweek_plans(
+    plan: Plan,
+    player_id_map: dict[str, int],
+    points: dict[tuple[str, int], float],
+) -> list[GameWeekPlan]:
+    """Convert an internal name-based Plan into typed GameWeekPlans.
+
+    Parameters
+    ----------
+    plan : Plan
+        The solved internal plan (player names).
+    player_id_map : dict[str, int]
+        Mapping of player name to FPL element id.
+    points : dict[tuple[str, int], float]
+        Mapping of (name, gw) to predicted points.
+
+    Returns
+    -------
+    list[GameWeekPlan]
+        One typed plan per gameweek, players carried as
+        PlayerGameweekExpectedPoints.
+
+    Raises
+    ------
+    KeyError
+        If a planned player has no id in ``player_id_map``.
+    """
+
+    def to_player(name: str, gw: int) -> PlayerGameweekExpectedPoints:
+        if name not in player_id_map:
+            raise KeyError(f"No player_id for {name!r}")
+        return PlayerGameweekExpectedPoints(
+            player_id=player_id_map[name],
+            player_name=name,
+            expected_points=points.get((name, gw), 0.0),
+        )
+
+    plans: list[GameWeekPlan] = []
+    for g in plan.gameweeks:
+        plans.append(
+            GameWeekPlan(
+                gameweek=g.gw,
+                squad=[to_player(n, g.gw) for n in g.squad],
+                starting_xi=[to_player(n, g.gw) for n in g.starting_xi],
+                captain=to_player(g.captain, g.gw),
+                transfers_in=[to_player(n, g.gw) for n in g.transfers_in],
+                transfers_out=[to_player(n, g.gw) for n in g.transfers_out],
+                hits=g.hits,
+                free_transfers=g.free_transfers,
+                expected_points=g.expected_points,
+            )
+        )
+    return plans
 
 
 def optimise_plan(

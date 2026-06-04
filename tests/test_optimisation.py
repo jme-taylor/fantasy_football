@@ -298,3 +298,47 @@ def test_extra_transfers_incur_hits() -> None:
     # GW12: only 1 FT left; 5 MID swaps needed → 4 paid → hits=16.
     assert gw12.hits == 16
     assert len(gw12.transfers_in) == 5
+
+
+from fantasy_football.fpl_types import GameWeekPlan
+from fantasy_football.optimisation import _to_gameweek_plans
+
+
+def test_to_gameweek_plans_maps_ids_and_points() -> None:
+    """_to_gameweek_plans builds typed GameWeekPlans with ids and points."""
+    plan = Plan(
+        start_gw=10,
+        horizon=1,
+        gameweeks=[
+            GameweekPlan(
+                gw=10,
+                squad=["A", "B"],
+                starting_xi=["A"],
+                captain="A",
+                transfers_in=[],
+                transfers_out=[],
+                hits=0,
+                free_transfers=1,
+                expected_points=12.0,
+            )
+        ],
+        total_expected_points=12.0,
+    )
+    player_id_map = {"A": 1, "B": 2}
+    points = {("A", 10): 7.0, ("B", 10): 3.0}
+
+    result = _to_gameweek_plans(plan, player_id_map, points)
+
+    assert len(result) == 1
+    gw = result[0]
+    assert isinstance(gw, GameWeekPlan)
+    assert gw.gameweek == 10
+    assert {p.player_id for p in gw.squad} == {1, 2}
+    a = next(p for p in gw.squad if p.player_name == "A")
+    assert a.player_id == 1
+    assert a.expected_points == 7.0
+    assert gw.captain.player_id == 1
+    assert gw.captain.player_name == "A"
+    assert gw.hits == 0
+    assert gw.free_transfers == 1
+    assert gw.expected_points == 12.0
