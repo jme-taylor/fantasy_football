@@ -1,17 +1,12 @@
-"""FPL squad optimisation via mixed-integer linear programming."""
-
 import logging
 from dataclasses import dataclass, field
 
 import polars as pl
 import pulp
 
-from fantasy_football.constants import DATA_FOLDER
+from fantasy_football.constants import RAW_DATA_FOLDER, TRANSFORMED_DATA_FOLDER
 
 logger = logging.getLogger(__name__)
-
-TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
-RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 
 BUDGET = 1000
 SQUAD_SIZE = 15

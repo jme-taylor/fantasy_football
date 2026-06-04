@@ -3,6 +3,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_FOLDER = PROJECT_ROOT.joinpath("data")
+RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
+TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 MODELS_FOLDER = PROJECT_ROOT.joinpath("models")
 MLFLOW_DB_PATH = MODELS_FOLDER.joinpath("mlflow.db")
 

@@ -1,5 +1,3 @@
-"""Tests for the FPL squad optimiser."""
-
 import polars as pl
 import pytest
 
