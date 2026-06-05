@@ -84,6 +84,9 @@ def test_predict_points_formula_correct(
     monkeypatch.setattr(prediction, "OPPONENT_FACTOR_EXPONENT", 2.0)
     monkeypatch.setattr(prediction, "HOME_FACTOR", 1.25)
     monkeypatch.setattr(prediction, "AWAY_FACTOR", 0.75)
+    # Pin the random noise factor to its identity value so the deterministic
+    # formula can be asserted exactly; production runs stay randomised.
+    monkeypatch.setattr(prediction.random, "choice", lambda _seq: 1.00)
 
     result = predict_points("2025-26", horizon_n=2)
 
