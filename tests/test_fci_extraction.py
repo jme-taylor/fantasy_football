@@ -1,6 +1,8 @@
 import polars as pl
+from pytest_mock import MockerFixture
 
-from fantasy_football.fci_extraction import build_merged_gw
+from fantasy_football.data_extraction import GitHubAPIClient
+from fantasy_football.fci_extraction import FciExtractor, build_merged_gw
 
 # Two players across two gameweeks; player 2 has a double gameweek in GW2.
 SNAPSHOTS = pl.DataFrame(
@@ -102,3 +104,82 @@ def test_build_merged_gw_fills_missing_minutes_with_zero() -> None:
         (pl.col("element") == 1) & (pl.col("GW") == 2)
     ).row(0, named=True)
     assert raya_gw2["minutes"] == 0
+
+
+def test_gw_number_from_path() -> None:
+    """Gameweek number is parsed from a By-Gameweek path."""
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        )
+    )
+    path = "data/2025-2026/By Gameweek/GW7/player_gameweek_stats.csv"
+    assert extractor._gw_number_from_path(path) == 7
+
+
+def test_list_gameweeks_extracts_sorted_unique_gws(
+    mocker: MockerFixture,
+) -> None:
+    """list_gameweeks returns sorted unique GW numbers for the given season."""
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        )
+    )
+    tree = {
+        "tree": [
+            {
+                "path": "data/2025-2026/By Gameweek/GW2/player_gameweek_stats.csv"
+            },
+            {"path": "data/2025-2026/By Gameweek/GW2/playermatchstats.csv"},
+            {
+                "path": "data/2025-2026/By Gameweek/GW1/player_gameweek_stats.csv"
+            },
+            {"path": "data/2025-2026/players.csv"},
+            {
+                "path": "data/2024-2025/By Gameweek/GW1/player_gameweek_stats.csv"
+            },
+        ]
+    }
+    mocker.patch.object(
+        extractor.api_client, "get_all_repo_files", return_value=tree
+    )
+    assert extractor.list_gameweeks("2025-2026") == [1, 2]
+
+
+def test_build_current_season_merged_gw_writes_contract_columns(
+    mocker: MockerFixture, tmp_path
+) -> None:
+    """End-to-end build writes a merged_gw.csv with load_gw_data's columns."""
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    extractor.raw_data_folder = tmp_path
+    mocker.patch.object(
+        extractor,
+        "fetch_season_frames",
+        return_value=(SNAPSHOTS, MATCHSTATS, PLAYERS),
+    )
+    mocker.patch.object(
+        extractor, "_team_code_to_name", return_value=TEAM_CODE_TO_NAME
+    )
+
+    extractor.build_current_season_merged_gw("2025-26")
+
+    written = pl.read_csv(tmp_path / "2025-26" / "gws" / "merged_gw.csv")
+    required = {
+        "name",
+        "position",
+        "team",
+        "bonus",
+        "element",
+        "minutes",
+        "round",
+        "total_points",
+        "GW",
+        "value",
+    }
+    assert required.issubset(set(written.columns))
