@@ -18,39 +18,6 @@ def _isolate_github_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def mock_github_response() -> dict:
-    """Create a mock GitHub API response.
-
-    Returns
-    -------
-    dict
-        A mock response from the GitHub API.
-    """
-    return {
-        "tree": [
-            {
-                "path": "data/2023-24/gws/gw1.csv",
-                "type": "blob",
-                "sha": "abc123",
-            },
-            {
-                "path": "data/2023-24/gws/gw2.csv",
-                "type": "blob",
-                "sha": "def456",
-            },
-            {"path": "README.md", "type": "blob", "sha": "ghi789"},
-            {"path": "database/players.csv", "type": "blob", "sha": "jkl012"},
-            {
-                "path": "data/2023-24/gws/gw1.json",
-                "type": "blob",
-                "sha": "mno345",
-            },
-            {"path": "notdata/x.csv", "type": "blob", "sha": "pqr678"},
-        ]
-    }
-
-
-@pytest.fixture
 def mock_github_file_response() -> dict:
     """Create a mock GitHub file response.
 
@@ -227,35 +194,6 @@ def test_get_raw_file_url(mock_api_client: GitHubAPIClient) -> None:
     )
 
 
-def test_get_all_data_files(
-    mocker: MockerFixture,
-    mock_data_extractor: DataExtractor,
-    mock_github_response: dict,
-) -> None:
-    """Test getting all data files from the repo.
-
-    Parameters
-    ----------
-    mocker : MockerFixture
-        Pytest fixture for mocking.
-    mock_data_extractor : DataExtractor
-        Mocked data extractor.
-    mock_github_response : dict
-        Mock GitHub API response.
-    """
-    mocker.patch.object(
-        mock_data_extractor.api_client,
-        "get_all_repo_files",
-        return_value=mock_github_response,
-    )
-
-    result = mock_data_extractor.get_all_data_files()
-    assert [file["path"] for file in result] == [
-        "data/2023-24/gws/gw1.csv",
-        "data/2023-24/gws/gw2.csv",
-    ]
-
-
 def test_save_file(
     mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path: Path
 ) -> None:
@@ -309,85 +247,6 @@ def test_save_file_propagates_http_error_and_writes_no_file(
 
     expected_file = tmp_path / "2023-24" / "gws" / "gw1.csv"
     assert not expected_file.exists()
-
-
-def test_save_all_data_files_calls_save_file_per_data_file(
-    mocker: MockerFixture,
-    mock_data_extractor: DataExtractor,
-    mock_github_response: dict,
-    tmp_path: Path,
-) -> None:
-    """save_all_data_files should create the raw folder and call save_file once per CSV under data/.
-
-    Parameters
-    ----------
-    mocker : MockerFixture
-        Pytest fixture for mocking.
-    mock_data_extractor : DataExtractor
-        Mocked data extractor.
-    mock_github_response : dict
-        Mock GitHub API response.
-    tmp_path : Path
-        Pytest fixture providing a temporary directory.
-    """
-    mock_data_extractor.raw_data_folder = tmp_path / "raw"
-    assert not mock_data_extractor.raw_data_folder.exists()
-
-    mocker.patch.object(
-        mock_data_extractor.api_client,
-        "get_all_repo_files",
-        return_value=mock_github_response,
-    )
-    mock_save_file = mocker.patch.object(mock_data_extractor, "save_file")
-
-    mock_data_extractor.save_all_data_files()
-
-    assert mock_data_extractor.raw_data_folder.is_dir()
-    assert mock_save_file.call_count == 2
-    saved_paths = [
-        call.args[0]["path"] for call in mock_save_file.call_args_list
-    ]
-    assert saved_paths == [
-        "data/2023-24/gws/gw1.csv",
-        "data/2023-24/gws/gw2.csv",
-    ]
-
-
-def test_save_all_data_files_continues_after_failure(
-    mocker: MockerFixture,
-    mock_data_extractor: DataExtractor,
-    mock_github_response: dict,
-    tmp_path: Path,
-) -> None:
-    """A failure on one file should not stop subsequent files from being saved.
-
-    Parameters
-    ----------
-    mocker : MockerFixture
-        Pytest fixture for mocking.
-    mock_data_extractor : DataExtractor
-        Mocked data extractor.
-    mock_github_response : dict
-        Mock GitHub API response.
-    tmp_path : Path
-        Pytest fixture providing a temporary directory.
-    """
-    mock_data_extractor.raw_data_folder = tmp_path
-
-    mocker.patch.object(
-        mock_data_extractor.api_client,
-        "get_all_repo_files",
-        return_value=mock_github_response,
-    )
-    mock_save_file = mocker.patch.object(
-        mock_data_extractor,
-        "save_file",
-        side_effect=[requests.HTTPError("boom"), None],
-    )
-
-    mock_data_extractor.save_all_data_files()
-
-    assert mock_save_file.call_count == 2
 
 
 def test_update_current_season_data(
@@ -451,6 +310,20 @@ def test_update_current_season_data_swallows_errors(
     assert any(
         "Error updating season data for 2023-24" in record.getMessage()
         for record in caplog.records
+    )
+
+
+def test_save_all_data_files_downloads_only_cleaned_merged_seasons(
+    mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path: Path
+) -> None:
+    """The historic refresh fetches only cleaned_merged_seasons.csv."""
+    mock_data_extractor.raw_data_folder = tmp_path
+    mock_save_file = mocker.patch.object(mock_data_extractor, "save_file")
+
+    mock_data_extractor.save_all_data_files()
+
+    mock_save_file.assert_called_once_with(
+        {"path": "data/cleaned_merged_seasons.csv"}
     )
 
 

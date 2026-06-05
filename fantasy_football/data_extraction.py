@@ -123,6 +123,8 @@ class GitHubAPIClient:
 class DataExtractor:
     """Extracts and manages Fantasy Premier League data files."""
 
+    HISTORIC_FILE = "data/cleaned_merged_seasons.csv"
+
     def __init__(self, api_client: GitHubAPIClient | None = None) -> None:
         """Initialize the data extractor.
 
@@ -133,22 +135,6 @@ class DataExtractor:
         """
         self.api_client = api_client or GitHubAPIClient()
         self.raw_data_folder = RAW_DATA_FOLDER
-
-    def get_all_data_files(self) -> list[dict]:
-        """Get details about all CSV files in the data folder.
-
-        Returns
-        -------
-        list[dict]
-            list of dictionaries containing details about CSV files in the data folder.
-        """
-        all_files = self.api_client.get_all_repo_files()
-        return [
-            file
-            for file in all_files["tree"]
-            if file["path"].startswith("data/")
-            and file["path"].endswith(".csv")
-        ]
 
     def _create_local_path(self, file_path: str) -> Path:
         """Create local path structure for a given file path.
@@ -192,16 +178,17 @@ class DataExtractor:
             f.write(response.content)
 
     def save_all_data_files(self) -> None:
-        """Save all data files from the Fantasy Premier League repo to local storage."""
-        self.raw_data_folder.mkdir(parents=True, exist_ok=True)
-        data_files = self.get_all_data_files()
+        """Download the frozen Vaastav historic dataset.
 
-        for file_info in data_files:
-            try:
-                self.save_file(file_info)
-                logger.info("Successfully saved: %s", file_info["path"])
-            except Exception:
-                logger.exception("Error saving %s", file_info["path"])
+        Only ``cleaned_merged_seasons.csv`` is fetched — it is the single
+        Vaastav file the pipeline reads. Current-season data comes from FCI.
+        """
+        self.raw_data_folder.mkdir(parents=True, exist_ok=True)
+        try:
+            self.save_file({"path": self.HISTORIC_FILE})
+            logger.info("Successfully saved: %s", self.HISTORIC_FILE)
+        except Exception:
+            logger.exception("Error saving %s", self.HISTORIC_FILE)
 
     def update_current_season_data(self, season: str) -> None:
         """Update the current season data for the Fantasy Premier League.
