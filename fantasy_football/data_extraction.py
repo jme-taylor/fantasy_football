@@ -189,19 +189,3 @@ class DataExtractor:
             logger.info("Successfully saved: %s", self.HISTORIC_FILE)
         except Exception:
             logger.exception("Error saving %s", self.HISTORIC_FILE)
-
-    def update_current_season_data(self, season: str) -> None:
-        """Update the current season data for the Fantasy Premier League.
-
-        Parameters
-        ----------
-        season : str
-            The season to update the data for (e.g., '2023-24').
-        """
-        file_path = f"data/{season}/gws/merged_gw.csv"
-        try:
-            season_data = self.api_client.get_file_details(file_path)
-            self.save_file(season_data)
-            logger.info("Successfully updated season data for %s", season)
-        except Exception:
-            logger.exception("Error updating season data for %s", season)

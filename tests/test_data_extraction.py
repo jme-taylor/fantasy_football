@@ -1,4 +1,3 @@
-import logging
 from pathlib import Path
 
 import pytest
@@ -15,24 +14,6 @@ from fantasy_football.data_extraction import (
 def _isolate_github_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure no test inherits the developer's real GITHUB_API_KEY."""
     monkeypatch.delenv("GITHUB_API_KEY", raising=False)
-
-
-@pytest.fixture
-def mock_github_file_response() -> dict:
-    """Create a mock GitHub file response.
-
-    Returns
-    -------
-    dict
-        A mock response from the GitHub API for a single file.
-    """
-    return {
-        "path": "data/2023-24/gws/gw1.csv",
-        "type": "file",
-        "sha": "abc123",
-        "content": "player_id,player_name,position\n1,Test Player,FWD",
-        "encoding": "base64",
-    }
 
 
 @pytest.fixture
@@ -247,70 +228,6 @@ def test_save_file_propagates_http_error_and_writes_no_file(
 
     expected_file = tmp_path / "2023-24" / "gws" / "gw1.csv"
     assert not expected_file.exists()
-
-
-def test_update_current_season_data(
-    mocker: MockerFixture,
-    mock_data_extractor: DataExtractor,
-    mock_github_file_response: dict,
-) -> None:
-    """Test updating current season data.
-
-    Parameters
-    ----------
-    mocker : MockerFixture
-        Pytest fixture for mocking.
-    mock_data_extractor : DataExtractor
-        Mocked data extractor.
-    mock_github_file_response : dict
-        Mock GitHub file response.
-    """
-    mock_get_file_details = mocker.patch.object(
-        mock_data_extractor.api_client,
-        "get_file_details",
-        return_value=mock_github_file_response,
-    )
-    mock_save_file = mocker.patch.object(mock_data_extractor, "save_file")
-
-    mock_data_extractor.update_current_season_data("2023-24")
-
-    mock_get_file_details.assert_called_once_with(
-        "data/2023-24/gws/merged_gw.csv"
-    )
-    mock_save_file.assert_called_once_with(mock_github_file_response)
-
-
-def test_update_current_season_data_swallows_errors(
-    mocker: MockerFixture,
-    mock_data_extractor: DataExtractor,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Errors in update_current_season_data should be swallowed and logged, not raised.
-
-    Parameters
-    ----------
-    mocker : MockerFixture
-        Pytest fixture for mocking.
-    mock_data_extractor : DataExtractor
-        Mocked data extractor.
-    caplog : pytest.LogCaptureFixture
-        Pytest fixture for capturing log records.
-    """
-    mocker.patch.object(
-        mock_data_extractor.api_client,
-        "get_file_details",
-        side_effect=requests.HTTPError("404"),
-    )
-
-    with caplog.at_level(
-        logging.ERROR, logger="fantasy_football.data_extraction"
-    ):
-        mock_data_extractor.update_current_season_data("2023-24")
-
-    assert any(
-        "Error updating season data for 2023-24" in record.getMessage()
-        for record in caplog.records
-    )
 
 
 def test_save_all_data_files_downloads_only_cleaned_merged_seasons(
