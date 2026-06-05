@@ -199,3 +199,82 @@ def test_build_current_season_merged_gw_writes_contract_columns(
         "value",
     }
     assert required.issubset(set(written.columns))
+
+
+def test_fetch_season_frames_drops_inconsistent_unused_columns(
+    mocker: MockerFixture,
+) -> None:
+    """Per-GW files with extra inconsistent-dtype columns still concatenate.
+
+    FCI's ``player_gameweek_stats`` files infer unused rank/per-90 columns as
+    ``Float64`` in some gameweeks and ``String`` in others. ``fetch_season_frames``
+    must keep only the columns the adapter needs so the diagonal concat does
+    not raise a ``SchemaError``.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    mocker.patch.object(extractor, "list_gameweeks", return_value=[1, 2])
+
+    def fake_read_csv(path: str) -> pl.DataFrame:
+        if "player_gameweek_stats" in path:
+            is_gw1 = "GW1/" in path
+            # Unused column: Float64 in GW1, String in GW2 (mirrors real FCI).
+            unused = [1.0, 2.0] if is_gw1 else ["", ""]
+            # Needed column drift: bonus is Int64 in GW1, Float64 in GW2.
+            bonus = [1, 3] if is_gw1 else [1.0, 3.0]
+            return pl.DataFrame(
+                {
+                    "id": [1, 2],
+                    "first_name": ["David", "Erling"],
+                    "second_name": ["Raya", "Haaland"],
+                    "now_cost": [6.0, 14.0],
+                    "event_points": [6, 9],
+                    "bonus": bonus,
+                    "creativity_rank": unused,
+                }
+            )
+        if "playermatchstats" in path:
+            return pl.DataFrame(
+                {
+                    "player_id": [1, 2],
+                    "minutes_played": [90, 90],
+                    "match_id": ["m", "m"],
+                }
+            )
+        return pl.DataFrame(
+            {
+                "player_id": [1, 2],
+                "position": ["Goalkeeper", "Forward"],
+                "team_code": [3, 43],
+            }
+        )
+
+    mocker.patch.object(extractor, "_read_csv", side_effect=fake_read_csv)
+
+    snapshots, matchstats, _players = extractor.fetch_season_frames(
+        "2025-2026"
+    )
+
+    assert snapshots.height == 4  # 2 players x 2 gameweeks
+    assert "creativity_rank" not in snapshots.columns
+    assert set(snapshots.columns) >= {
+        "gw",
+        "id",
+        "first_name",
+        "second_name",
+        "now_cost",
+        "event_points",
+        "bonus",
+    }
+    # bonus drifts Int64/Float64 across gameweeks but is normalised to Int64.
+    assert snapshots.schema["bonus"] == pl.Int64
+    assert matchstats.height == 4

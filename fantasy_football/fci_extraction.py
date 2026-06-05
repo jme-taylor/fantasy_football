@@ -42,6 +42,26 @@ MERGED_GW_COLUMNS: list[str] = [
     "value",
 ]
 
+# Columns the adapter needs from each per-gameweek FCI file, with the dtypes we
+# normalise them to. We select and cast these before concatenating because FCI's
+# files carry many unused columns whose inferred dtype varies across gameweeks
+# (rank/per-90 stats are numeric early but empty/String later), and even needed
+# columns drift: ``bonus`` infers as Int64 in some gameweeks and Float64 in
+# others. Either case breaks the diagonal concat with a SchemaError, so we pin
+# the schema explicitly rather than trusting per-file inference.
+SNAPSHOT_SCHEMA: dict[str, pl.DataType] = {
+    "id": pl.Int64,
+    "first_name": pl.Utf8,
+    "second_name": pl.Utf8,
+    "now_cost": pl.Float64,
+    "event_points": pl.Int64,
+    "bonus": pl.Int64,
+}
+MATCHSTATS_SCHEMA: dict[str, pl.DataType] = {
+    "player_id": pl.Int64,
+    "minutes_played": pl.Int64,
+}
+
 
 def build_merged_gw(
     snapshots: pl.DataFrame,
@@ -225,7 +245,8 @@ class FciExtractor:
         -------
         tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]
             ``(snapshots, matchstats, players)`` where snapshots and matchstats
-            carry an added ``gw`` column.
+            are narrowed to the columns the adapter needs and carry an added
+            ``gw`` column.
         """
         gameweeks = self.list_gameweeks(long_season)
         if not gameweeks:
@@ -238,14 +259,16 @@ class FciExtractor:
         for gw in gameweeks:
             gw_dir = f"{base}/GW{gw}"
             snapshot_frames.append(
-                self._read_csv(
-                    f"{gw_dir}/player_gameweek_stats.csv"
-                ).with_columns(pl.lit(gw).alias("gw"))
+                self._read_csv(f"{gw_dir}/player_gameweek_stats.csv")
+                .select(list(SNAPSHOT_SCHEMA))
+                .cast(SNAPSHOT_SCHEMA, strict=False)
+                .with_columns(pl.lit(gw).alias("gw"))
             )
             matchstat_frames.append(
-                self._read_csv(f"{gw_dir}/playermatchstats.csv").with_columns(
-                    pl.lit(gw).alias("gw")
-                )
+                self._read_csv(f"{gw_dir}/playermatchstats.csv")
+                .select(list(MATCHSTATS_SCHEMA))
+                .cast(MATCHSTATS_SCHEMA, strict=False)
+                .with_columns(pl.lit(gw).alias("gw"))
             )
         players = self._read_csv(f"data/{long_season}/players.csv")
         snapshots = pl.concat(snapshot_frames, how="diagonal")
