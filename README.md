@@ -24,11 +24,12 @@ Earlier per-position prediction models and the linear-programming optimisation p
 
 The high-level milestones are:
 
-* [ ] Fetch and download a basic dataset of all weekly data
-* [ ] Transform it into a rolling points dataset
-* [ ] Build a simple model of rolling points weighted by opponent strength and home/away
-* [ ] Build an optimisation algorithm on top of the predicted points
-* [ ] Format the optimiser output into concrete team / transfer decisions
+* [X] Fetch and download a basic dataset of all weekly data
+* [X] Transform it into a rolling points dataset
+* [X] Build a simple model of rolling points weighted by opponent strength and home/away
+* [X] Build an optimisation algorithm on top of the predicted points
+* [X] Format the optimiser output into concrete team / transfer decisions
+* [ ] Get a new datasource for future/current data now that Vastaav has sunsetted their project
 * [ ] Backtest against a mid-season gameweek and ensure all decisions respect FPL rules
 * [ ] Define metrics for evaluating model quality
 * [ ] Identify and incorporate additional features to improve the model

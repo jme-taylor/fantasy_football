@@ -36,6 +36,7 @@ def _baseline_rolling() -> pl.DataFrame:
             "name": ["P1"],
             "position": ["MID"],
             "team": ["Arsenal"],
+            "element": [101],
             "gw": [10],
             "total_points": [6],
             "total_points_rolling_5": [4.0],
@@ -83,6 +84,9 @@ def test_predict_points_formula_correct(
     monkeypatch.setattr(prediction, "OPPONENT_FACTOR_EXPONENT", 2.0)
     monkeypatch.setattr(prediction, "HOME_FACTOR", 1.25)
     monkeypatch.setattr(prediction, "AWAY_FACTOR", 0.75)
+    # Pin the random noise factor to its identity value so the deterministic
+    # formula can be asserted exactly; production runs stay randomised.
+    monkeypatch.setattr(prediction.random, "choice", lambda _seq: 1.00)
 
     result = predict_points("2025-26", horizon_n=2)
 
@@ -108,6 +112,7 @@ def test_predict_points_uses_most_recent_baseline_row(
             "name": ["P1"] * 3,
             "position": ["MID"] * 3,
             "team": ["Arsenal"] * 3,
+            "element": [101, 101, 101],
             "gw": [8, 9, 10],
             "total_points": [2, 4, 6],
             "total_points_rolling_5": [3.0, 3.5, 4.0],
@@ -121,6 +126,26 @@ def test_predict_points_uses_most_recent_baseline_row(
 
     home = result.filter(pl.col("gw") == 11).row(0, named=True)
     assert home["baseline"] == pytest.approx(4.0)
+
+
+def test_predict_points_includes_player_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """predict_points carries the FPL element id through as player_id."""
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        _baseline_rolling(),
+        _baseline_fixtures(),
+        _baseline_elo(),
+    )
+
+    result = predict_points("2025-26", horizon_n=2)
+
+    assert "player_id" in result.columns
+    assert result["player_id"].dtype == pl.Int64
+    assert result.filter(pl.col("gw") == 11)["player_id"].item() == 101
+    assert result["player_id"].null_count() == 0
 
 
 def test_predict_points_horizon_truncates_when_fixtures_run_out(

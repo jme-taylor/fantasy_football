@@ -98,6 +98,7 @@ def _feasible_universe(gws):
     counts = {"GK": 3, "DEF": 7, "MID": 7, "FWD": 5}
     rows = {
         "name": [],
+        "player_id": [],
         "position": [],
         "team": [],
         "gw": [],
@@ -112,6 +113,7 @@ def _feasible_universe(gws):
             prices[name] = 50
             for gw in gws:
                 rows["name"].append(name)
+                rows["player_id"].append(idx + 1)
                 rows["position"].append(pos)
                 rows["team"].append(clubs[idx % len(clubs)])
                 rows["gw"].append(gw)
@@ -194,19 +196,32 @@ def _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws):
     return transformed
 
 
-def test_optimise_plan_writes_csv_and_returns_plan(
+def test_optimise_plan_writes_jsonl_and_returns_gameweek_plans(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: optimise_plan returns a plan and writes the CSV."""
+    """End-to-end: optimise_plan returns typed plans and writes JSON Lines."""
+    import json
+
     predictions, prices = _feasible_universe([10, 11])
     transformed = _setup_artifacts(
         tmp_path, monkeypatch, predictions, prices, gws=[9, 10, 11]
     )
-    plan = optimise_plan(season="2025-26", start_gw=10, horizon=2, k=20)
-    assert [g.gw for g in plan.gameweeks] == [10, 11]
-    assert (transformed / "optimisation_plan.csv").exists()
-    written = pl.read_csv(transformed / "optimisation_plan.csv")
-    assert written.height == 2
+    plans = optimise_plan(season="2025-26", start_gw=10, horizon=2, k=20)
+
+    assert [p.gameweek for p in plans] == [10, 11]
+    assert not (transformed / "optimisation_plan.csv").exists()
+    out = transformed / "optimisation_plan.jsonl"
+    assert out.exists()
+
+    lines = out.read_text().splitlines()
+    assert len(lines) == 2
+    first = json.loads(lines[0])
+    assert first["gameweek"] == 10
+    assert len(first["squad"]) == 15
+    assert len(first["starting_xi"]) == 11
+    assert all(p["player_id"] is not None for p in first["squad"])
+    xi_names = {p["player_name"] for p in first["starting_xi"]}
+    assert first["captain"]["player_name"] in xi_names
 
 
 def test_first_week_is_a_free_build_with_no_hits() -> None:
@@ -298,3 +313,47 @@ def test_extra_transfers_incur_hits() -> None:
     # GW12: only 1 FT left; 5 MID swaps needed → 4 paid → hits=16.
     assert gw12.hits == 16
     assert len(gw12.transfers_in) == 5
+
+
+from fantasy_football.fpl_types import GameWeekPlan
+from fantasy_football.optimisation import _to_gameweek_plans
+
+
+def test_to_gameweek_plans_maps_ids_and_points() -> None:
+    """_to_gameweek_plans builds typed GameWeekPlans with ids and points."""
+    plan = Plan(
+        start_gw=10,
+        horizon=1,
+        gameweeks=[
+            GameweekPlan(
+                gw=10,
+                squad=["A", "B"],
+                starting_xi=["A"],
+                captain="A",
+                transfers_in=[],
+                transfers_out=[],
+                hits=0,
+                free_transfers=1,
+                expected_points=12.0,
+            )
+        ],
+        total_expected_points=12.0,
+    )
+    player_id_map = {"A": 1, "B": 2}
+    points = {("A", 10): 7.0, ("B", 10): 3.0}
+
+    result = _to_gameweek_plans(plan, player_id_map, points)
+
+    assert len(result) == 1
+    gw = result[0]
+    assert isinstance(gw, GameWeekPlan)
+    assert gw.gameweek == 10
+    assert {p.player_id for p in gw.squad} == {1, 2}
+    a = next(p for p in gw.squad if p.player_name == "A")
+    assert a.player_id == 1
+    assert a.expected_points == 7.0
+    assert gw.captain.player_id == 1
+    assert gw.captain.player_name == "A"
+    assert gw.hits == 0
+    assert gw.free_transfers == 1
+    assert gw.expected_points == 12.0

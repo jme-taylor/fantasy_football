@@ -316,3 +316,59 @@ class PlayerExpectedPoints:
     fixture: TeamFixture
     rolling_points: float
     expected_points: float
+
+
+@dataclass(config=config, frozen=True)
+class PlayerGameweekExpectedPoints:
+    """Class for storing a player's expected points over a gameweek.
+
+    Attributes
+    ----------
+    player_id: int
+        The id of the player in question, from the FPL API.
+    player_name: str
+        The player's name.
+    expected_points: float
+        How many points we expect them to get in the gameweek.
+    """
+
+    player_id: int
+    player_name: str
+    expected_points: float
+
+
+@dataclass(config=config, frozen=True)
+class GameWeekPlan:
+    """Class for the output of a gameweek plan.
+
+    Attributes
+    ----------
+    gameweek: int
+        The gameweek in question
+    squad: list[PlayerGameweekExpectedPoints]
+        A list of our whole squad with expected points in the gameweek
+    starting_xi: list[PlayerGameweekExpectedPoints]
+        A list of the starting xi with expected points for the gameweek
+    captain: PlayerGameweekExpectedPoints
+        The player selected as captain for the gameweek
+    transfers_in: list[PlayerGameweekExpectedPoints]
+        A list of the players we want to transfer in this gameweek.
+    transfers_out: list[PlayerGameweekExpectedPoints]
+        A list of the players we want to transfer out this gameweek.
+    hits: int
+        The amount of transfer hits we took.
+    free_transfers: int
+        The amount of free transfers we'll have left this gameweek.
+    expected_points: float
+        How many points we expect this gameweek.
+    """
+
+    gameweek: int
+    squad: list[PlayerGameweekExpectedPoints]
+    starting_xi: list[PlayerGameweekExpectedPoints]
+    captain: PlayerGameweekExpectedPoints
+    transfers_in: list[PlayerGameweekExpectedPoints]
+    transfers_out: list[PlayerGameweekExpectedPoints]
+    hits: int
+    free_transfers: int
+    expected_points: float
