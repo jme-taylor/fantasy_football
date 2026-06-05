@@ -471,3 +471,30 @@ def test_data_extractor_default_client(
 
     extractor = DataExtractor()
     assert extractor.api_client.api_key == "env_key"
+
+
+def test_github_api_client_custom_repo_urls() -> None:
+    """Client builds API and raw URLs from provided repo coordinates."""
+    client = GitHubAPIClient(
+        api_key="test_key",
+        owner="olbauday",
+        repo="FPL-Core-Insights",
+        branch="main",
+    )
+    assert client.base_url == (
+        "https://api.github.com/repos/olbauday/FPL-Core-Insights"
+    )
+    assert client.get_raw_file_url("data/x.csv") == (
+        "https://raw.githubusercontent.com/olbauday/FPL-Core-Insights/main/data/x.csv"
+    )
+
+
+def test_github_api_client_defaults_to_vaastav() -> None:
+    """With no repo coords the client targets the Vaastav master branch."""
+    client = GitHubAPIClient(api_key="test_key")
+    assert client.base_url == (
+        "https://api.github.com/repos/vaastav/Fantasy-Premier-League"
+    )
+    assert client.get_raw_file_url("data/x.csv") == (
+        "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/x.csv"
+    )

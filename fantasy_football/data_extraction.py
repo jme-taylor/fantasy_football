@@ -17,13 +17,25 @@ RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 class GitHubAPIClient:
     """Client for interacting with the GitHub API for Fantasy Premier League data."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        owner: str = "vaastav",
+        repo: str = "Fantasy-Premier-League",
+        branch: str = "master",
+    ) -> None:
         """Initialize the GitHub API client.
 
         Parameters
         ----------
         api_key : str | None, optional
             GitHub API key. If None, will try to get from GITHUB_API_KEY environment variable.
+        owner : str, optional
+            GitHub repository owner. Defaults to the Vaastav repo owner.
+        repo : str, optional
+            GitHub repository name. Defaults to the Vaastav FPL repo.
+        branch : str, optional
+            Branch to read from. Defaults to "master".
 
         Raises
         ------
@@ -36,10 +48,11 @@ class GitHubAPIClient:
                 "GitHub API key is required. Set GITHUB_API_KEY environment variable or pass api_key parameter."
             )
 
-        self.base_url = (
-            "https://api.github.com/repos/vaastav/Fantasy-Premier-League"
+        self.branch = branch
+        self.base_url = f"https://api.github.com/repos/{owner}/{repo}"
+        self.raw_base_url = (
+            f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}"
         )
-        self.raw_base_url = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master"
         self.headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.api_key}",
@@ -60,7 +73,7 @@ class GitHubAPIClient:
             If the API request fails.
         """
         response = requests.get(
-            f"{self.base_url}/git/trees/master?recursive=1",
+            f"{self.base_url}/git/trees/{self.branch}?recursive=1",
             headers=self.headers,
         )
         response.raise_for_status()
