@@ -2,7 +2,11 @@ import logging
 
 import polars as pl
 
-from fantasy_football.constants import DATA_FOLDER, ROLLING_WINDOW
+from fantasy_football.constants import (
+    DATA_FOLDER,
+    ROLLING_WINDOW,
+    VASTAAV_BRIDGE_SEASONS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,13 +21,52 @@ def rolling_column_name(rolling_column: str, rolling_window: int) -> str:
     return f"{rolling_column}_rolling_{rolling_window}"
 
 
+def _load_season_merged_gw(season: str) -> pl.DataFrame:
+    """Read a single season's ``merged_gw.csv`` and tag it with the season.
+
+    Parameters
+    ----------
+    season : str
+        The season whose per-season file to read, in YYYY-YY format,
+        e.g. "2024-25".
+
+    Returns
+    -------
+    pl.DataFrame
+        The season's gameweek rows with a ``gw`` column and a literal
+        ``season`` column.
+    """
+    season_columns = [
+        "name",
+        "position",
+        "team",
+        "bonus",
+        "element",
+        "minutes",
+        "round",
+        "total_points",
+        "GW",
+    ]
+    return (
+        pl.read_csv(
+            RAW_DATA_FOLDER.joinpath(season, "gws", "merged_gw.csv"),
+            columns=season_columns,
+        )
+        .rename({"GW": "gw"})
+        .with_columns(pl.lit(season).alias("season"))
+    )
+
+
 def load_gw_data(current_season: str) -> pl.DataFrame:
-    """Take all season's gameweek data and joins to current season data.
+    """Take all season's gameweek data and join to current season data.
 
     This function reads the "cleaned_merged_seasons.csv" file, which is the
-    merged data from all previous complete seasons, and then appends the
-    game week data for the current season, effectively giving us a complete
-    dataset of all game weeks for all seasons.
+    merged data from older complete seasons, then appends any Vaastav "bridge"
+    seasons not yet folded into that aggregate (see
+    ``VASTAAV_BRIDGE_SEASONS``), and finally appends the game week data for the
+    current season, giving a complete dataset of all game weeks for all
+    seasons. Bridge seasons whose file is absent are skipped with a warning;
+    the current season's file is required.
 
     Parameters
     ----------
@@ -52,28 +95,23 @@ def load_gw_data(current_season: str) -> pl.DataFrame:
         RAW_DATA_FOLDER.joinpath("cleaned_merged_seasons.csv"),
         columns=previous_seasons_columns,
     ).rename({"season_x": "season", "GW": "gw", "team_x": "team"})
-    current_season_columns = [
-        "name",
-        "position",
-        "team",
-        "bonus",
-        "element",
-        "minutes",
-        "round",
-        "total_points",
-        "GW",
-    ]
-    current_season_data = (
-        pl.read_csv(
-            RAW_DATA_FOLDER.joinpath(current_season, "gws", "merged_gw.csv"),
-            columns=current_season_columns,
-        )
-        .rename({"GW": "gw"})
-        .with_columns(pl.lit(current_season).alias("season"))
-    )
-    gw_data = pl.concat(
-        [previous_seasons, current_season_data], how="diagonal"
-    )
+
+    frames = [previous_seasons]
+    for season in VASTAAV_BRIDGE_SEASONS:
+        if season == current_season:
+            continue
+        bridge_path = RAW_DATA_FOLDER.joinpath(season, "gws", "merged_gw.csv")
+        if bridge_path.exists():
+            frames.append(_load_season_merged_gw(season))
+        else:
+            logger.warning(
+                "Bridge season %s data not found at %s; skipping.",
+                season,
+                bridge_path,
+            )
+    frames.append(_load_season_merged_gw(current_season))
+
+    gw_data = pl.concat(frames, how="diagonal")
     gw_data = gw_data.with_columns(
         pl.when(pl.col("position") == "GKP")
         .then(pl.lit("GK"))

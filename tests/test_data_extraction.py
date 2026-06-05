@@ -4,6 +4,7 @@ import pytest
 import requests
 from pytest_mock import MockerFixture
 
+from fantasy_football import data_extraction
 from fantasy_football.data_extraction import (
     DataExtractor,
     GitHubAPIClient,
@@ -230,18 +231,23 @@ def test_save_file_propagates_http_error_and_writes_no_file(
     assert not expected_file.exists()
 
 
-def test_save_all_data_files_downloads_only_cleaned_merged_seasons(
+def test_save_all_data_files_downloads_aggregate_and_bridge_seasons(
     mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path: Path
 ) -> None:
-    """The historic refresh fetches only cleaned_merged_seasons.csv."""
+    """The historic refresh fetches the aggregate plus each bridge season."""
+    mocker.patch.object(data_extraction, "VASTAAV_BRIDGE_SEASONS", ["2024-25"])
     mock_data_extractor.raw_data_folder = tmp_path
     mock_save_file = mocker.patch.object(mock_data_extractor, "save_file")
 
     mock_data_extractor.save_all_data_files()
 
-    mock_save_file.assert_called_once_with(
-        {"path": "data/cleaned_merged_seasons.csv"}
-    )
+    saved_paths = [
+        call.args[0]["path"] for call in mock_save_file.call_args_list
+    ]
+    assert saved_paths == [
+        "data/cleaned_merged_seasons.csv",
+        "data/2024-25/gws/merged_gw.csv",
+    ]
 
 
 def test_data_extractor_with_custom_client() -> None:

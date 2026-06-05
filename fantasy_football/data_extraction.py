@@ -5,7 +5,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from fantasy_football.constants import DATA_FOLDER
+from fantasy_football.constants import DATA_FOLDER, VASTAAV_BRIDGE_SEASONS
 
 load_dotenv()
 
@@ -180,12 +180,19 @@ class DataExtractor:
     def save_all_data_files(self) -> None:
         """Download the frozen Vaastav historic dataset.
 
-        Only ``cleaned_merged_seasons.csv`` is fetched — it is the single
-        Vaastav file the pipeline reads. Current-season data comes from FCI.
+        Fetches ``cleaned_merged_seasons.csv`` (the aggregate of older seasons)
+        plus each Vaastav "bridge" season's ``merged_gw.csv`` — the recent
+        seasons not yet folded into that aggregate (see
+        ``VASTAAV_BRIDGE_SEASONS``). Current-season data comes from FCI.
         """
         self.raw_data_folder.mkdir(parents=True, exist_ok=True)
-        try:
-            self.save_file({"path": self.HISTORIC_FILE})
-            logger.info("Successfully saved: %s", self.HISTORIC_FILE)
-        except Exception:
-            logger.exception("Error saving %s", self.HISTORIC_FILE)
+        bridge_files = [
+            f"data/{season}/gws/merged_gw.csv"
+            for season in VASTAAV_BRIDGE_SEASONS
+        ]
+        for path in [self.HISTORIC_FILE, *bridge_files]:
+            try:
+                self.save_file({"path": path})
+                logger.info("Successfully saved: %s", path)
+            except Exception:
+                logger.exception("Error saving %s", path)
