@@ -1,4 +1,5 @@
 import polars as pl
+import pytest
 from pytest_mock import MockerFixture
 
 from fantasy_football.data_extraction import GitHubAPIClient
@@ -145,6 +146,21 @@ def test_list_gameweeks_extracts_sorted_unique_gws(
         extractor.api_client, "get_all_repo_files", return_value=tree
     )
     assert extractor.list_gameweeks("2025-2026") == [1, 2]
+
+
+def test_fetch_season_frames_raises_when_no_gameweeks(
+    mocker: MockerFixture,
+) -> None:
+    """A season with no gameweek folders raises a clear error."""
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    mocker.patch.object(extractor, "list_gameweeks", return_value=[])
+    with pytest.raises(ValueError, match="No gameweek data found"):
+        extractor.fetch_season_frames("2025-2026")
 
 
 def test_build_current_season_merged_gw_writes_contract_columns(

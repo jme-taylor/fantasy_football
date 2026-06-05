@@ -14,7 +14,7 @@ import re
 import polars as pl
 import requests
 
-from fantasy_football.constants import DATA_FOLDER
+from fantasy_football.constants import RAW_DATA_FOLDER
 from fantasy_football.data_extraction import GitHubAPIClient
 from fantasy_football.fpl import FplAPI
 from fantasy_football.seasons import season_short_to_long
@@ -124,8 +124,6 @@ def build_merged_gw(
     return merged.select(MERGED_GW_COLUMNS)
 
 
-RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
-
 _GW_PATH_RE = re.compile(r"/By Gameweek/GW(\d+)/")
 
 
@@ -229,10 +227,15 @@ class FciExtractor:
             ``(snapshots, matchstats, players)`` where snapshots and matchstats
             carry an added ``gw`` column.
         """
+        gameweeks = self.list_gameweeks(long_season)
+        if not gameweeks:
+            raise ValueError(
+                f"No gameweek data found for season {long_season}"
+            )
         base = f"data/{long_season}/By Gameweek"
         snapshot_frames: list[pl.DataFrame] = []
         matchstat_frames: list[pl.DataFrame] = []
-        for gw in self.list_gameweeks(long_season):
+        for gw in gameweeks:
             gw_dir = f"{base}/GW{gw}"
             snapshot_frames.append(
                 self._read_csv(
