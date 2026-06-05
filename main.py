@@ -1,3 +1,5 @@
+import logging
+
 import polars as pl
 
 from fantasy_football.constants import CURRENT_SEASON, TRANSFORMED_DATA_FOLDER
@@ -10,6 +12,8 @@ from fantasy_football.logging_config import configure_logging
 from fantasy_football.optimisation import optimise_plan
 from fantasy_football.prediction import predict_points
 from fantasy_football.seasons import DataSource, source_for_season
+
+logger = logging.getLogger(__name__)
 
 
 def update_current_season(season: str) -> None:
@@ -27,7 +31,7 @@ def update_current_season(season: str) -> None:
         DataExtractor().save_all_data_files()
 
 
-def main(download_all_data: bool = False) -> None:
+def main(*, download_all_data: bool = False) -> None:
     """Download FPL data, transform it, predict points, and optimise a plan.
 
     Parameters
@@ -48,9 +52,17 @@ def main(download_all_data: bool = False) -> None:
     predictions = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv")
     )
+    if predictions.is_empty():
+        logger.warning(
+            "No upcoming gameweeks to predict for %s; skipping optimisation. "
+            "The current season's data may be complete with no future "
+            "fixtures to plan for.",
+            CURRENT_SEASON,
+        )
+        return
     start_gw = int(predictions["gw"].min())
     optimise_plan(CURRENT_SEASON, start_gw)
 
 
 if __name__ == "__main__":
-    main()
+    main(download_all_data=True)
