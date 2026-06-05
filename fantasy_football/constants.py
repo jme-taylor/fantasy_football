@@ -11,6 +11,10 @@ MLFLOW_DB_PATH = MODELS_FOLDER.joinpath("mlflow.db")
 FPL_ID = "7515957"
 CURRENT_SEASON = "2025-26"
 
+# Data ingestion stop date
+VASTAAV_LAST_SEASON = "2024-2025"
+FPL_CORE_INSIGHTS_FIRST_SEASON = "2025-2026"
+
 # Prediction model tunables
 ROLLING_WINDOW: int = 5
 OPPONENT_FACTOR_EXPONENT: float = 1.0
