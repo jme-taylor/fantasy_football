@@ -140,6 +140,7 @@ def _build_problem(
     weeks: list[int],
     start_gw: int,
     initial_squad: list[str] | None = None,
+    free_transfers: int = 1,
     bench_weight: float = BENCH_WEIGHT,
 ) -> tuple[pulp.LpProblem, dict]:
     """Construct the multi-week FPL MILP.
@@ -166,10 +167,16 @@ def _build_problem(
     weeks : list[int]
         Gameweek numbers to optimise over.
     start_gw : int
-        The first gameweek of the horizon (no squad carried in).
+        The first gameweek of the horizon.
     initial_squad : list[str] or None, optional
-        Players already owned before the horizon starts. If None and
-        start_gw equals the first week, a fresh squad is built.
+        Players already owned before the horizon starts. When provided,
+        start_gw uses the carried-in squad as the baseline and applies
+        the transfer identity (own = initial + buy - sell). When None,
+        a fresh free-build squad is constructed at start_gw.
+    free_transfers : int, optional
+        Number of free transfers available at start_gw when initial_squad
+        is provided. Ignored for a free-build (initial_squad=None).
+        Defaults to 1.
     bench_weight : float, optional
         Weight applied to bench players' predicted points.
 
@@ -237,15 +244,26 @@ def _build_problem(
             prob += count <= hi
         prob += pulp.lpSum(cap[p, t] for p in players) == 1
 
+    free_build = initial_squad is None
+    squad_set = set(initial_squad or [])
+    initial = {p: int(p in squad_set) for p in players}
+
     ordered = sorted(weeks)
     for k, t in enumerate(ordered):
         if k == 0:
-            if t == start_gw:
+            # weeks always begin at start_gw, so t == start_gw here.
+            if free_build:
                 prob += ft[t] == 1
                 prob += paid[t] == 0
                 for p in players:
                     prob += buy[p, t] == own[p, t]
                     prob += sell[p, t] == 0
+            else:
+                prob += ft[t] == free_transfers
+                for p in players:
+                    prob += own[p, t] == initial[p] + buy[p, t] - sell[p, t]
+                    prob += buy[p, t] + sell[p, t] <= 1
+                prob += paid[t] >= transfers[t] - ft[t]
             continue
         prev = ordered[k - 1]
         for p in players:

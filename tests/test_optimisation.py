@@ -122,6 +122,19 @@ def _feasible_universe(gws):
     return pl.DataFrame(rows), prices
 
 
+# A legal, point-optimal 15-man squad for _feasible_universe (lowest-index
+# players score highest: predicted_points = 10 - j).
+_LEGAL_SQUAD = (
+    ["GK0", "GK1"]
+    + ["DEF0", "DEF1", "DEF2", "DEF3", "DEF4"]
+    + ["MID0", "MID1", "MID2", "MID3", "MID4"]
+    + ["FWD0", "FWD1", "FWD2"]
+)
+# Same squad but holding FWD3 (7.0) instead of FWD2 (8.0) — a single
+# beneficial upgrade is available.
+_SQUAD_ONE_OFF = _LEGAL_SQUAD[:-1] + ["FWD3"]
+
+
 def test_single_week_squad_is_legal() -> None:
     """The optimiser returns a rules-legal squad, XI, and captain."""
     predictions, prices = _feasible_universe([10])
@@ -156,6 +169,108 @@ def test_single_week_squad_is_legal() -> None:
     assert 3 <= start_pos.count("DEF") <= 5
     assert 2 <= start_pos.count("MID") <= 5
     assert 1 <= start_pos.count("FWD") <= 3
+
+
+def test_initial_squad_with_no_better_option_makes_no_transfers() -> None:
+    """A carried-in squad that is already optimal triggers no transfers."""
+    predictions, prices = _feasible_universe([10])
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10],
+        start_gw=10,
+        initial_squad=_LEGAL_SQUAD,
+        free_transfers=1,
+    )
+    assert _solve_problem(prob) == "Optimal"
+    own = {
+        name
+        for (name, t), var in v["own"].items()
+        if t == 10 and round(var.value()) == 1
+    }
+    assert own == set(_LEGAL_SQUAD)
+    buys = sum(
+        round(var.value()) for (name, t), var in v["buy"].items() if t == 10
+    )
+    assert buys == 0
+    assert round(v["paid"][10].value()) == 0
+
+
+def test_initial_squad_uses_one_free_transfer_to_upgrade() -> None:
+    """One free transfer upgrades FWD3 (7.0) to FWD2 (8.0), no hit."""
+    predictions, prices = _feasible_universe([10])
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10],
+        start_gw=10,
+        initial_squad=_SQUAD_ONE_OFF,
+        free_transfers=1,
+    )
+    assert _solve_problem(prob) == "Optimal"
+    own = {
+        name
+        for (name, t), var in v["own"].items()
+        if t == 10 and round(var.value()) == 1
+    }
+    assert own == set(_LEGAL_SQUAD)
+    buys = sum(
+        round(var.value()) for (name, t), var in v["buy"].items() if t == 10
+    )
+    assert buys == 1
+    assert round(v["paid"][10].value()) == 0
+
+
+def test_initial_squad_pays_a_hit_to_make_extra_transfer() -> None:
+    """With one free transfer, two compelling upgrades force a paid hit."""
+    rows: dict = {
+        "name": [],
+        "position": [],
+        "team": [],
+        "gw": [],
+        "predicted_points": [],
+    }
+    prices: dict = {}
+    counts = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
+    clubs = ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+    squad: list[str] = []
+    idx = 0
+    for pos, n in counts.items():
+        for j in range(n):
+            name = f"{pos}{j}"
+            squad.append(name)
+            prices[name] = 50
+            rows["name"].append(name)
+            rows["position"].append(pos)
+            rows["team"].append(clubs[idx % len(clubs)])
+            rows["gw"].append(10)
+            rows["predicted_points"].append(2.0)
+            idx += 1
+    # Two MID stars NOT in the initial squad, each worth far more than -4.
+    for s, club in enumerate(["C5", "C6"]):
+        name = f"STAR{s}"
+        prices[name] = 50
+        rows["name"].append(name)
+        rows["position"].append("MID")
+        rows["team"].append(club)
+        rows["gw"].append(10)
+        rows["predicted_points"].append(100.0)
+    predictions = pl.DataFrame(rows)
+
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10],
+        start_gw=10,
+        initial_squad=squad,
+        free_transfers=1,
+    )
+    assert _solve_problem(prob) == "Optimal"
+    buys = sum(
+        round(var.value()) for (name, t), var in v["buy"].items() if t == 10
+    )
+    assert buys == 2  # both stars brought in
+    assert round(v["paid"][10].value()) == 1  # one free, one paid (-4)
 
 
 from fantasy_football.optimisation import _extract_plan, optimise_plan
