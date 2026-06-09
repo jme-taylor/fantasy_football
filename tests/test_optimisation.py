@@ -430,6 +430,77 @@ def test_extra_transfers_incur_hits() -> None:
     assert len(gw12.transfers_in) == 5
 
 
+def test_start_gw_transfers_reduce_banked_free_transfers() -> None:
+    """A start-gw transfer consumes the FT, banking fewer into gw11.
+
+    A free build would bank 2 FTs into gw11 (1 - 0 + 1); honouring the
+    carried-in squad's start-gw transfer banks only 1 (1 - 1 + 1). With two
+    compelling upgrades waiting at gw11, that missing FT forces a paid hit.
+    """
+    rows: dict = {
+        "name": [],
+        "position": [],
+        "team": [],
+        "gw": [],
+        "predicted_points": [],
+    }
+    prices: dict = {}
+    counts = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
+    clubs = ["C0", "C1", "C2", "C3", "C4", "C5", "C6"]
+    squad: list[str] = []
+    idx = 0
+    for pos, n in counts.items():
+        for j in range(n):
+            name = f"{pos}{j}"
+            squad.append(name)
+            prices[name] = 50
+            for gw in (10, 11):
+                rows["name"].append(name)
+                rows["position"].append(pos)
+                rows["team"].append(clubs[idx % len(clubs)])
+                rows["gw"].append(gw)
+                rows["predicted_points"].append(2.0)
+            idx += 1
+    # A start-gw upgrade (DEF), strong in both weeks -> bought at gw10.
+    # New club C7 (not used by the base squad) to avoid the club cap.
+    prices["UP10"] = 50
+    for gw in (10, 11):
+        rows["name"].append("UP10")
+        rows["position"].append("DEF")
+        rows["team"].append("C7")
+        rows["gw"].append(gw)
+        rows["predicted_points"].append(100.0)
+    # Two gw11-only MID stars (worthless at gw10) in fresh clubs -> bought at gw11.
+    for s, club in enumerate(["C8", "C9"]):
+        name = f"STAR{s}"
+        prices[name] = 50
+        for gw, pts in ((10, 0.0), (11, 100.0)):
+            rows["name"].append(name)
+            rows["position"].append("MID")
+            rows["team"].append(club)
+            rows["gw"].append(gw)
+            rows["predicted_points"].append(pts)
+    predictions = pl.DataFrame(rows)
+
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10, 11],
+        start_gw=10,
+        initial_squad=squad,
+        free_transfers=1,
+    )
+    assert _solve_problem(prob) == "Optimal"
+    # gw10 buys UP10 (1 transfer), so only 1 FT banks into gw11 (1 - 1 + 1).
+    assert round(v["ft"][11].value()) == 1
+    # gw11: two star upgrades, one free + one paid -> a single hit.
+    g11_buys = sum(
+        round(var.value()) for (name, t), var in v["buy"].items() if t == 11
+    )
+    assert g11_buys == 2
+    assert round(v["paid"][11].value()) == 1
+
+
 from fantasy_football.fpl_types import GameWeekPlan
 from fantasy_football.optimisation import _to_gameweek_plans
 

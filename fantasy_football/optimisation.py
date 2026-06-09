@@ -270,8 +270,9 @@ def _build_problem(
             prob += own[p, t] == own[p, prev] + buy[p, t] - sell[p, t]
         prob += paid[t] >= transfers[t] - ft[t]
         prob += ft[t] <= MAX_FREE_TRANSFERS
-        prev_transfers = 0 if prev == start_gw else transfers[prev]
-        prev_paid = 0 if prev == start_gw else paid[prev]
+        first_is_free_build = prev == start_gw and free_build
+        prev_transfers = 0 if first_is_free_build else transfers[prev]
+        prev_paid = 0 if first_is_free_build else paid[prev]
         prob += ft[t] <= ft[prev] - prev_transfers + prev_paid + 1
 
     xi_points = pulp.lpSum(
