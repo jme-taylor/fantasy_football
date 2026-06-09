@@ -614,6 +614,75 @@ def test_validate_initial_squad_rejects_duplicates() -> None:
         _validate_initial_squad(squad, predictions, prices)
 
 
+def test_optimise_plan_derives_budget_from_squad_value_over_1000(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A carried-in squad worth > 1000 is admitted via its derived budget."""
+    predictions, prices = _feasible_universe([10, 11])
+    dear = {name: 80 for name in prices}  # 15 * 80 = 1200 > BUDGET (1000)
+    _setup_artifacts(tmp_path, monkeypatch, predictions, dear, gws=[9, 10])
+    plans = optimise_plan(
+        season="2025-26",
+        start_gw=10,
+        horizon=2,
+        initial_squad=_LEGAL_SQUAD,
+        free_transfers=1,
+        bank=0,
+    )
+    gw10 = next(p for p in plans if p.gameweek == 10)
+    assert {p.player_name for p in gw10.squad} == set(_LEGAL_SQUAD)
+
+
+def test_optimise_plan_bank_raises_effective_budget(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A larger bank admits an upgrade that a zero bank cannot afford.
+
+    The squad is fully priced at the budget ceiling, so an upgrade to a
+    pricier, far better player is only affordable when the bank covers the
+    price difference.
+    """
+    predictions, prices = _feasible_universe([10])
+    prices = {name: 66 for name in prices}  # 15 * 66 = 990 squad value
+    # A standout upgrade at MID priced 16 above the player it replaces, in a
+    # fresh club (CX) so the per-club cap cannot interfere with the assertion.
+    extra = pl.DataFrame(
+        {
+            "name": ["UPGRADE"],
+            "player_id": [9999],
+            "position": ["MID"],
+            "team": ["CX"],
+            "gw": [10],
+            "predicted_points": [100.0],
+        }
+    )
+    predictions = pl.concat([predictions, extra])
+    prices["UPGRADE"] = 82  # 66 + 16; needs 16 of bank to afford the swap
+
+    # bank=0 -> cannot afford the swap; no UPGRADE bought.
+    _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws=[9, 10])
+    poor = optimise_plan(
+        season="2025-26",
+        start_gw=10,
+        horizon=1,
+        initial_squad=_LEGAL_SQUAD,
+        free_transfers=1,
+        bank=0,
+    )
+    assert "UPGRADE" not in {p.player_name for p in poor[0].squad}
+
+    # bank=16 -> can afford the swap; UPGRADE bought.
+    rich = optimise_plan(
+        season="2025-26",
+        start_gw=10,
+        horizon=1,
+        initial_squad=_LEGAL_SQUAD,
+        free_transfers=1,
+        bank=16,
+    )
+    assert "UPGRADE" in {p.player_name for p in rich[0].squad}
+
+
 from fantasy_football.fpl_types import GameWeekPlan
 from fantasy_football.optimisation import _to_gameweek_plans
 

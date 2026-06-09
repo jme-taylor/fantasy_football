@@ -110,6 +110,7 @@ def _validate_initial_squad(
     initial_squad: list[str],
     predictions: pl.DataFrame,
     prices: dict[str, int],
+    budget: int = BUDGET,
 ) -> None:
     """Validate a carried-in squad, raising ValueError with named offenders.
 
@@ -125,6 +126,8 @@ def _validate_initial_squad(
         Prediction rows for the horizon (filtered to the optimised weeks).
     prices : dict[str, int]
         Player price in tenths of a million.
+    budget : int, optional
+        The effective budget ceiling. Defaults to BUDGET (1000).
     """
     known = set(predictions["name"].to_list())
     missing_pred = sorted(p for p in initial_squad if p not in known)
@@ -169,9 +172,9 @@ def _validate_initial_squad(
         )
 
     value = sum(prices[p] for p in initial_squad)
-    if value > BUDGET:
+    if value > budget:
         raise ValueError(
-            f"initial_squad value {value} exceeds budget {BUDGET}"
+            f"initial_squad value {value} exceeds budget {budget}"
         )
 
 
@@ -183,6 +186,7 @@ def _build_problem(
     initial_squad: list[str] | None = None,
     free_transfers: int = 1,
     bench_weight: float = BENCH_WEIGHT,
+    budget: int = BUDGET,
 ) -> tuple[pulp.LpProblem, dict]:
     """Construct the multi-week FPL MILP.
 
@@ -220,6 +224,9 @@ def _build_problem(
         Defaults to 1.
     bench_weight : float, optional
         Weight applied to bench players' predicted points.
+    budget : int, optional
+        The effective budget ceiling in tenths of a million. Defaults to
+        BUDGET (1000).
 
     Returns
     -------
@@ -267,7 +274,7 @@ def _build_problem(
                 pulp.lpSum(own[p, t] for p in players if pos[p] == position)
                 == n
             )
-        prob += pulp.lpSum(prices[p] * own[p, t] for p in players) <= BUDGET
+        prob += pulp.lpSum(prices[p] * own[p, t] for p in players) <= budget
         for c in set(club.values()):
             prob += (
                 pulp.lpSum(own[p, t] for p in players if club[p] == c)
@@ -498,6 +505,7 @@ def optimise_plan(
     horizon: int | None = None,
     initial_squad: list[str] | None = None,
     free_transfers: int = 1,
+    bank: int = 0,
 ) -> list[GameWeekPlan]:
     """Optimise the squad/XI/captain/transfers over a future horizon.
 
@@ -519,6 +527,10 @@ def optimise_plan(
     free_transfers: int
         Free transfers available at start_gw (1..MAX_FREE_TRANSFERS).
         Ignored at start_gw == 1 (a free build always opens with one free transfer).
+    bank: int
+        Money in the bank (tenths of a million) added to the carried-in
+        squad's value to form the budget. Ignored for a free build
+        (start_gw == 1). Defaults to 0.
 
     Returns
     -------
@@ -561,7 +573,10 @@ def optimise_plan(
     predictions = predictions.filter(pl.col("gw").is_in(weeks))
     prices = _load_prices(season, start_gw)
     if initial_squad is not None:
-        _validate_initial_squad(initial_squad, predictions, prices)
+        budget = sum(prices[p] for p in initial_squad if p in prices) + bank
+        _validate_initial_squad(initial_squad, predictions, prices, budget)
+    else:
+        budget = BUDGET
     missing = set(predictions["name"].to_list()) - set(prices)
     if missing:
         logger.warning(
@@ -572,7 +587,8 @@ def optimise_plan(
         predictions = predictions.filter(~pl.col("name").is_in(list(missing)))
 
     prob, variables = _build_problem(
-        predictions, prices, weeks, start_gw, initial_squad, free_transfers
+        predictions, prices, weeks, start_gw, initial_squad, free_transfers,
+        budget=budget,
     )
     status = _solve_problem(prob)
     if status != "Optimal":
