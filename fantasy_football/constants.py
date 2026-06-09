@@ -15,10 +15,7 @@ CURRENT_SEASON = "2025-26"
 VASTAAV_LAST_SEASON = "2024-2025"
 FPL_CORE_INSIGHTS_FIRST_SEASON = "2025-2026"
 
-# Vaastav seasons served only as standalone per-season files, not yet folded
-# into cleaned_merged_seasons.csv (which currently ends at 2023-24). These
-# "bridge" seasons are downloaded and loaded individually so the most recent
-# Vaastav season is not lost. Short-form season strings.
+# Special season that isn't in the cleaned_merged_seasons.csv file, but is still needed for the data pipeline.
 VASTAAV_BRIDGE_SEASONS: list[str] = ["2024-25"]
 
 # Prediction model tunables
