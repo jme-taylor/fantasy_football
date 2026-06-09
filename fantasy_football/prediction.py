@@ -103,7 +103,9 @@ def _elo_as_of(
 
 
 def predict_points(
-    current_season: str, horizon_n: int | None = None
+    current_season: str,
+    horizon_n: int | None = None,
+    as_of_gw: int | None = None,
 ) -> pl.DataFrame:
     """Produce per-(player, future_gw) point predictions and write CSV.
 
@@ -120,6 +122,11 @@ def predict_points(
     horizon_n: int | None
         The number of future gameweeks to predict. If None, all future gameweeks
         will be predicted.
+    as_of_gw : int | None
+        Pivot gameweek. When set, predictions cover gameweeks after as_of_gw
+        and baselines use only form at or before it (leak-free past-window
+        backtest). When None, the pivot is the latest completed current-season
+        gameweek. Defaults to None.
 
     Returns
     -------
@@ -130,7 +137,7 @@ def predict_points(
         TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
         try_parse_dates=True,
     )
-    baselines = _baselines(rolling, current_season)
+    baselines = _baselines(rolling, current_season, as_of_gw)
     fixtures = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("fixtures_enriched.csv"),
         try_parse_dates=True,
@@ -141,7 +148,11 @@ def predict_points(
     )
 
     last_completed = (
-        rolling.filter(pl.col("season") == current_season)["gw"].max() or 0
+        as_of_gw
+        if as_of_gw is not None
+        else (
+            rolling.filter(pl.col("season") == current_season)["gw"].max() or 0
+        )
     )
     if horizon_n is None:
         max_future_gw = fixtures.filter(pl.col("gw") > last_completed)[

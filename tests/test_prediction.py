@@ -379,3 +379,48 @@ def test_baselines_without_as_of_uses_latest_row() -> None:
     )
     result = _baselines(rolling, "2025-26")
     assert result.row(0, named=True)["baseline"] == pytest.approx(5.0)
+
+
+def test_predict_points_as_of_gw_predicts_window_with_as_of_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """as_of_gw=4 predicts GW>=5 using the as-of-GW4 baseline, not later form."""
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26"] * 4,
+            "name": ["P1"] * 4,
+            "position": ["MID"] * 4,
+            "team": ["Arsenal"] * 4,
+            "element": [101, 101, 101, 101],
+            "gw": [3, 4, 5, 6],
+            "total_points": [2, 4, 6, 8],
+            "total_points_rolling_5": [2.0, 3.0, 4.0, 5.0],
+        }
+    )
+    fixtures = pl.DataFrame(
+        {
+            "team": ["Arsenal", "Arsenal"],
+            "opponent_team": ["Chelsea", "Spurs"],
+            "is_home": [True, False],
+            # Kickoffs must fall inside the _baseline_elo interval
+            # (2025-10-01..2025-12-31) so the as-of ELO join matches.
+            "kickoff_date": [date(2025, 11, 1), date(2025, 11, 8)],
+            "season": ["2025-26", "2025-26"],
+            "gw": [5, 6],
+        }
+    )
+    _setup_artifacts(tmp_path, monkeypatch, rolling, fixtures, _baseline_elo())
+    monkeypatch.setattr(prediction, "OPPONENT_FACTOR_EXPONENT", 2.0)
+    monkeypatch.setattr(prediction, "HOME_FACTOR", 1.25)
+    monkeypatch.setattr(prediction, "AWAY_FACTOR", 0.75)
+    monkeypatch.setattr(prediction.random, "choice", lambda _seq: 1.00)
+
+    result = predict_points("2025-26", as_of_gw=4)
+
+    assert sorted(result["gw"].unique().to_list()) == [5, 6]
+    gw5 = result.filter(pl.col("gw") == 5).row(0, named=True)
+    # Baseline is the as-of-GW4 rolling value (3.0), NOT the GW6 value (5.0).
+    assert gw5["baseline"] == pytest.approx(3.0)
+    assert gw5["predicted_points"] == pytest.approx(
+        3.0 * (2000 / 1800) ** 2.0 * 1.25
+    )
