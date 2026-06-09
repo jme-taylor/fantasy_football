@@ -251,7 +251,7 @@ def _build_problem(
     ordered = sorted(weeks)
     for k, t in enumerate(ordered):
         if k == 0:
-            # weeks always begin at start_gw, so t == start_gw here.
+            # First gameweek: set the opening conditions.
             if free_build:
                 prob += ft[t] == 1
                 prob += paid[t] == 0
