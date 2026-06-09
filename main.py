@@ -58,7 +58,9 @@ def main(
     create_rolling_points_data(CURRENT_SEASON)
     build_fixtures_enriched(CURRENT_SEASON)
     build_team_elo()
-    predict_points(CURRENT_SEASON)
+    team = load_team_file(team_file) if team_file is not None else None
+    as_of_gw = team.gameweek - 1 if team is not None else None
+    predict_points(CURRENT_SEASON, as_of_gw=as_of_gw)
 
     predictions = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv")
@@ -71,8 +73,7 @@ def main(
             CURRENT_SEASON,
         )
         return
-    if team_file is not None:
-        team = load_team_file(team_file)
+    if team is not None:
         ids = resolve_names_to_ids(team.players, CURRENT_SEASON)
         names = resolve_ids_to_names(ids, predictions)
         optimise_plan(
@@ -88,4 +89,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(download_all_data=True)
+    main(download_all_data=True, team_file="data/dummy_team.json")
