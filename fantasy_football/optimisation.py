@@ -548,6 +548,10 @@ def optimise_plan(
             logger.warning(
                 "start_gw == 1 is a free build; ignoring initial_squad."
             )
+        if bank:
+            logger.warning(
+                "start_gw == 1 is a free build; ignoring bank."
+            )
         initial_squad = None
     elif initial_squad is None:
         raise ValueError(
@@ -573,6 +577,8 @@ def optimise_plan(
     predictions = predictions.filter(pl.col("gw").is_in(weeks))
     prices = _load_prices(season, start_gw)
     if initial_squad is not None:
+        # Any squad player missing a price is caught with a clear error in
+        # _validate_initial_squad below; the guard just avoids a KeyError here.
         budget = sum(prices[p] for p in initial_squad if p in prices) + bank
         _validate_initial_squad(initial_squad, predictions, prices, budget)
     else:

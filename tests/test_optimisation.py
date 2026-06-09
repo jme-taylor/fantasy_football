@@ -669,6 +669,7 @@ def test_optimise_plan_bank_raises_effective_budget(
         free_transfers=1,
         bank=0,
     )
+    # 15*66=990 budget; buying UPGRADE (82) for any 66 player spends 1006 > 990.
     assert "UPGRADE" not in {p.player_name for p in poor[0].squad}
 
     # bank=16 -> can afford the swap; UPGRADE bought.
