@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 
 from fantasy_football import prediction
-from fantasy_football.prediction import predict_points
+from fantasy_football.prediction import _baselines, predict_points
 
 
 def _setup_artifacts(
@@ -341,3 +341,41 @@ def test_predict_points_default_horizon_with_no_future_fixtures_is_empty(
     result = predict_points("2025-26")
 
     assert result.is_empty()
+
+
+def test_baselines_as_of_gw_uses_row_at_or_before_pivot() -> None:
+    """as_of_gw selects each player's latest rolling row with gw <= pivot."""
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26"] * 4,
+            "name": ["P1"] * 4,
+            "position": ["MID"] * 4,
+            "team": ["Arsenal"] * 4,
+            "element": [101, 101, 101, 101],
+            "gw": [3, 4, 5, 6],
+            "total_points": [2, 4, 6, 8],
+            "total_points_rolling_5": [2.0, 3.0, 4.0, 5.0],
+        }
+    )
+    result = _baselines(rolling, "2025-26", as_of_gw=4)
+    row = result.row(0, named=True)
+    # The gw4 rolling value (3.0), not the later gw5/gw6 values.
+    assert row["baseline"] == pytest.approx(3.0)
+
+
+def test_baselines_without_as_of_uses_latest_row() -> None:
+    """With as_of_gw=None the baseline is the player's latest rolling row."""
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26"] * 3,
+            "name": ["P1"] * 3,
+            "position": ["MID"] * 3,
+            "team": ["Arsenal"] * 3,
+            "element": [101, 101, 101],
+            "gw": [4, 5, 6],
+            "total_points": [4, 6, 8],
+            "total_points_rolling_5": [3.0, 4.0, 5.0],
+        }
+    )
+    result = _baselines(rolling, "2025-26")
+    assert result.row(0, named=True)["baseline"] == pytest.approx(5.0)

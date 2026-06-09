@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 
 
-def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
+def _baselines(
+    rolling: pl.DataFrame, current_season: str, as_of_gw: int | None = None
+) -> pl.DataFrame:
     """Return one row per player: latest current-season rolling value + team.
 
     Parameters
@@ -26,6 +28,10 @@ def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
         The rolling points DataFrame.
     current_season: str
         The current season.
+    as_of_gw : int | None, optional
+        When set, restrict the baseline to each player's latest rolling row at
+        or before this gameweek (leak-free for a past-window backtest). When
+        None, the latest current-season row is used. Defaults to None.
 
     Returns
     -------
@@ -34,6 +40,8 @@ def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
     """
     rolling_col = rolling_column_name("total_points", ROLLING_WINDOW)
     current = rolling.filter(pl.col("season") == current_season)
+    if as_of_gw is not None:
+        current = current.filter(pl.col("gw") <= as_of_gw)
     if current.is_empty():
         return current.select(
             "name",
