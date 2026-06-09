@@ -320,7 +320,12 @@ def _solve_problem(prob: pulp.LpProblem) -> str:
     return pulp.LpStatus[prob.status]
 
 
-def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
+def _extract_plan(
+    variables: dict,
+    weeks: list[int],
+    start_gw: int,
+    initial_squad: list[str] | None = None,
+) -> Plan:
     """Convert solved MILP variables into a Plan.
 
     Parameters
@@ -330,7 +335,12 @@ def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
     weeks: list[int]
         The gameweeks that were optimised, in any order.
     start_gw: int
-        The first (free-build) gameweek.
+        The first gameweek of the horizon.
+    initial_squad: list[str] or None, optional
+        The squad carried into the horizon. Controls whether start_gw transfers
+        are reported: when None (free build), start_gw transfers are blanked
+        (the opening squad is just "bought", not transferred into). When
+        provided, real start_gw transfers are reported in the plan.
 
     Returns
     -------
@@ -349,14 +359,16 @@ def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
             if week == t and round(var.value()) == 1
         ]
 
+    free_build = initial_squad is None
     gameweeks: list[GameweekPlan] = []
     total = 0.0
     for t in sorted(weeks):
         squad = chosen(own, t)
         xi = chosen(start, t)
         captain = chosen(cap, t)[0]
-        ins = [] if t == start_gw else chosen(buy, t)
-        outs = [] if t == start_gw else chosen(sell, t)
+        blank_start = t == start_gw and free_build
+        ins = [] if blank_start else chosen(buy, t)
+        outs = [] if blank_start else chosen(sell, t)
         hits = int(round(paid[t].value())) * HIT_COST
         xi_pts = sum(points.get((n, t), 0.0) for n in xi)
         captain_pts = points.get((captain, t), 0.0)

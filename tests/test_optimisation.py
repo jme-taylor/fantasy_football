@@ -292,6 +292,27 @@ def test_extract_plan_reads_solved_variables() -> None:
     assert plan.total_expected_points == pytest.approx(gw.expected_points)
 
 
+def test_extract_plan_reports_start_gw_transfers_with_initial_squad() -> None:
+    """With a carried-in squad, start_gw transfers appear in the plan."""
+    predictions, prices = _feasible_universe([10])
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10],
+        start_gw=10,
+        initial_squad=_SQUAD_ONE_OFF,
+        free_transfers=1,
+    )
+    assert _solve_problem(prob) == "Optimal"
+    plan = _extract_plan(
+        v, weeks=[10], start_gw=10, initial_squad=_SQUAD_ONE_OFF
+    )
+    gw = plan.gameweeks[0]
+    assert gw.transfers_in == ["FWD2"]
+    assert gw.transfers_out == ["FWD3"]
+    assert gw.hits == 0
+
+
 def _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws):
     """Write predictions/merged_gw to a temp tree and patch folder constants."""
     transformed = tmp_path / "transformed"
