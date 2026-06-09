@@ -7,6 +7,7 @@ from fantasy_football import team_input
 from fantasy_football.team_input import (
     TeamFile,
     load_team_file,
+    resolve_ids_to_names,
     resolve_names_to_ids,
 )
 
@@ -121,3 +122,30 @@ def test_resolve_names_to_ids_reports_unmatched_and_ambiguous_together(
         resolve_names_to_ids(["Danny Ward", "Ghost Player"], "2025-26")
     assert "Danny Ward" in str(exc.value)
     assert "Ghost Player" in str(exc.value)
+
+
+def _predictions(rows) -> pl.DataFrame:
+    """Build a small predictions DataFrame from a dict of columns."""
+    return pl.DataFrame(rows)
+
+
+def test_resolve_ids_to_names_maps_ids() -> None:
+    """resolve_ids_to_names returns the name for each id, in order."""
+    predictions = _predictions(
+        {
+            "name": ["Mohamed Salah", "Mohamed Salah", "Erling Haaland"],
+            "player_id": [328, 328, 351],
+            "gw": [5, 6, 5],
+        }
+    )
+    names = resolve_ids_to_names([351, 328], predictions)
+    assert names == ["Erling Haaland", "Mohamed Salah"]
+
+
+def test_resolve_ids_to_names_reports_missing_id() -> None:
+    """An id absent from predictions is named in the raised ValueError."""
+    predictions = _predictions(
+        {"name": ["Mohamed Salah"], "player_id": [328], "gw": [5]}
+    )
+    with pytest.raises(ValueError, match="999"):
+        resolve_ids_to_names([328, 999], predictions)

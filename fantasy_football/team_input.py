@@ -91,3 +91,38 @@ def resolve_names_to_ids(names: list[str], season: str) -> list[int]:
             f"ambiguous={ambiguous}"
         )
     return [next(iter(name_to_ids[n])) for n in names]
+
+
+def resolve_ids_to_names(
+    ids: list[int], predictions: pl.DataFrame
+) -> list[str]:
+    """Map FPL element ids to optimiser names via predictions.
+
+    Parameters
+    ----------
+    ids : list[int]
+        FPL element ids.
+    predictions : pl.DataFrame
+        Prediction rows carrying ``player_id`` and ``name`` columns.
+
+    Returns
+    -------
+    list[str]
+        The name for each id, in order.
+
+    Raises
+    ------
+    ValueError
+        If any id is absent from ``predictions``.
+    """
+    id_to_name = dict(
+        zip(
+            predictions["player_id"].to_list(),
+            predictions["name"].to_list(),
+            strict=True,
+        )
+    )
+    missing = sorted(i for i in ids if i not in id_to_name)
+    if missing:
+        raise ValueError(f"ids missing from predictions: {missing}")
+    return [id_to_name[i] for i in ids]
