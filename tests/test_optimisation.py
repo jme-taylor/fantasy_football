@@ -378,6 +378,24 @@ def test_optimise_plan_with_initial_squad_reports_start_gw_transfer(
     assert gw10.hits == 0
 
 
+def test_optimise_plan_ignores_initial_squad_at_gw1(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At GW1 the build is free: a provided initial_squad is ignored, not required."""
+    predictions, prices = _feasible_universe([1, 2])
+    _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws=[1])
+    # Passing a squad at GW1 must not raise; it free-builds (no start-gw transfers).
+    plans = optimise_plan(
+        season="2025-26",
+        start_gw=1,
+        horizon=2,
+        initial_squad=_SQUAD_ONE_OFF,
+    )
+    gw1 = next(p for p in plans if p.gameweek == 1)
+    assert gw1.transfers_in == []
+    assert gw1.transfers_out == []
+
+
 def test_first_week_is_a_free_build_with_no_hits() -> None:
     """The opening squad costs no transfer hit and records no transfers."""
     predictions, prices = _feasible_universe([10])
