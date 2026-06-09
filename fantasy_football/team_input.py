@@ -87,7 +87,7 @@ def resolve_names_to_ids(names: list[str], season: str) -> list[int]:
     )
     if unmatched or ambiguous:
         raise ValueError(
-            f"could not resolve names to ids: unmatched {unmatched}, "
-            f"ambiguous {ambiguous}"
+            f"could not resolve names to ids: unmatched={unmatched}, "
+            f"ambiguous={ambiguous}"
         )
     return [next(iter(name_to_ids[n])) for n in names]

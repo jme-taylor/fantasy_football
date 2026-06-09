@@ -102,3 +102,22 @@ def test_resolve_names_to_ids_reports_ambiguous(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(team_input, "RAW_DATA_FOLDER", tmp_path / "raw")
     with pytest.raises(ValueError, match="ambiguous"):
         resolve_names_to_ids(["Danny Ward"], "2025-26")
+
+
+def test_resolve_names_to_ids_reports_unmatched_and_ambiguous_together(
+    tmp_path, monkeypatch
+) -> None:
+    """Both unmatched and ambiguous offenders are named in one error."""
+    _write_merged_gw(
+        tmp_path,
+        {
+            "name": ["Danny Ward", "Danny Ward"],
+            "element": [11, 22],
+            "GW": [5, 5],
+        },
+    )
+    monkeypatch.setattr(team_input, "RAW_DATA_FOLDER", tmp_path / "raw")
+    with pytest.raises(ValueError) as exc:
+        resolve_names_to_ids(["Danny Ward", "Ghost Player"], "2025-26")
+    assert "Danny Ward" in str(exc.value)
+    assert "Ghost Player" in str(exc.value)
