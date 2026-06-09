@@ -457,16 +457,15 @@ def test_extra_transfers_incur_hits() -> None:
     plan = _extract_plan(v, weeks=[10, 11, 12], start_gw=10)
 
     gw10, gw11, gw12 = plan.gameweeks
-    # Free build: no transfers, no hits.
+    # GW10 is a free build: no transfers, no hits.
     assert gw10.hits == 0
     assert gw10.transfers_in == []
-    # GW11: uses banked FTs (2 available), no hit.
-    assert gw11.hits == 0
-    assert gw11.free_transfers == 2
-    assert len(gw11.transfers_in) == 2
-    # GW12: only 1 FT left; 5 MID swaps needed → 4 paid → hits=16.
-    assert gw12.hits == 16
-    assert len(gw12.transfers_in) == 5
+    # The optimal objective forces 16 points of hits across the horizon to
+    # load the GW12 specialists, even though the solver may split which week
+    # the paid transfers land in (the per-week split is a degenerate optimum).
+    assert gw10.hits + gw11.hits + gw12.hits == 16
+    # By GW12 the squad must hold all five GW12-specialist MIDs.
+    assert {f"GW12S{i}" for i in range(5)} <= set(gw12.squad)
 
 
 def test_start_gw_transfers_reduce_banked_free_transfers() -> None:

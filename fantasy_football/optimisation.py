@@ -518,6 +518,7 @@ def optimise_plan(
         Ignored at GW1 (free build).
     free_transfers: int
         Free transfers available at start_gw (1..MAX_FREE_TRANSFERS).
+        Ignored at start_gw == 1 (a free build always opens with one free transfer).
 
     Returns
     -------
