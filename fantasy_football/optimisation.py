@@ -106,6 +106,69 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
     )
 
 
+def _validate_initial_squad(
+    initial_squad: list[str],
+    predictions: pl.DataFrame,
+    prices: dict[str, int],
+) -> None:
+    """Validate a carried-in squad, raising ValueError with named offenders.
+
+    Checks, in order: data availability (price + prediction rows), squad size
+    and position split, the per-club cap, and the budget. Each failure raises
+    a ValueError naming the offending players, clubs, or value.
+
+    Parameters
+    ----------
+    initial_squad : list[str]
+        The carried-in squad (player names).
+    predictions : pl.DataFrame
+        Prediction rows for the horizon (filtered to the optimised weeks).
+    prices : dict[str, int]
+        Player price in tenths of a million.
+    """
+    known = set(predictions["name"].to_list())
+    missing_pred = sorted(p for p in initial_squad if p not in known)
+    missing_price = sorted(p for p in initial_squad if p not in prices)
+    if missing_pred or missing_price:
+        raise ValueError(
+            "initial_squad players missing data: "
+            f"no predictions for {missing_pred}, no price for {missing_price}"
+        )
+
+    if len(initial_squad) != SQUAD_SIZE:
+        raise ValueError(
+            f"initial_squad must have {SQUAD_SIZE} players, "
+            f"got {len(initial_squad)}"
+        )
+
+    pos = dict(zip(predictions["name"], predictions["position"], strict=False))
+    club = dict(zip(predictions["name"], predictions["team"], strict=False))
+
+    counts = {position: 0 for position in SQUAD_BY_POSITION}
+    for p in initial_squad:
+        counts[pos[p]] += 1
+    if counts != SQUAD_BY_POSITION:
+        raise ValueError(
+            f"initial_squad has wrong position split {counts}, "
+            f"expected {SQUAD_BY_POSITION}"
+        )
+
+    club_counts: dict[str, int] = {}
+    for p in initial_squad:
+        club_counts[club[p]] = club_counts.get(club[p], 0) + 1
+    over = {c: n for c, n in club_counts.items() if n > MAX_PER_CLUB}
+    if over:
+        raise ValueError(
+            f"initial_squad exceeds {MAX_PER_CLUB} players per club: {over}"
+        )
+
+    value = sum(prices[p] for p in initial_squad)
+    if value > BUDGET:
+        raise ValueError(
+            f"initial_squad value {value} exceeds budget {BUDGET}"
+        )
+
+
 def _prune_players(predictions: pl.DataFrame, k: int) -> pl.DataFrame:
     """Keep only the top-k players per position by mean predicted points.
 

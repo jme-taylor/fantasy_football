@@ -522,6 +522,55 @@ def test_start_gw_transfers_reduce_banked_free_transfers() -> None:
     assert round(v["paid"][11].value()) == 1
 
 
+from fantasy_football.optimisation import _validate_initial_squad
+
+
+def test_validate_initial_squad_accepts_a_legal_squad() -> None:
+    predictions, prices = _feasible_universe([10])
+    # Returns None (no raise) for a legal squad.
+    assert _validate_initial_squad(_LEGAL_SQUAD, predictions, prices) is None
+
+
+def test_validate_initial_squad_rejects_missing_data() -> None:
+    predictions, prices = _feasible_universe([10])
+    squad = _LEGAL_SQUAD[:-1] + ["GHOST"]  # GHOST has no price/prediction
+    with pytest.raises(ValueError, match="GHOST"):
+        _validate_initial_squad(squad, predictions, prices)
+
+
+def test_validate_initial_squad_rejects_wrong_composition() -> None:
+    predictions, prices = _feasible_universe([10])
+    # 3 GK / 5 DEF / 5 MID / 2 FWD = 15 players but illegal split.
+    squad = (
+        ["GK0", "GK1", "GK2"]
+        + ["DEF0", "DEF1", "DEF2", "DEF3", "DEF4"]
+        + ["MID0", "MID1", "MID2", "MID3", "MID4"]
+        + ["FWD0", "FWD1"]
+    )
+    with pytest.raises(ValueError, match="position split"):
+        _validate_initial_squad(squad, predictions, prices)
+
+
+def test_validate_initial_squad_rejects_club_cap_breach() -> None:
+    predictions, prices = _feasible_universe([10])
+    # GK0, DEF4, MID4, FWD4 all share club C0 (idx % 7) -> 4 from one club.
+    squad = (
+        ["GK0", "GK1"]
+        + ["DEF0", "DEF1", "DEF2", "DEF3", "DEF4"]
+        + ["MID0", "MID1", "MID2", "MID3", "MID4"]
+        + ["FWD0", "FWD1", "FWD4"]
+    )
+    with pytest.raises(ValueError, match="per club"):
+        _validate_initial_squad(squad, predictions, prices)
+
+
+def test_validate_initial_squad_rejects_over_budget() -> None:
+    predictions, prices = _feasible_universe([10])
+    dear = {name: 100 for name in prices}  # 15 * 100 = 1500 > BUDGET (1000)
+    with pytest.raises(ValueError, match="budget"):
+        _validate_initial_squad(_LEGAL_SQUAD, predictions, dear)
+
+
 from fantasy_football.fpl_types import GameWeekPlan
 from fantasy_football.optimisation import _to_gameweek_plans
 
