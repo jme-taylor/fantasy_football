@@ -12,6 +12,11 @@ from fantasy_football.logging_config import configure_logging
 from fantasy_football.optimisation import optimise_plan
 from fantasy_football.prediction import predict_points
 from fantasy_football.seasons import DataSource, source_for_season
+from fantasy_football.team_input import (
+    load_team_file,
+    resolve_ids_to_names,
+    resolve_names_to_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +36,19 @@ def update_current_season(season: str) -> None:
         DataExtractor().save_all_data_files()
 
 
-def main(*, download_all_data: bool = False) -> None:
+def main(
+    *, download_all_data: bool = False, team_file: str | None = None
+) -> None:
     """Download FPL data, transform it, predict points, and optimise a plan.
 
     Parameters
     ----------
     download_all_data : bool, optional
         When True, also refresh the Vaastav historic dataset. Defaults to False.
+    team_file : str | None, optional
+        Path to a name-authored team JSON. When given, optimisation carries
+        in that squad from its gameweek instead of free-building. Defaults to
+        None.
     """
     configure_logging()
     if download_all_data:
@@ -60,8 +71,20 @@ def main(*, download_all_data: bool = False) -> None:
             CURRENT_SEASON,
         )
         return
-    start_gw = int(predictions["gw"].min())
-    optimise_plan(CURRENT_SEASON, start_gw)
+    if team_file is not None:
+        team = load_team_file(team_file)
+        ids = resolve_names_to_ids(team.players, CURRENT_SEASON)
+        names = resolve_ids_to_names(ids, predictions)
+        optimise_plan(
+            CURRENT_SEASON,
+            team.gameweek,
+            initial_squad=names,
+            free_transfers=team.free_transfers,
+            bank=team.bank,
+        )
+    else:
+        start_gw = int(predictions["gw"].min())
+        optimise_plan(CURRENT_SEASON, start_gw)
 
 
 if __name__ == "__main__":
