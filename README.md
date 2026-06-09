@@ -10,8 +10,10 @@ A personal project to automatically pick my Fantasy Premier League (FPL) team. T
 
 This is an early-stage work in progress. The repository currently contains:
 
-* `main.py` — entry point that downloads FPL data from the [Vaastav FPL repository](https://github.com/vaastav/Fantasy-Premier-League) into the local `data/` directory, mirroring the upstream structure.
-* `fantasy_football/data_extraction.py` — functions for downloading historic and current-season FPL data.
+* `main.py` — entry point that refreshes the current season's data from the correct source (FCI for 2025-26+, Vaastav for historic seasons), transforms it, predicts points, and runs the optimiser.
+* `fantasy_football/data_extraction.py` — downloads the frozen Vaastav historic dataset (`cleaned_merged_seasons.csv`).
+* `fantasy_football/fci_extraction.py` — downloads current-season data from FPL Core Insights and reconstructs it into Vaastav's `merged_gw.csv` shape.
+* `fantasy_football/seasons.py` — season-string conversions and data-source routing.
 * `fantasy_football/data_transformation.py` — functions for transforming raw data into rolling/feature datasets.
 * `fantasy_football/fpl.py` — wrappers around the live FPL API (players, teams, fixtures).
 * `fantasy_football/fpl_types.py` — Pydantic types describing FPL API responses.
@@ -19,6 +21,17 @@ This is an early-stage work in progress. The repository currently contains:
 * `tests/` — unit tests for the modules above.
 
 Earlier per-position prediction models and the linear-programming optimisation prototype have been removed while the data pipeline is being rebuilt. They will be reintroduced once the underlying data and feature pipeline is stable.
+
+## Data sources
+
+Historic data (through the 2024-25 season) comes from the
+[Vaastav FPL repository](https://github.com/vaastav/Fantasy-Premier-League),
+which stopped weekly updates as of 2025/26. From the 2025-26 season onwards,
+current data comes from [FPL Core Insights](https://github.com/olbauday/FPL-Core-Insights).
+The cutoff is controlled by `VASTAAV_LAST_SEASON` and
+`FPL_CORE_INSIGHTS_FIRST_SEASON` in `constants.py`. FCI stores per-gameweek
+snapshots in a different shape, so it is reconstructed into Vaastav's
+`merged_gw.csv` layout — keeping the rest of the pipeline unchanged.
 
 ## Roadmap
 
@@ -29,7 +42,7 @@ The high-level milestones are:
 * [X] Build a simple model of rolling points weighted by opponent strength and home/away
 * [X] Build an optimisation algorithm on top of the predicted points
 * [X] Format the optimiser output into concrete team / transfer decisions
-* [ ] Get a new datasource for future/current data now that Vastaav has sunsetted their project
+* [X] Get a new datasource for future/current data now that Vastaav has sunsetted their project
 * [ ] Backtest against a mid-season gameweek and ensure all decisions respect FPL rules
 * [ ] Define metrics for evaluating model quality
 * [ ] Identify and incorporate additional features to improve the model
@@ -75,4 +88,7 @@ uv run mypy fantasy_football
 
 ## Resources
 
-Data is sourced from the excellent [Fantasy Premier League](https://github.com/vaastav/Fantasy-Premier-League) repository by Vaastav Anand, which mirrors the FPL API into a structured per-season dataset.
+Historic data is sourced from the [Fantasy Premier League](https://github.com/vaastav/Fantasy-Premier-League)
+repository by Vaastav Anand (through 2024-25). Current-season data (2025-26+)
+is sourced from [FPL Core Insights](https://github.com/olbauday/FPL-Core-Insights).
+Both are accessed via the GitHub API using `GITHUB_API_KEY`.

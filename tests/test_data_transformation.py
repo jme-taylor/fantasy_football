@@ -59,6 +59,7 @@ def test_load_gw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     season_data = raw_data / current_season / "gws"
     season_data.mkdir(parents=True)
     monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
+    monkeypatch.setattr(data_transformation, "VASTAAV_BRIDGE_SEASONS", [])
 
     # Create sample data files
     previous_seasons_data = pl.DataFrame(
@@ -122,6 +123,116 @@ def test_load_gw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.filter(pl.col("name") == "Player2")[
         "team"
     ].unique().to_list() == ["Chelsea"]
+
+
+def _write_aggregate(raw_data: Path) -> None:
+    """Write a minimal cleaned_merged_seasons.csv with one 2020-21 row."""
+    pl.DataFrame(
+        {
+            "season_x": ["2020-21"],
+            "name": ["Player1"],
+            "position": ["GKP"],
+            "team_x": ["Arsenal"],
+            "bonus": [1],
+            "element": [1],
+            "minutes": [90],
+            "round": [1],
+            "total_points": [6],
+            "GW": [1],
+        }
+    ).write_csv(raw_data / "cleaned_merged_seasons.csv")
+
+
+def _write_season_merged_gw(raw_data: Path, season: str, name: str) -> None:
+    """Write a minimal per-season merged_gw.csv with one row for ``name``."""
+    season_dir = raw_data / season / "gws"
+    season_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "name": [name],
+            "position": ["DEF"],
+            "team": ["Leeds"],
+            "bonus": [2],
+            "element": [3],
+            "minutes": [90],
+            "round": [5],
+            "total_points": [8],
+            "GW": [5],
+        }
+    ).write_csv(season_dir / "merged_gw.csv")
+
+
+def test_load_gw_data_includes_bridge_season(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A present bridge season is loaded alongside aggregate and current.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        A temporary directory path provided by pytest.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest monkeypatch fixture used to redirect data folders and config.
+    """
+    raw_data = tmp_path / "raw"
+    current_season = "2025-26"
+    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
+    monkeypatch.setattr(
+        data_transformation, "VASTAAV_BRIDGE_SEASONS", ["2024-25"]
+    )
+    raw_data.mkdir(parents=True)
+    _write_aggregate(raw_data)
+    _write_season_merged_gw(raw_data, "2024-25", "Bridger")
+    _write_season_merged_gw(raw_data, current_season, "Currenter")
+
+    result = load_gw_data(current_season)
+
+    assert set(result["season"].unique().to_list()) == {
+        "2020-21",
+        "2024-25",
+        "2025-26",
+    }
+    bridger = result.filter(pl.col("name") == "Bridger")
+    assert bridger["season"].to_list() == ["2024-25"]
+    assert bridger["team"].to_list() == ["Leeds"]
+
+
+def test_load_gw_data_skips_absent_bridge_season(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An absent bridge season is skipped with a warning, not an error.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        A temporary directory path provided by pytest.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest monkeypatch fixture used to redirect data folders and config.
+    caplog : pytest.LogCaptureFixture
+        Pytest fixture for capturing log records.
+    """
+    raw_data = tmp_path / "raw"
+    current_season = "2025-26"
+    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
+    monkeypatch.setattr(
+        data_transformation, "VASTAAV_BRIDGE_SEASONS", ["2024-25"]
+    )
+    raw_data.mkdir(parents=True)
+    _write_aggregate(raw_data)
+    _write_season_merged_gw(raw_data, current_season, "Currenter")
+
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.data_transformation"
+    ):
+        result = load_gw_data(current_season)
+
+    assert "2024-25" not in result["season"].unique().to_list()
+    assert any(
+        "Bridge season 2024-25" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_load_gw_data_missing_previous_seasons_file(

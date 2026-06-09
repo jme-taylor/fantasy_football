@@ -5,7 +5,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from fantasy_football.constants import DATA_FOLDER
+from fantasy_football.constants import DATA_FOLDER, VASTAAV_BRIDGE_SEASONS
 
 load_dotenv()
 
@@ -17,13 +17,25 @@ RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 class GitHubAPIClient:
     """Client for interacting with the GitHub API for Fantasy Premier League data."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        owner: str = "vaastav",
+        repo: str = "Fantasy-Premier-League",
+        branch: str = "master",
+    ) -> None:
         """Initialize the GitHub API client.
 
         Parameters
         ----------
         api_key : str | None, optional
             GitHub API key. If None, will try to get from GITHUB_API_KEY environment variable.
+        owner : str, optional
+            GitHub repository owner. Defaults to the Vaastav repo owner.
+        repo : str, optional
+            GitHub repository name. Defaults to the Vaastav FPL repo.
+        branch : str, optional
+            Branch to read from. Defaults to "master".
 
         Raises
         ------
@@ -36,10 +48,11 @@ class GitHubAPIClient:
                 "GitHub API key is required. Set GITHUB_API_KEY environment variable or pass api_key parameter."
             )
 
-        self.base_url = (
-            "https://api.github.com/repos/vaastav/Fantasy-Premier-League"
+        self.branch = branch
+        self.base_url = f"https://api.github.com/repos/{owner}/{repo}"
+        self.raw_base_url = (
+            f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}"
         )
-        self.raw_base_url = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master"
         self.headers = {
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.api_key}",
@@ -60,7 +73,7 @@ class GitHubAPIClient:
             If the API request fails.
         """
         response = requests.get(
-            f"{self.base_url}/git/trees/master?recursive=1",
+            f"{self.base_url}/git/trees/{self.branch}?recursive=1",
             headers=self.headers,
         )
         response.raise_for_status()
@@ -110,6 +123,8 @@ class GitHubAPIClient:
 class DataExtractor:
     """Extracts and manages Fantasy Premier League data files."""
 
+    HISTORIC_FILE = "data/cleaned_merged_seasons.csv"
+
     def __init__(self, api_client: GitHubAPIClient | None = None) -> None:
         """Initialize the data extractor.
 
@@ -120,22 +135,6 @@ class DataExtractor:
         """
         self.api_client = api_client or GitHubAPIClient()
         self.raw_data_folder = RAW_DATA_FOLDER
-
-    def get_all_data_files(self) -> list[dict]:
-        """Get details about all CSV files in the data folder.
-
-        Returns
-        -------
-        list[dict]
-            list of dictionaries containing details about CSV files in the data folder.
-        """
-        all_files = self.api_client.get_all_repo_files()
-        return [
-            file
-            for file in all_files["tree"]
-            if file["path"].startswith("data/")
-            and file["path"].endswith(".csv")
-        ]
 
     def _create_local_path(self, file_path: str) -> Path:
         """Create local path structure for a given file path.
@@ -179,29 +178,21 @@ class DataExtractor:
             f.write(response.content)
 
     def save_all_data_files(self) -> None:
-        """Save all data files from the Fantasy Premier League repo to local storage."""
-        self.raw_data_folder.mkdir(parents=True, exist_ok=True)
-        data_files = self.get_all_data_files()
+        """Download the frozen Vaastav historic dataset.
 
-        for file_info in data_files:
-            try:
-                self.save_file(file_info)
-                logger.info("Successfully saved: %s", file_info["path"])
-            except Exception:
-                logger.exception("Error saving %s", file_info["path"])
-
-    def update_current_season_data(self, season: str) -> None:
-        """Update the current season data for the Fantasy Premier League.
-
-        Parameters
-        ----------
-        season : str
-            The season to update the data for (e.g., '2023-24').
+        Fetches ``cleaned_merged_seasons.csv`` (the aggregate of older seasons)
+        plus each Vaastav "bridge" season's ``merged_gw.csv`` — the recent
+        seasons not yet folded into that aggregate (see
+        ``VASTAAV_BRIDGE_SEASONS``). Current-season data comes from FCI.
         """
-        file_path = f"data/{season}/gws/merged_gw.csv"
-        try:
-            season_data = self.api_client.get_file_details(file_path)
-            self.save_file(season_data)
-            logger.info("Successfully updated season data for %s", season)
-        except Exception:
-            logger.exception("Error updating season data for %s", season)
+        self.raw_data_folder.mkdir(parents=True, exist_ok=True)
+        bridge_files = [
+            f"data/{season}/gws/merged_gw.csv"
+            for season in VASTAAV_BRIDGE_SEASONS
+        ]
+        for path in [self.HISTORIC_FILE, *bridge_files]:
+            try:
+                self.save_file({"path": path})
+                logger.info("Successfully saved: %s", path)
+            except Exception:
+                logger.exception("Error saving %s", path)
