@@ -68,28 +68,6 @@ def test_load_prices_uses_latest_value_at_or_before_start_gw(
     assert prices["P2"] == 80
 
 
-from fantasy_football.optimisation import _prune_players
-
-
-def test_prune_players_keeps_top_k_per_position_by_mean_points() -> None:
-    """_prune_players keeps the top-k players per position by mean predicted points."""
-    predictions = pl.DataFrame(
-        {
-            "name": ["A", "A", "B", "C", "G1", "G2", "G3"],
-            "position": ["MID", "MID", "MID", "MID", "GK", "GK", "GK"],
-            "team": ["T"] * 7,
-            "gw": [10, 11, 10, 10, 10, 10, 10],
-            "predicted_points": [9.0, 9.0, 5.0, 1.0, 4.0, 3.0, 2.0],
-        }
-    )
-    kept = _prune_players(predictions, k=2)
-    names = set(kept["name"].to_list())
-    # Top-2 MIDs by mean are A (9.0) and B (5.0); C is dropped.
-    assert "A" in names and "B" in names and "C" not in names
-    # Top-2 GKs are G1 and G2; G3 dropped.
-    assert "G1" in names and "G2" in names and "G3" not in names
-
-
 from fantasy_football.optimisation import _build_problem, _solve_problem
 
 
@@ -335,16 +313,16 @@ def _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws):
 def test_optimise_plan_writes_jsonl_and_returns_gameweek_plans(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end: optimise_plan returns typed plans and writes JSON Lines."""
+    """End-to-end: GW1 free build returns typed plans and writes JSON Lines."""
     import json
 
-    predictions, prices = _feasible_universe([10, 11])
+    predictions, prices = _feasible_universe([1, 2])
     transformed = _setup_artifacts(
-        tmp_path, monkeypatch, predictions, prices, gws=[9, 10, 11]
+        tmp_path, monkeypatch, predictions, prices, gws=[1]
     )
-    plans = optimise_plan(season="2025-26", start_gw=10, horizon=2, k=20)
+    plans = optimise_plan(season="2025-26", start_gw=1, horizon=2)
 
-    assert [p.gameweek for p in plans] == [10, 11]
+    assert [p.gameweek for p in plans] == [1, 2]
     assert not (transformed / "optimisation_plan.csv").exists()
     out = transformed / "optimisation_plan.jsonl"
     assert out.exists()
@@ -352,12 +330,52 @@ def test_optimise_plan_writes_jsonl_and_returns_gameweek_plans(
     lines = out.read_text().splitlines()
     assert len(lines) == 2
     first = json.loads(lines[0])
-    assert first["gameweek"] == 10
+    assert first["gameweek"] == 1
     assert len(first["squad"]) == 15
     assert len(first["starting_xi"]) == 11
     assert all(p["player_id"] is not None for p in first["squad"])
     xi_names = {p["player_name"] for p in first["starting_xi"]}
     assert first["captain"]["player_name"] in xi_names
+
+
+def test_optimise_plan_requires_initial_squad_after_gw1() -> None:
+    """start_gw > 1 with no initial_squad is rejected before any file I/O."""
+    with pytest.raises(ValueError, match="initial_squad"):
+        optimise_plan(season="2025-26", start_gw=10, horizon=2)
+
+
+def test_optimise_plan_rejects_bad_free_transfers() -> None:
+    """free_transfers must be within 1..MAX_FREE_TRANSFERS."""
+    with pytest.raises(ValueError, match="free_transfers"):
+        optimise_plan(
+            season="2025-26",
+            start_gw=1,
+            horizon=1,
+            free_transfers=6,
+        )
+
+
+def test_optimise_plan_with_initial_squad_reports_start_gw_transfer(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mid-season run honours the carried-in squad and reports its transfer."""
+    predictions, prices = _feasible_universe([10, 11])
+    _setup_artifacts(
+        tmp_path, monkeypatch, predictions, prices, gws=[9, 10]
+    )
+    plans = optimise_plan(
+        season="2025-26",
+        start_gw=10,
+        horizon=2,
+        initial_squad=_SQUAD_ONE_OFF,
+        free_transfers=1,
+    )
+    gw10 = next(p for p in plans if p.gameweek == 10)
+    ins = {p.player_name for p in gw10.transfers_in}
+    outs = {p.player_name for p in gw10.transfers_out}
+    assert ins == {"FWD2"}
+    assert outs == {"FWD3"}
+    assert gw10.hits == 0
 
 
 def test_first_week_is_a_free_build_with_no_hits() -> None:
@@ -569,6 +587,14 @@ def test_validate_initial_squad_rejects_over_budget() -> None:
     dear = {name: 100 for name in prices}  # 15 * 100 = 1500 > BUDGET (1000)
     with pytest.raises(ValueError, match="budget"):
         _validate_initial_squad(_LEGAL_SQUAD, predictions, dear)
+
+
+def test_validate_initial_squad_rejects_duplicates() -> None:
+    predictions, prices = _feasible_universe([10])
+    # GK0 appears twice (only 14 distinct players).
+    squad = ["GK0", "GK0"] + _LEGAL_SQUAD[2:]
+    with pytest.raises(ValueError, match="duplicate"):
+        _validate_initial_squad(squad, predictions, prices)
 
 
 from fantasy_football.fpl_types import GameWeekPlan
