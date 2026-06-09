@@ -138,11 +138,11 @@ def _validate_initial_squad(
             f"no predictions for {missing_pred}, no price for {missing_price}"
         )
 
-    duplicates = sorted({p for p in initial_squad if initial_squad.count(p) > 1})
+    duplicates = sorted(
+        {p for p in initial_squad if initial_squad.count(p) > 1}
+    )
     if duplicates:
-        raise ValueError(
-            f"initial_squad has duplicate players: {duplicates}"
-        )
+        raise ValueError(f"initial_squad has duplicate players: {duplicates}")
 
     if len(initial_squad) != SQUAD_SIZE:
         raise ValueError(
@@ -549,9 +549,7 @@ def optimise_plan(
                 "start_gw == 1 is a free build; ignoring initial_squad."
             )
         if bank:
-            logger.warning(
-                "start_gw == 1 is a free build; ignoring bank."
-            )
+            logger.warning("start_gw == 1 is a free build; ignoring bank.")
         initial_squad = None
     elif initial_squad is None:
         raise ValueError(
@@ -593,7 +591,12 @@ def optimise_plan(
         predictions = predictions.filter(~pl.col("name").is_in(list(missing)))
 
     prob, variables = _build_problem(
-        predictions, prices, weeks, start_gw, initial_squad, free_transfers,
+        predictions,
+        prices,
+        weeks,
+        start_gw,
+        initial_squad,
+        free_transfers,
         budget=budget,
     )
     status = _solve_problem(prob)

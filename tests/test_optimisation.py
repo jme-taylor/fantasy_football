@@ -360,9 +360,7 @@ def test_optimise_plan_with_initial_squad_reports_start_gw_transfer(
 ) -> None:
     """Mid-season run honours the carried-in squad and reports its transfer."""
     predictions, prices = _feasible_universe([10, 11])
-    _setup_artifacts(
-        tmp_path, monkeypatch, predictions, prices, gws=[9, 10]
-    )
+    _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws=[9, 10])
     plans = optimise_plan(
         season="2025-26",
         start_gw=10,
@@ -561,12 +559,14 @@ from fantasy_football.optimisation import _validate_initial_squad
 
 
 def test_validate_initial_squad_accepts_a_legal_squad() -> None:
+    """A legal carried-in squad validates without raising."""
     predictions, prices = _feasible_universe([10])
     # Returns None (no raise) for a legal squad.
     assert _validate_initial_squad(_LEGAL_SQUAD, predictions, prices) is None
 
 
 def test_validate_initial_squad_rejects_missing_data() -> None:
+    """A squad member with no price/prediction is rejected by name."""
     predictions, prices = _feasible_universe([10])
     squad = _LEGAL_SQUAD[:-1] + ["GHOST"]  # GHOST has no price/prediction
     with pytest.raises(ValueError, match="GHOST"):
@@ -574,6 +574,7 @@ def test_validate_initial_squad_rejects_missing_data() -> None:
 
 
 def test_validate_initial_squad_rejects_wrong_composition() -> None:
+    """A 15-man squad with an illegal position split is rejected."""
     predictions, prices = _feasible_universe([10])
     # 3 GK / 5 DEF / 5 MID / 2 FWD = 15 players but illegal split.
     squad = (
@@ -587,6 +588,7 @@ def test_validate_initial_squad_rejects_wrong_composition() -> None:
 
 
 def test_validate_initial_squad_rejects_club_cap_breach() -> None:
+    """A squad with more than the per-club cap is rejected."""
     predictions, prices = _feasible_universe([10])
     # GK0, DEF4, MID4, FWD4 all share club C0 (idx % 7) -> 4 from one club.
     squad = (
@@ -600,6 +602,7 @@ def test_validate_initial_squad_rejects_club_cap_breach() -> None:
 
 
 def test_validate_initial_squad_rejects_over_budget() -> None:
+    """A squad valued above the budget is rejected."""
     predictions, prices = _feasible_universe([10])
     dear = {name: 100 for name in prices}  # 15 * 100 = 1500 > BUDGET (1000)
     with pytest.raises(ValueError, match="budget"):
@@ -607,6 +610,7 @@ def test_validate_initial_squad_rejects_over_budget() -> None:
 
 
 def test_validate_initial_squad_rejects_duplicates() -> None:
+    """A squad containing a duplicated player is rejected."""
     predictions, prices = _feasible_universe([10])
     # GK0 appears twice (only 14 distinct players).
     squad = ["GK0", "GK0"] + _LEGAL_SQUAD[2:]
