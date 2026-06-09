@@ -29,13 +29,13 @@ class TeamFile:
     bank: int = 0
 
 
-def load_team_file(path: str) -> TeamFile:
+def load_team_file(path: "Path | str") -> TeamFile:
     """Read and validate a team JSON file.
 
     Parameters
     ----------
-    path : str
-        Path to the JSON file.
+    path : str or pathlib.Path
+        Path to the JSON file (str or pathlib.Path).
 
     Returns
     -------

@@ -38,11 +38,11 @@ def test_load_team_file_rejects_extra_keys(tmp_path) -> None:
             "unexpected": True,
         },
     )
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         load_team_file(path)
 
 
 def test_load_team_file_rejects_missing_field(tmp_path) -> None:
     path = _write_team(tmp_path, {"gameweek": 5, "players": []})
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         load_team_file(path)
