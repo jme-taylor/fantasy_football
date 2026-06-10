@@ -148,4 +148,4 @@ def write_plan_report(
     path : Path
         Destination markdown file; its parent must already exist.
     """
-    path.write_text(render_plan_markdown(plans, positions))
+    path.write_text(render_plan_markdown(plans, positions), encoding="utf-8")
