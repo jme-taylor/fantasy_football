@@ -338,6 +338,24 @@ def test_optimise_plan_writes_jsonl_and_returns_gameweek_plans(
     assert first["captain"]["player_name"] in xi_names
 
 
+def test_optimise_plan_writes_markdown_report(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A GW1 free build also writes a human-readable markdown report."""
+    predictions, prices = _feasible_universe([1, 2])
+    transformed = _setup_artifacts(
+        tmp_path, monkeypatch, predictions, prices, gws=[1]
+    )
+
+    optimise_plan(season="2025-26", start_gw=1, horizon=2)
+
+    report = transformed / "optimisation_plan.md"
+    assert report.exists()
+    text = report.read_text()
+    assert "## GW1" in text
+    assert "--- bench ---" in text
+
+
 def test_optimise_plan_requires_initial_squad_after_gw1() -> None:
     """start_gw > 1 with no initial_squad is rejected before any file I/O."""
     with pytest.raises(ValueError, match="initial_squad"):

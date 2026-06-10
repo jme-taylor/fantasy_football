@@ -10,6 +10,7 @@ from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
 )
+from fantasy_football.plan_report import write_plan_report
 
 logger = logging.getLogger(__name__)
 
@@ -621,6 +622,18 @@ def optimise_plan(
         for gw_plan in gameweek_plans:
             f.write(adapter.dump_json(gw_plan))
             f.write(b"\n")
+    positions = dict(
+        zip(
+            predictions["name"].to_list(),
+            predictions["position"].to_list(),
+            strict=True,
+        )
+    )
+    write_plan_report(
+        gameweek_plans,
+        positions,
+        TRANSFORMED_DATA_FOLDER.joinpath("optimisation_plan.md"),
+    )
     logger.info(
         "Optimised gws %s, total expected points %.1f",
         weeks,
