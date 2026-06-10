@@ -89,4 +89,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(download_all_data=True)
+    main(download_all_data=True, team_file="data/dummy_team.json")
