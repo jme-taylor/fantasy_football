@@ -1,6 +1,7 @@
 """Render an optimisation Plan into a human-readable markdown report."""
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 from fantasy_football.fpl_types import (
     GameWeekPlan,
@@ -105,3 +106,46 @@ def _render_gameweek(plan: GameWeekPlan, positions: Mapping[str, str]) -> str:
         lines += ["", f"Transfers — IN: {ins} · OUT: {outs}"]
 
     return "\n".join(lines)
+
+
+def render_plan_markdown(
+    plans: Sequence[GameWeekPlan],
+    positions: Mapping[str, str],
+) -> str:
+    """Render a multi-gameweek plan as a markdown report.
+
+    Parameters
+    ----------
+    plans : Sequence[GameWeekPlan]
+        The per-gameweek plans, in any order.
+    positions : Mapping[str, str]
+        Mapping of player name to position string (GK/DEF/MID/FWD).
+
+    Returns
+    -------
+    str
+        The full markdown document: a title followed by one section per
+        gameweek in ascending gameweek order.
+    """
+    ordered = sorted(plans, key=lambda p: p.gameweek)
+    sections = [_render_gameweek(p, positions) for p in ordered]
+    return "# Optimisation plan\n\n" + "\n\n".join(sections) + "\n"
+
+
+def write_plan_report(
+    plans: Sequence[GameWeekPlan],
+    positions: Mapping[str, str],
+    path: Path,
+) -> None:
+    """Render the plan and write it to ``path``.
+
+    Parameters
+    ----------
+    plans : Sequence[GameWeekPlan]
+        The per-gameweek plans.
+    positions : Mapping[str, str]
+        Mapping of player name to position string (GK/DEF/MID/FWD).
+    path : Path
+        Destination markdown file; its parent must already exist.
+    """
+    path.write_text(render_plan_markdown(plans, positions))

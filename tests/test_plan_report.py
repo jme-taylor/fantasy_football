@@ -1,8 +1,15 @@
+from pathlib import Path
+
 from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
 )
-from fantasy_football.plan_report import _ordered_rows, _render_gameweek
+from fantasy_football.plan_report import (
+    _ordered_rows,
+    _render_gameweek,
+    render_plan_markdown,
+    write_plan_report,
+)
 
 
 def _p(name: str, pts: float) -> PlayerGameweekExpectedPoints:
@@ -138,3 +145,35 @@ def test_render_gameweek_freebuild_omits_transfers_line() -> None:
 
     assert "Transfers —" not in md
     assert "hit −0" not in md
+
+
+def test_render_plan_markdown_orders_gameweeks_ascending() -> None:
+    """Sections appear in ascending gameweek order regardless of input order."""
+    plan_a, positions = _gw_plan()  # gameweek 5
+    plan_b = GameWeekPlan(
+        gameweek=6,
+        squad=plan_a.squad,
+        starting_xi=plan_a.starting_xi,
+        captain=plan_a.captain,
+        transfers_in=[],
+        transfers_out=[],
+        hits=0,
+        free_transfers=2,
+        expected_points=64.0,
+    )
+
+    md = render_plan_markdown([plan_b, plan_a], positions)
+
+    assert md.index("## GW5") < md.index("## GW6")
+
+
+def test_write_plan_report_writes_file(tmp_path: Path) -> None:
+    """write_plan_report writes a non-empty markdown file at the given path."""
+    plan, positions = _gw_plan()
+    out = tmp_path / "optimisation_plan.md"
+
+    write_plan_report([plan], positions, out)
+
+    text = out.read_text()
+    assert "## GW5" in text
+    assert text.endswith("\n")
