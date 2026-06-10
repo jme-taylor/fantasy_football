@@ -2,7 +2,10 @@
 
 from collections.abc import Mapping, Sequence
 
-from fantasy_football.fpl_types import PlayerGameweekExpectedPoints
+from fantasy_football.fpl_types import (
+    GameWeekPlan,
+    PlayerGameweekExpectedPoints,
+)
 
 _POSITION_ORDER = {"GK": 0, "DEF": 1, "MID": 2, "FWD": 3, "?": 4}
 
@@ -37,3 +40,68 @@ def _ordered_rows(
             -row[1].expected_points,
         ),
     )
+
+
+def _row(
+    position: str, player: PlayerGameweekExpectedPoints, flag: str
+) -> str:
+    """Format one markdown table row for a player."""
+    return f"| {position} | {player.player_name} | {player.expected_points:.1f} | {flag} |"
+
+
+def _render_gameweek(plan: GameWeekPlan, positions: Mapping[str, str]) -> str:
+    """Render a single gameweek plan as a markdown section.
+
+    Parameters
+    ----------
+    plan : GameWeekPlan
+        The gameweek to render.
+    positions : Mapping[str, str]
+        Mapping of player name to position string (GK/DEF/MID/FWD).
+
+    Returns
+    -------
+    str
+        The markdown for this gameweek: a summary header, the XI table with a
+        bench divider and bench rows, and (when any transfers happened) a
+        trailing ``Transfers —`` line.
+    """
+    captain_name = plan.captain.player_name
+    header = (
+        f"## GW{plan.gameweek} — xPts {plan.expected_points:.1f}"
+        f" · FT {plan.free_transfers}"
+    )
+    if plan.hits:
+        header += f" · hit −{plan.hits}"
+    header += f" · C: {captain_name}"
+
+    in_names = {p.player_name for p in plan.transfers_in}
+    xi_names = {p.player_name for p in plan.starting_xi}
+    bench = [p for p in plan.squad if p.player_name not in xi_names]
+
+    def flag(player: PlayerGameweekExpectedPoints) -> str:
+        marks = []
+        if player.player_name == captain_name:
+            marks.append("⭐ C")
+        if player.player_name in in_names:
+            marks.append("↑")
+        return " ".join(marks)
+
+    lines = [
+        header,
+        "",
+        "| Pos | Player | xPts | |",
+        "|-----|--------|-----:|--|",
+    ]
+    for pos, player in _ordered_rows(plan.starting_xi, positions):
+        lines.append(_row(pos, player, flag(player)))
+    lines.append("| --- bench --- | | | |")
+    for pos, player in _ordered_rows(bench, positions):
+        lines.append(_row(pos, player, flag(player)))
+
+    if plan.transfers_in or plan.transfers_out:
+        ins = ", ".join(p.player_name for p in plan.transfers_in) or "—"
+        outs = ", ".join(p.player_name for p in plan.transfers_out) or "—"
+        lines += ["", f"Transfers — IN: {ins} · OUT: {outs}"]
+
+    return "\n".join(lines)

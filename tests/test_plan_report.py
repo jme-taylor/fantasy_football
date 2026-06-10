@@ -1,5 +1,8 @@
-from fantasy_football.fpl_types import PlayerGameweekExpectedPoints
-from fantasy_football.plan_report import _ordered_rows
+from fantasy_football.fpl_types import (
+    GameWeekPlan,
+    PlayerGameweekExpectedPoints,
+)
+from fantasy_football.plan_report import _ordered_rows, _render_gameweek
 
 
 def _p(name: str, pts: float) -> PlayerGameweekExpectedPoints:
@@ -44,3 +47,94 @@ def test_ordered_rows_missing_position_renders_as_question_mark() -> None:
         ("MID", "Known"),
         ("?", "Unknown"),
     ]
+
+
+def _gw_plan() -> tuple[GameWeekPlan, dict[str, str]]:
+    salah = _p("Salah", 8.2)
+    vicario = _p("Vicario", 4.1)
+    vvd = _p("Van Dijk", 5.4)
+    mateta = _p("Mateta", 5.6)
+    bench_gk = _p("King", 0.2)
+    bench_def = _p("Lewis", 1.5)
+    bench_mid = _p("Smith Rowe", 1.1)
+    bench_fwd = _p("Pedro", 3.0)
+    out = _p("Milenkovic", 1.4)
+    # 11 starters: build a legal-ish XI for rendering (counts not enforced here).
+    xi = [
+        vicario,
+        vvd,
+        _p("Munoz", 4.8),
+        _p("Timber", 7.3),
+        salah,
+        _p("Kudus", 6.0),
+        _p("Semenyo", 5.0),
+        _p("Gibbs-White", 4.5),
+        mateta,
+        _p("Gyokeres", 6.5),
+        _p("Enzo", 5.8),
+    ]
+    squad = xi + [bench_gk, bench_def, bench_mid, bench_fwd]
+    positions = {
+        "Vicario": "GK",
+        "Van Dijk": "DEF",
+        "Munoz": "DEF",
+        "Timber": "DEF",
+        "Salah": "MID",
+        "Kudus": "MID",
+        "Semenyo": "MID",
+        "Gibbs-White": "MID",
+        "Mateta": "FWD",
+        "Gyokeres": "FWD",
+        "Enzo": "MID",
+        "King": "GK",
+        "Lewis": "DEF",
+        "Smith Rowe": "MID",
+        "Pedro": "FWD",
+        "Milenkovic": "DEF",
+    }
+    plan = GameWeekPlan(
+        gameweek=5,
+        squad=squad,
+        starting_xi=xi,
+        captain=salah,
+        transfers_in=[vvd],
+        transfers_out=[out],
+        hits=4,
+        free_transfers=1,
+        expected_points=62.3,
+    )
+    return plan, positions
+
+
+def test_render_gameweek_has_header_captain_transfers_and_bench() -> None:
+    """A GW section shows summary, captain/in markers, bench divider, transfers."""
+    plan, positions = _gw_plan()
+
+    md = _render_gameweek(plan, positions)
+
+    assert "## GW5 — xPts 62.3 · FT 1 · hit −4 · C: Salah" in md
+    assert any("Salah" in line and "⭐ C" in line for line in md.splitlines())
+    assert any("Van Dijk" in line and "↑" in line for line in md.splitlines())
+    assert "--- bench ---" in md
+    assert "Transfers — IN: Van Dijk · OUT: Milenkovic" in md
+
+
+def test_render_gameweek_freebuild_omits_transfers_line() -> None:
+    """A GW with no transfers in or out omits the Transfers line."""
+    plan, positions = _gw_plan()
+    free_build = GameWeekPlan(
+        gameweek=1,
+        squad=plan.squad,
+        starting_xi=plan.starting_xi,
+        captain=plan.captain,
+        transfers_in=[],
+        transfers_out=[],
+        hits=0,
+        free_transfers=1,
+        expected_points=70.0,
+    )
+
+    md = _render_gameweek(free_build, positions)
+
+    assert "Transfers —" not in md
+    assert "hit −0" not in md
