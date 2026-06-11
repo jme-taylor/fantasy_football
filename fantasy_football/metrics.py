@@ -105,14 +105,14 @@ def precision_at_k(
         if effective_k == 0:
             continue
         top_pred = set(
-            sub.sort(pred_col, descending=True).head(effective_k)[
-                id_col
-            ].to_list()
+            sub.sort(pred_col, descending=True)
+            .head(effective_k)[id_col]
+            .to_list()
         )
         top_actual = set(
-            sub.sort(actual_col, descending=True).head(effective_k)[
-                id_col
-            ].to_list()
+            sub.sort(actual_col, descending=True)
+            .head(effective_k)[id_col]
+            .to_list()
         )
         precisions.append(len(top_pred & top_actual) / effective_k)
     if not precisions:
