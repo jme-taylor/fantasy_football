@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 
 
-def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
+def _baselines(
+    rolling: pl.DataFrame, current_season: str, as_of_gw: int | None = None
+) -> pl.DataFrame:
     """Return one row per player: latest current-season rolling value + team.
 
     Parameters
@@ -26,6 +28,10 @@ def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
         The rolling points DataFrame.
     current_season: str
         The current season.
+    as_of_gw : int | None, optional
+        When set, restrict the baseline to each player's latest rolling row at
+        or before this gameweek (leak-free for a past-window backtest). When
+        None, the latest current-season row is used. Defaults to None.
 
     Returns
     -------
@@ -34,6 +40,8 @@ def _baselines(rolling: pl.DataFrame, current_season: str) -> pl.DataFrame:
     """
     rolling_col = rolling_column_name("total_points", ROLLING_WINDOW)
     current = rolling.filter(pl.col("season") == current_season)
+    if as_of_gw is not None:
+        current = current.filter(pl.col("gw") <= as_of_gw)
     if current.is_empty():
         return current.select(
             "name",
@@ -95,7 +103,9 @@ def _elo_as_of(
 
 
 def predict_points(
-    current_season: str, horizon_n: int | None = None
+    current_season: str,
+    horizon_n: int | None = None,
+    as_of_gw: int | None = None,
 ) -> pl.DataFrame:
     """Produce per-(player, future_gw) point predictions and write CSV.
 
@@ -112,6 +122,11 @@ def predict_points(
     horizon_n: int | None
         The number of future gameweeks to predict. If None, all future gameweeks
         will be predicted.
+    as_of_gw : int | None
+        Pivot gameweek. When set, predictions cover gameweeks after as_of_gw
+        and baselines use only form at or before it (leak-free past-window
+        backtest). When None, the pivot is the latest completed current-season
+        gameweek. Defaults to None.
 
     Returns
     -------
@@ -122,7 +137,7 @@ def predict_points(
         TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
         try_parse_dates=True,
     )
-    baselines = _baselines(rolling, current_season)
+    baselines = _baselines(rolling, current_season, as_of_gw)
     fixtures = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("fixtures_enriched.csv"),
         try_parse_dates=True,
@@ -133,7 +148,11 @@ def predict_points(
     )
 
     last_completed = (
-        rolling.filter(pl.col("season") == current_season)["gw"].max() or 0
+        as_of_gw
+        if as_of_gw is not None
+        else (
+            rolling.filter(pl.col("season") == current_season)["gw"].max() or 0
+        )
     )
     if horizon_n is None:
         max_future_gw = fixtures.filter(pl.col("gw") > last_completed)[

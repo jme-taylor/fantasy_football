@@ -10,6 +10,7 @@ from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
 )
+from fantasy_football.plan_report import write_plan_report
 
 logger = logging.getLogger(__name__)
 
@@ -106,32 +107,76 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
     )
 
 
-def _prune_players(predictions: pl.DataFrame, k: int) -> pl.DataFrame:
-    """Keep only the top-k players per position by mean predicted points.
+def _validate_initial_squad(
+    initial_squad: list[str],
+    predictions: pl.DataFrame,
+    prices: dict[str, int],
+    budget: int = BUDGET,
+) -> None:
+    """Validate a carried-in squad, raising ValueError with named offenders.
+
+    Checks, in order: data availability (price + prediction rows), squad size
+    and position split, the per-club cap, and the budget. Each failure raises
+    a ValueError naming the offending players, clubs, or value.
 
     Parameters
     ----------
-    predictions: pl.DataFrame
-        Rows of (name, position, team, gw, predicted_points).
-    k: int
-        Number of players to keep per position.
-
-    Returns
-    -------
-    pl.DataFrame
-        The input filtered to the retained players (all their rows kept).
+    initial_squad : list[str]
+        The carried-in squad (player names).
+    predictions : pl.DataFrame
+        Prediction rows for the horizon (filtered to the optimised weeks).
+    prices : dict[str, int]
+        Player price in tenths of a million.
+    budget : int, optional
+        The effective budget ceiling. Defaults to BUDGET (1000).
     """
-    means = predictions.group_by("name", "position").agg(
-        pl.col("predicted_points").mean().alias("mean_points")
+    known = set(predictions["name"].to_list())
+    missing_pred = sorted(p for p in initial_squad if p not in known)
+    missing_price = sorted(p for p in initial_squad if p not in prices)
+    if missing_pred or missing_price:
+        raise ValueError(
+            "initial_squad players missing data: "
+            f"no predictions for {missing_pred}, no price for {missing_price}"
+        )
+
+    duplicates = sorted(
+        {p for p in initial_squad if initial_squad.count(p) > 1}
     )
-    ranked = means.with_columns(
-        pl.col("mean_points")
-        .rank("ordinal", descending=True)
-        .over("position")
-        .alias("rank")
-    )
-    keep = ranked.filter(pl.col("rank") <= k)["name"]
-    return predictions.filter(pl.col("name").is_in(keep))
+    if duplicates:
+        raise ValueError(f"initial_squad has duplicate players: {duplicates}")
+
+    if len(initial_squad) != SQUAD_SIZE:
+        raise ValueError(
+            f"initial_squad must have {SQUAD_SIZE} players, "
+            f"got {len(initial_squad)}"
+        )
+
+    pos = dict(zip(predictions["name"], predictions["position"], strict=False))
+    club = dict(zip(predictions["name"], predictions["team"], strict=False))
+
+    counts = {position: 0 for position in SQUAD_BY_POSITION}
+    for p in initial_squad:
+        counts[pos[p]] += 1
+    if counts != SQUAD_BY_POSITION:
+        raise ValueError(
+            f"initial_squad has wrong position split {counts}, "
+            f"expected {SQUAD_BY_POSITION}"
+        )
+
+    club_counts: dict[str, int] = {}
+    for p in initial_squad:
+        club_counts[club[p]] = club_counts.get(club[p], 0) + 1
+    over = {c: n for c, n in club_counts.items() if n > MAX_PER_CLUB}
+    if over:
+        raise ValueError(
+            f"initial_squad exceeds {MAX_PER_CLUB} players per club: {over}"
+        )
+
+    value = sum(prices[p] for p in initial_squad)
+    if value > budget:
+        raise ValueError(
+            f"initial_squad value {value} exceeds budget {budget}"
+        )
 
 
 def _build_problem(
@@ -140,7 +185,9 @@ def _build_problem(
     weeks: list[int],
     start_gw: int,
     initial_squad: list[str] | None = None,
+    free_transfers: int = 1,
     bench_weight: float = BENCH_WEIGHT,
+    budget: int = BUDGET,
 ) -> tuple[pulp.LpProblem, dict]:
     """Construct the multi-week FPL MILP.
 
@@ -166,12 +213,21 @@ def _build_problem(
     weeks : list[int]
         Gameweek numbers to optimise over.
     start_gw : int
-        The first gameweek of the horizon (no squad carried in).
+        The first gameweek of the horizon.
     initial_squad : list[str] or None, optional
-        Players already owned before the horizon starts. If None and
-        start_gw equals the first week, a fresh squad is built.
+        Players already owned before the horizon starts. When provided,
+        start_gw uses the carried-in squad as the baseline and applies
+        the transfer identity (own = initial + buy - sell). When None,
+        a fresh free-build squad is constructed at start_gw.
+    free_transfers : int, optional
+        Number of free transfers available at start_gw when initial_squad
+        is provided. Ignored for a free-build (initial_squad=None).
+        Defaults to 1.
     bench_weight : float, optional
         Weight applied to bench players' predicted points.
+    budget : int, optional
+        The effective budget ceiling in tenths of a million. Defaults to
+        BUDGET (1000).
 
     Returns
     -------
@@ -219,7 +275,7 @@ def _build_problem(
                 pulp.lpSum(own[p, t] for p in players if pos[p] == position)
                 == n
             )
-        prob += pulp.lpSum(prices[p] * own[p, t] for p in players) <= BUDGET
+        prob += pulp.lpSum(prices[p] * own[p, t] for p in players) <= budget
         for c in set(club.values()):
             prob += (
                 pulp.lpSum(own[p, t] for p in players if club[p] == c)
@@ -237,23 +293,35 @@ def _build_problem(
             prob += count <= hi
         prob += pulp.lpSum(cap[p, t] for p in players) == 1
 
+    free_build = initial_squad is None
+    squad_set = set(initial_squad or [])
+    initial = {p: int(p in squad_set) for p in players}
+
     ordered = sorted(weeks)
     for k, t in enumerate(ordered):
         if k == 0:
-            if t == start_gw:
+            # First gameweek: set the opening conditions.
+            if free_build:
                 prob += ft[t] == 1
                 prob += paid[t] == 0
                 for p in players:
                     prob += buy[p, t] == own[p, t]
                     prob += sell[p, t] == 0
+            else:
+                prob += ft[t] == free_transfers
+                for p in players:
+                    prob += own[p, t] == initial[p] + buy[p, t] - sell[p, t]
+                    prob += buy[p, t] + sell[p, t] <= 1
+                prob += paid[t] >= transfers[t] - ft[t]
             continue
         prev = ordered[k - 1]
         for p in players:
             prob += own[p, t] == own[p, prev] + buy[p, t] - sell[p, t]
         prob += paid[t] >= transfers[t] - ft[t]
         prob += ft[t] <= MAX_FREE_TRANSFERS
-        prev_transfers = 0 if prev == start_gw else transfers[prev]
-        prev_paid = 0 if prev == start_gw else paid[prev]
+        first_is_free_build = prev == start_gw and free_build
+        prev_transfers = 0 if first_is_free_build else transfers[prev]
+        prev_paid = 0 if first_is_free_build else paid[prev]
         prob += ft[t] <= ft[prev] - prev_transfers + prev_paid + 1
 
     xi_points = pulp.lpSum(
@@ -301,7 +369,12 @@ def _solve_problem(prob: pulp.LpProblem) -> str:
     return pulp.LpStatus[prob.status]
 
 
-def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
+def _extract_plan(
+    variables: dict,
+    weeks: list[int],
+    start_gw: int,
+    initial_squad: list[str] | None = None,
+) -> Plan:
     """Convert solved MILP variables into a Plan.
 
     Parameters
@@ -311,7 +384,12 @@ def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
     weeks: list[int]
         The gameweeks that were optimised, in any order.
     start_gw: int
-        The first (free-build) gameweek.
+        The first gameweek of the horizon.
+    initial_squad: list[str] or None, optional
+        The squad carried into the horizon. Controls whether start_gw transfers
+        are reported: when None (free build), start_gw transfers are blanked
+        (the opening squad is just "bought", not transferred into). When
+        provided, real start_gw transfers are reported in the plan.
 
     Returns
     -------
@@ -330,14 +408,16 @@ def _extract_plan(variables: dict, weeks: list[int], start_gw: int) -> Plan:
             if week == t and round(var.value()) == 1
         ]
 
+    free_build = initial_squad is None
     gameweeks: list[GameweekPlan] = []
     total = 0.0
     for t in sorted(weeks):
         squad = chosen(own, t)
         xi = chosen(start, t)
         captain = chosen(cap, t)[0]
-        ins = [] if t == start_gw else chosen(buy, t)
-        outs = [] if t == start_gw else chosen(sell, t)
+        blank_start = t == start_gw and free_build
+        ins = [] if blank_start else chosen(buy, t)
+        outs = [] if blank_start else chosen(sell, t)
         hits = int(round(paid[t].value())) * HIT_COST
         xi_pts = sum(points.get((n, t), 0.0) for n in xi)
         captain_pts = points.get((captain, t), 0.0)
@@ -425,27 +505,33 @@ def optimise_plan(
     start_gw: int,
     horizon: int | None = None,
     initial_squad: list[str] | None = None,
-    k: int = 30,
+    free_transfers: int = 1,
+    bank: int = 0,
 ) -> list[GameWeekPlan]:
     """Optimise the squad/XI/captain/transfers over a future horizon.
 
-    Loads predictions and prices, prunes to the top-k players per position,
-    builds and solves the MILP, then writes and returns the plans.
+    Loads predictions and prices, builds and solves the MILP, then writes
+    and returns the plans.
 
     Parameters
     ----------
     season: str
         The season to optimise (e.g. "2025-26").
     start_gw: int
-        The gameweek treated as "now"; the first free-build week.
+        The gameweek treated as "now"; the first gameweek of the horizon.
     horizon: int | None
         Number of gameweeks to plan from start_gw inclusive. Defaults to
         DEFAULT_HORIZON, clamped to the gameweeks available in predictions.
     initial_squad: list[str] | None
-        Reserved for future use (a pre-existing squad). None means a free
-        build at start_gw.
-    k: int
-        Players retained per position before solving.
+        Required when start_gw > 1: the team carried into that gameweek.
+        Ignored at GW1 (free build).
+    free_transfers: int
+        Free transfers available at start_gw (1..MAX_FREE_TRANSFERS).
+        Ignored at start_gw == 1 (a free build always opens with one free transfer).
+    bank: int
+        Money in the bank (tenths of a million) added to the carried-in
+        squad's value to form the budget. Ignored for a free build
+        (start_gw == 1). Defaults to 0.
 
     Returns
     -------
@@ -453,6 +539,25 @@ def optimise_plan(
         One typed plan per gameweek. The same plans are written to
         ``optimisation_plan.jsonl`` (one GameWeekPlan per line).
     """
+    if not 1 <= free_transfers <= MAX_FREE_TRANSFERS:
+        raise ValueError(
+            f"free_transfers must be in 1..{MAX_FREE_TRANSFERS}, "
+            f"got {free_transfers}"
+        )
+    if start_gw == 1:
+        if initial_squad is not None:
+            logger.warning(
+                "start_gw == 1 is a free build; ignoring initial_squad."
+            )
+        if bank:
+            logger.warning("start_gw == 1 is a free build; ignoring bank.")
+        initial_squad = None
+    elif initial_squad is None:
+        raise ValueError(
+            f"start_gw {start_gw} > 1 requires an initial_squad "
+            "(the team carried into that gameweek)."
+        )
+
     predictions = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv")
     )
@@ -469,8 +574,14 @@ def optimise_plan(
             f"{start_gw}..{start_gw + horizon - 1}"
         )
     predictions = predictions.filter(pl.col("gw").is_in(weeks))
-    predictions = _prune_players(predictions, k)
     prices = _load_prices(season, start_gw)
+    if initial_squad is not None:
+        # Any squad player missing a price is caught with a clear error in
+        # _validate_initial_squad below; the guard just avoids a KeyError here.
+        budget = sum(prices[p] for p in initial_squad if p in prices) + bank
+        _validate_initial_squad(initial_squad, predictions, prices, budget)
+    else:
+        budget = BUDGET
     missing = set(predictions["name"].to_list()) - set(prices)
     if missing:
         logger.warning(
@@ -481,12 +592,18 @@ def optimise_plan(
         predictions = predictions.filter(~pl.col("name").is_in(list(missing)))
 
     prob, variables = _build_problem(
-        predictions, prices, weeks, start_gw, initial_squad
+        predictions,
+        prices,
+        weeks,
+        start_gw,
+        initial_squad,
+        free_transfers,
+        budget=budget,
     )
     status = _solve_problem(prob)
     if status != "Optimal":
         raise RuntimeError(f"Solver finished with status {status!r}")
-    plan = _extract_plan(variables, weeks, start_gw)
+    plan = _extract_plan(variables, weeks, start_gw, initial_squad)
 
     player_id_map = dict(
         zip(
@@ -505,6 +622,18 @@ def optimise_plan(
         for gw_plan in gameweek_plans:
             f.write(adapter.dump_json(gw_plan))
             f.write(b"\n")
+    positions = dict(
+        zip(
+            predictions["name"].to_list(),
+            predictions["position"].to_list(),
+            strict=True,
+        )
+    )
+    write_plan_report(
+        gameweek_plans,
+        positions,
+        TRANSFORMED_DATA_FOLDER.joinpath("optimisation_plan.md"),
+    )
     logger.info(
         "Optimised gws %s, total expected points %.1f",
         weeks,
