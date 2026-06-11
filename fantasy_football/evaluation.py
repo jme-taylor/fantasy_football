@@ -125,14 +125,19 @@ def _metrics_for_position(
     df: pl.DataFrame, position: str
 ) -> dict[str, float | int]:
     """Compute the six metrics for one position's collected rows."""
+    df = df.with_columns(
+        (pl.col("season") + "-" + pl.col("gw").cast(pl.Utf8)).alias(
+            "season_gw"
+        )
+    )
     predicted = df["predicted_points"].to_list()
     actual = df["actual"].to_list()
     baseline = df["baseline"].to_list()
     k = PRECISION_K_BY_POSITION[position]
     return {
         "skill_score": metrics.skill_score(predicted, actual, baseline),
-        "spearman": metrics.spearman_by_gw(df),
-        "precision_at_k": metrics.precision_at_k(df, k=k),
+        "spearman": metrics.spearman_by_gw(df, gw_col="season_gw"),
+        "precision_at_k": metrics.precision_at_k(df, k=k, gw_col="season_gw"),
         "mae": metrics.mae(predicted, actual),
         "rmse": metrics.rmse(predicted, actual),
         "poisson_deviance": metrics.poisson_deviance(predicted, actual),

@@ -143,6 +143,73 @@ def test_actuals_sums_double_gameweek_rows() -> None:
     assert single_row["actual"] == 3
 
 
+def test_metrics_for_position_groups_by_season_and_gw() -> None:
+    """Rank metrics must be computed per (season, gw), not pooled by gw alone.
+
+    When the same gw number appears in two seasons with recycled player_ids,
+    pooling by gw number alone incorrectly merges them. We use MID with k=5,
+    so each season-gw bucket must have >5 players for effective_k to not cover
+    everyone. We use 6 players per (season, gw).
+
+    Season A, gw=1: top-5 predicted = {1,2,3,4,5}, top-5 actual = {1,2,3,4,5}
+    => precision@5 = 1.0.
+    Season B, gw=1: top-5 predicted = {1,2,3,4,5}, top-5 actual = {2,3,4,5,6}
+    => precision@5 = 4/5 = 0.8.
+
+    Correct per-(season,gw) average: (1.0 + 0.8) / 2 = 0.9.
+
+    When pooled by gw alone (12 rows, effective_k = min(5,12) = 5):
+    top-5 predicted: the 5 rows with highest predicted_points. Players 1-5
+    appear in both seasons so polars will pick 5 of the 12 rows; duplicate
+    player_ids mean the predicted set is a mix and the pooled precision differs
+    from 0.9. We assert the result equals 0.9 (the correct per-season-gw value).
+    """
+    season_a = [
+        {
+            "season": "2024-25",
+            "player_id": i,
+            "gw": 1,
+            "position": "MID",
+            # predicted rank matches actual rank (best=1)
+            "predicted_points": float(10 - i),
+            "baseline": 5.0,
+            "actual": float(10 - i),
+        }
+        for i in range(1, 7)
+    ]
+    season_b = [
+        {
+            "season": "2025-26",
+            "player_id": i,
+            "gw": 1,
+            "position": "MID",
+            # predicted still ranks 1>2>3>4>5>6 but actual ranks 6>5>4>3>2>1
+            # so actual top-5 = {2,3,4,5,6}, predicted top-5 = {1,2,3,4,5}
+            # intersection = {2,3,4,5} -> 4/5 = 0.8
+            "predicted_points": float(10 - i),
+            "baseline": 5.0,
+            "actual": float(i),
+        }
+        for i in range(1, 7)
+    ]
+    df = pl.DataFrame(season_a + season_b)
+    result = evaluation._metrics_for_position(df, "MID")
+    # Season A: precision@5 = 1.0, Season B: precision@5 = 0.8 => mean = 0.9
+    assert result["precision_at_k"] == pytest.approx(0.9)
+
+
+def test_evaluate_returns_empty_dict_when_no_predictions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """evaluate() returns an empty dict when _collect_predictions_vs_actuals is empty."""
+    monkeypatch.setattr(
+        evaluation,
+        "_collect_predictions_vs_actuals",
+        lambda _rw: pl.DataFrame(),
+    )
+    assert evaluation.evaluate() == {}
+
+
 def test_log_results_to_mlflow_logs_one_run_per_position(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
