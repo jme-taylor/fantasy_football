@@ -109,6 +109,40 @@ def test_evaluate_returns_metrics_for_present_positions(
         assert key in metrics
 
 
+def test_actuals_sums_double_gameweek_rows() -> None:
+    """_actuals must SUM points across fixture rows, not take the max.
+
+    A double gameweek produces two rolling rows for the same (season, element,
+    gw). The actual target should be the sum of those rows' total_points so
+    it stays symmetric with predictions, which are also summed per player-gw.
+    """
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26", "2025-26"],
+            "name": ["P1", "P1", "P1"],
+            "position": ["MID", "MID", "MID"],
+            "team": ["Arsenal", "Arsenal", "Arsenal"],
+            "element": [101, 101, 101],
+            "gw": [7, 7, 8],
+            "total_points": [5, 8, 3],
+            "total_points_rolling_5": [4.0, 4.0, 4.0],
+        }
+    )
+    result = evaluation._actuals(rolling)
+    dgw_row = result.filter(
+        (pl.col("season") == "2025-26")
+        & (pl.col("player_id") == 101)
+        & (pl.col("gw") == 7)
+    ).row(0, named=True)
+    single_row = result.filter(
+        (pl.col("season") == "2025-26")
+        & (pl.col("player_id") == 101)
+        & (pl.col("gw") == 8)
+    ).row(0, named=True)
+    assert dgw_row["actual"] == 13  # 5 + 8, not max(5, 8) = 8
+    assert single_row["actual"] == 3
+
+
 def test_log_results_to_mlflow_logs_one_run_per_position(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

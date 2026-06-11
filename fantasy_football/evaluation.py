@@ -72,7 +72,7 @@ def _actuals(rolling: pl.DataFrame) -> pl.DataFrame:
             "total_points",
         )
         .group_by("season", "player_id", "gw")
-        .agg(pl.col("total_points").max().alias("actual"))
+        .agg(pl.col("total_points").sum().alias("actual"))
     )
 
 
