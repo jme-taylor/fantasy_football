@@ -438,6 +438,38 @@ def test_predict_pure_path_writes_no_csv(
     assert result.height == 2
 
 
+def test_predict_drops_unknown_position(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Players whose position is not in KNOWN_POSITIONS are absent from output.
+
+    Build a rolling DataFrame with two players: one standard MID (element 101)
+    and one with position "AM" (element 202) which is not a known position.
+    Assert that element 202 does not appear in the result while element 101
+    does, confirming unknown-position rows are dropped by _apply_models.
+    """
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26"],
+            "name": ["P1", "P2"],
+            "position": ["MID", "AM"],
+            "team": ["Arsenal", "Arsenal"],
+            "element": [101, 202],
+            "gw": [10, 10],
+            "total_points": [6, 4],
+            "total_points_rolling_5": [4.0, 3.0],
+        }
+    )
+    _setup_artifacts(
+        tmp_path, monkeypatch, rolling, _baseline_fixtures(), _baseline_elo()
+    )
+
+    result = prediction._predict("2025-26", horizon_n=1)
+
+    assert 101 in result["player_id"].to_list()
+    assert 202 not in result["player_id"].to_list()
+
+
 def test_predict_points_is_deterministic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
