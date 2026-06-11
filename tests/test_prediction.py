@@ -84,9 +84,6 @@ def test_predict_points_formula_correct(
     monkeypatch.setattr(prediction, "OPPONENT_FACTOR_EXPONENT", 2.0)
     monkeypatch.setattr(prediction, "HOME_FACTOR", 1.25)
     monkeypatch.setattr(prediction, "AWAY_FACTOR", 0.75)
-    # Pin the random noise factor to its identity value so the deterministic
-    # formula can be asserted exactly; production runs stay randomised.
-    monkeypatch.setattr(prediction.random, "choice", lambda _seq: 1.00)
 
     result = predict_points("2025-26", horizon_n=2)
 
@@ -413,7 +410,6 @@ def test_predict_points_as_of_gw_predicts_window_with_as_of_baseline(
     monkeypatch.setattr(prediction, "OPPONENT_FACTOR_EXPONENT", 2.0)
     monkeypatch.setattr(prediction, "HOME_FACTOR", 1.25)
     monkeypatch.setattr(prediction, "AWAY_FACTOR", 0.75)
-    monkeypatch.setattr(prediction.random, "choice", lambda _seq: 1.00)
 
     result = predict_points("2025-26", as_of_gw=4)
 
@@ -424,3 +420,39 @@ def test_predict_points_as_of_gw_predicts_window_with_as_of_baseline(
     assert gw5["predicted_points"] == pytest.approx(
         3.0 * (2000 / 1800) ** 2.0 * 1.25
     )
+
+
+def test_predict_pure_path_writes_no_csv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_predict returns predictions without writing predictions.csv."""
+    transformed = _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        _baseline_rolling(),
+        _baseline_fixtures(),
+        _baseline_elo(),
+    )
+    result = prediction._predict("2025-26", horizon_n=2)
+    assert not (transformed / "predictions.csv").exists()
+    assert result.height == 2
+
+
+def test_predict_points_is_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two runs with identical inputs produce identical predictions."""
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        _baseline_rolling(),
+        _baseline_fixtures(),
+        _baseline_elo(),
+    )
+    first = predict_points("2025-26", horizon_n=2)[
+        "predicted_points"
+    ].to_list()
+    second = predict_points("2025-26", horizon_n=2)[
+        "predicted_points"
+    ].to_list()
+    assert first == second

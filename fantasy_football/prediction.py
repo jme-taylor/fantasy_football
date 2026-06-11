@@ -1,5 +1,4 @@
 import logging
-import random
 
 import polars as pl
 
@@ -10,7 +9,11 @@ from fantasy_football.constants import (
     OPPONENT_FACTOR_EXPONENT,
     ROLLING_WINDOW,
 )
-from fantasy_football.data_transformation import rolling_column_name
+from fantasy_football.data_transformation import (
+    KNOWN_POSITIONS,
+    rolling_column_name,
+)
+from fantasy_football.models import MODELS_BY_POSITION
 
 logger = logging.getLogger(__name__)
 
@@ -102,12 +105,77 @@ def _elo_as_of(
     return joined.drop("to_date", "from_date")
 
 
-def predict_points(
+def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
+    """Join baselines, build factors, and apply the per-position model.
+
+    Parameters
+    ----------
+    fx : pl.DataFrame
+        Fixtures enriched with player and opponent ELO.
+    baselines : pl.DataFrame
+        One row per player with their latest rolling baseline and team.
+
+    Returns
+    -------
+    pl.DataFrame
+        Per-(player, future_gw) rows with a ``predicted_points`` column.
+    """
+    joined = fx.join(baselines, on="team", how="inner").with_columns(
+        (pl.col("player_team_elo") / pl.col("opponent_team_elo"))
+        .pow(OPPONENT_FACTOR_EXPONENT)
+        .alias("opponent_factor"),
+        pl.when(pl.col("is_home"))
+        .then(HOME_FACTOR)
+        .otherwise(AWAY_FACTOR)
+        .alias("home_away_factor"),
+    )
+
+    unknown = set(joined["position"].unique().to_list()) - set(KNOWN_POSITIONS)
+    for position in sorted(unknown):
+        logger.warning(
+            "No model for position %r; dropping its predictions", position
+        )
+
+    scored_frames = []
+    for position, model in MODELS_BY_POSITION.items():
+        sub = joined.filter(pl.col("position") == position)
+        if sub.is_empty():
+            continue
+        scored_frames.append(
+            sub.with_columns(model.predict(sub).alias("predicted_points"))
+        )
+
+    if not scored_frames:
+        scored = joined.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("predicted_points")
+        )
+    else:
+        scored = pl.concat(scored_frames, how="vertical")
+
+    return scored.select(
+        "name",
+        pl.col("element").alias("player_id"),
+        "position",
+        "team",
+        "season",
+        "gw",
+        "opponent_team",
+        "is_home",
+        "baseline",
+        "player_team_elo",
+        "opponent_team_elo",
+        "opponent_factor",
+        "home_away_factor",
+        "predicted_points",
+    )
+
+
+def _predict(
     current_season: str,
     horizon_n: int | None = None,
     as_of_gw: int | None = None,
 ) -> pl.DataFrame:
-    """Produce per-(player, future_gw) point predictions and write CSV.
+    """Produce per-(player, future_gw) point predictions and return them.
 
     Loads the three input tables: rolling points, fixtures, and team ELO, then
     gets each player's baseline (latest current rolling points) and figures
@@ -189,48 +257,40 @@ def predict_points(
             )
         fx = fx.with_columns(pl.col(col).fill_null(median_elo))
 
-    joined = (
-        fx.join(baselines, on="team", how="inner")
-        .with_columns(
-            (pl.col("player_team_elo") / pl.col("opponent_team_elo"))
-            .pow(OPPONENT_FACTOR_EXPONENT)
-            .alias("opponent_factor"),
-            pl.when(pl.col("is_home"))
-            .then(HOME_FACTOR)
-            .otherwise(AWAY_FACTOR)
-            .alias("home_away_factor"),
-        )
-        .with_columns(
-            (
-                pl.col("baseline")
-                * pl.col("opponent_factor")
-                * pl.col("home_away_factor")
-                * random.choice([0.5, 0.75, 0.85, 0.95, 1.00])
-            ).alias("predicted_points")
-        )
-        .select(
-            "name",
-            pl.col("element").alias("player_id"),
-            "position",
-            "team",
-            "season",
-            "gw",
-            "opponent_team",
-            "is_home",
-            "baseline",
-            "player_team_elo",
-            "opponent_team_elo",
-            "opponent_factor",
-            "home_away_factor",
-            "predicted_points",
-        )
-    )
+    fx = _apply_models(fx, baselines)
+    return fx
 
+
+def predict_points(
+    current_season: str,
+    horizon_n: int | None = None,
+    as_of_gw: int | None = None,
+) -> pl.DataFrame:
+    """Compute predictions, write them to predictions.csv, and return them.
+
+    Thin IO wrapper around :func:`_predict`. See that function for the
+    prediction logic and parameter meanings.
+
+    Parameters
+    ----------
+    current_season : str
+        The current season.
+    horizon_n : int | None
+        Number of future gameweeks to predict. None predicts all of them.
+    as_of_gw : int | None
+        Pivot gameweek for a leak-free past-window backtest.
+
+    Returns
+    -------
+    pl.DataFrame
+        The predictions DataFrame.
+    """
+    predictions = _predict(current_season, horizon_n, as_of_gw)
     TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
-    joined.write_csv(TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv"))
+    predictions.write_csv(TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv"))
     logger.info(
         "Wrote %d predictions covering gws %s",
-        joined.height,
-        sorted(set(joined["gw"].to_list())),
+        predictions.height,
+        sorted(set(predictions["gw"].to_list())),
     )
-    return joined
+    return predictions
