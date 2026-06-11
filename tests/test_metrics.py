@@ -101,3 +101,8 @@ def test_precision_at_k_clamps_k_to_available_players() -> None:
         }
     )
     assert precision_at_k(df, k=5) == pytest.approx(1.0)
+
+
+def test_poisson_deviance_negative_actual_returns_finite() -> None:
+    """Negative actuals are floored to 0 so deviance stays finite."""
+    assert math.isfinite(poisson_deviance([1.0, 2.0], [-1.0, 2.0]))

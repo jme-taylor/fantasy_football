@@ -46,9 +46,13 @@ def skill_score(
 def poisson_deviance(
     predicted: Sequence[float], actual: Sequence[float]
 ) -> float:
-    """Mean Poisson deviance; predictions are floored to stay positive."""
+    """Mean Poisson deviance; predictions are floored to stay positive.
+
+    Actuals are floored at 0.0 because Poisson deviance is defined only for
+    non-negative targets; rare negative FPL gameweek totals are clipped to 0.
+    """
     p = np.clip(np.asarray(predicted, dtype=float), _POISSON_FLOOR, None)
-    a = np.asarray(actual, dtype=float)
+    a = np.clip(np.asarray(actual, dtype=float), 0.0, None)
     return float(mean_poisson_deviance(a, p))
 
 
