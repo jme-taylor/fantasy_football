@@ -213,7 +213,19 @@ def log_results_to_mlflow(
 def run_evaluation(
     rolling_window: int = ROLLING_WINDOW,
 ) -> dict[str, dict[str, float | int]]:
-    """Evaluate every position and log the results to MLflow."""
+    """Evaluate every position and log the results to MLflow.
+    
+    Parameters
+    ----------
+    rolling_window : int
+        Required prior-gameweek history for a pivot (defaults to the project's
+        ROLLING_WINDOW; passed explicitly to keep this function pure-ish).
+
+    Returns
+    -------
+    dict[str, dict]
+        Metrics keyed by position, only for positions present in the data.
+    """
     results = evaluate(rolling_window)
     log_results_to_mlflow(results, rolling_window)
     return results
