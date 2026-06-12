@@ -6,6 +6,7 @@ from fantasy_football.constants import CURRENT_SEASON, TRANSFORMED_DATA_FOLDER
 from fantasy_football.data_extraction import DataExtractor
 from fantasy_football.data_transformation import create_rolling_points_data
 from fantasy_football.elo import build_team_elo
+from fantasy_football.evaluation import run_evaluation
 from fantasy_football.fci_extraction import FciExtractor
 from fantasy_football.fixtures import build_fixtures_enriched
 from fantasy_football.logging_config import configure_logging
@@ -37,7 +38,10 @@ def update_current_season(season: str) -> None:
 
 
 def main(
-    *, download_all_data: bool = False, team_file: str | None = None
+    *,
+    download_all_data: bool = False,
+    team_file: str | None = None,
+    evaluate: bool = False,
 ) -> None:
     """Download FPL data, transform it, predict points, and optimise a plan.
 
@@ -49,6 +53,10 @@ def main(
         Path to a name-authored team JSON. When given, optimisation carries
         in that squad from its gameweek instead of free-building. Defaults to
         None.
+    evaluate : bool, optional
+        When True, run the rolling-origin model evaluation (logging metrics
+        to MLflow) before predicting and optimising. Fatal: a failed
+        evaluation aborts the run. Defaults to False.
     """
     configure_logging()
     if download_all_data:
@@ -58,6 +66,8 @@ def main(
     create_rolling_points_data(CURRENT_SEASON)
     build_fixtures_enriched(CURRENT_SEASON)
     build_team_elo()
+    if evaluate:
+        run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None
     as_of_gw = team.gameweek - 1 if team is not None else None
     predict_points(CURRENT_SEASON, as_of_gw=as_of_gw)

@@ -32,6 +32,26 @@ ELO_CACHE_TTL_HOURS: int = 24
 # in our raw FPL data.
 ELO_HISTORY_START: date = date(2016, 8, 1)
 
+# Per-position points models (MLflow experiment names)
+EXPERIMENT_BY_POSITION: dict[str, str] = {
+    "GK": "gk-points-model",
+    "DEF": "def-points-model",
+    "MID": "mid-points-model",
+    "FWD": "fwd-points-model",
+}
+
+# Number of top players per position used for precision@k, sized to the
+# number of squad slots FPL gives each position.
+PRECISION_K_BY_POSITION: dict[str, int] = {
+    "GK": 2,
+    "DEF": 5,
+    "MID": 5,
+    "FWD": 3,
+}
+
+# MLflow tracking store (sqlite file under the gitignored models/ folder).
+MLFLOW_TRACKING_URI: str = f"sqlite:///{MLFLOW_DB_PATH}"
+
 # URL slugs passed to ScraperFC ClubElo's scrape_team(name).
 # Update this when team set changes (promotions/relegations).
 CLUBELO_SCRAPE_NAMES: list[str] = [

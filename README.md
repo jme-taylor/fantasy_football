@@ -15,12 +15,16 @@ This is an early-stage work in progress. The repository currently contains:
 * `fantasy_football/fci_extraction.py` — downloads current-season data from FPL Core Insights and reconstructs it into Vaastav's `merged_gw.csv` shape.
 * `fantasy_football/seasons.py` — season-string conversions and data-source routing.
 * `fantasy_football/data_transformation.py` — functions for transforming raw data into rolling/feature datasets.
+* `fantasy_football/elo.py` / `fantasy_football/fixtures.py` — build team ELO ratings and the enriched fixtures table used as model features.
+* `fantasy_football/models.py` — per-position points models (one model per position behind a shared interface; all currently wrap the same rolling-points formula).
+* `fantasy_football/prediction.py` — applies the per-position models to produce per-(player, gameweek) point predictions.
+* `fantasy_football/metrics.py` — pure regression metrics for scoring predictions (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance).
+* `fantasy_football/evaluation.py` — replays every historical gameweek one step ahead, scores each position, and logs the results to MLflow.
+* `fantasy_football/optimisation.py` — linear-programming optimiser that turns predictions into a squad, starting XI, captain, and transfer plan.
 * `fantasy_football/fpl.py` — wrappers around the live FPL API (players, teams, fixtures).
 * `fantasy_football/fpl_types.py` — Pydantic types describing FPL API responses.
 * `fantasy_football/constants.py` — shared constants such as the current season.
 * `tests/` — unit tests for the modules above.
-
-Earlier per-position prediction models and the linear-programming optimisation prototype have been removed while the data pipeline is being rebuilt. They will be reintroduced once the underlying data and feature pipeline is stable.
 
 ## Data sources
 
@@ -43,9 +47,20 @@ The high-level milestones are:
 * [X] Build an optimisation algorithm on top of the predicted points
 * [X] Format the optimiser output into concrete team / transfer decisions
 * [X] Get a new datasource for future/current data now that Vastaav has sunsetted their project
-* [ ] Backtest against a mid-season gameweek and ensure all decisions respect FPL rules
-* [ ] Define metrics for evaluating model quality
+* [X] Backtest against a mid-season gameweek and ensure all decisions respect FPL rules
+* [~] Define metrics for evaluating model quality (per-position models + MLflow evaluation)
+  * [X] Choose regression metrics suited to low, zero-inflated FPL points (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
+  * [X] Stand up MLflow tracking with simple start/stop scripts
+  * [X] Baseline-score each position's model using the current rolling-points formula
+  * [ ] Wire evaluation logging into the main pipeline run
+* [ ] Dig into the worst-performing position and investigate its scoring errors
 * [ ] Identify and incorporate additional features to improve the model
+
+The current baseline (the rolling-points formula, scored per position over all
+historical gameweeks) only narrowly beats predicting each player's recent
+average — its value is in *ranking* players (Spearman ≈ 0.6–0.8 by position)
+rather than predicting exact point totals. Improving on that baseline is the
+focus of the next milestones.
 
 Open questions still being worked through include how to handle double gameweeks, chips (wildcard, triple captain, etc.), promoted teams and new players, managerial changes, and disciplinary suspensions. On the application side I'm considering moving from Polars + CSVs to DuckDB, adding proper logging, exploring reinforcement learning as an alternative to a pure optimiser, and adding code-coverage and CI checks.
 
@@ -75,6 +90,32 @@ uv run python main.py
 uv run python main.py  # then set download_all_data=True in main()
 ```
 
+### Evaluating the models with MLflow
+
+Each position (GK, DEF, MID, FWD) has its own points model. The evaluation
+harness replays every historical gameweek one step ahead, compares each
+model's predictions to the actual points scored, and records the metrics in
+MLflow — one experiment per position (`gk-points-model`, `def-points-model`,
+`mid-points-model`, `fwd-points-model`).
+
+Run an evaluation (this writes runs to a local SQLite store at
+`models/mlflow.db`):
+
+```bash
+uv run python -m fantasy_football.evaluation
+```
+
+Browse the results in the MLflow UI using the helper scripts:
+
+```bash
+./.bin/start_mlflow.sh   # launches the UI at http://127.0.0.1:5050
+./.bin/stop_mlflow.sh    # stops it again
+```
+
+`start_mlflow.sh` first clears any process already on the port, so re-running
+it restarts the UI cleanly. All MLflow data lives under the `models/` folder,
+which is gitignored — only the scripts are tracked.
+
 ## Development
 
 Run the test suite and linters with `uv`:
@@ -83,7 +124,7 @@ Run the test suite and linters with `uv`:
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy fantasy_football
+uv run ty check
 ```
 
 ## Resources
