@@ -169,6 +169,10 @@ def precision_at_k(
         Name of the gameweek column.
     id_col : str
         Name of the player ID column.
+    pred_col : str
+        Name of the predicted points column.
+    actual_col : str
+        Name of the actual points column.
 
     Returns
     -------
