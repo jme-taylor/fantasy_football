@@ -214,7 +214,7 @@ def run_evaluation(
     rolling_window: int = ROLLING_WINDOW,
 ) -> dict[str, dict[str, float | int]]:
     """Evaluate every position and log the results to MLflow.
-    
+
     Parameters
     ----------
     rolling_window : int

@@ -15,7 +15,7 @@ _POISSON_FLOOR = 1e-6
 
 def mae(predicted: Sequence[float], actual: Sequence[float]) -> float:
     """Mean absolute error.
-    
+
     Parameters
     ----------
     predicted : Sequence[float]
@@ -35,7 +35,7 @@ def mae(predicted: Sequence[float], actual: Sequence[float]) -> float:
 
 def rmse(predicted: Sequence[float], actual: Sequence[float]) -> float:
     """Root mean squared error.
-    
+
     Parameters
     ----------
     predicted : Sequence[float]
