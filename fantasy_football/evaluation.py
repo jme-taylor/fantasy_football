@@ -217,10 +217,3 @@ def run_evaluation(
     results = evaluate(rolling_window)
     log_results_to_mlflow(results, rolling_window)
     return results
-
-
-if __name__ == "__main__":
-    from fantasy_football.logging_config import configure_logging
-
-    configure_logging()
-    run_evaluation()
