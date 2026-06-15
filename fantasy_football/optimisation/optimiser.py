@@ -5,12 +5,13 @@ import polars as pl
 import pulp
 from pydantic import TypeAdapter
 
-from fantasy_football.constants import RAW_DATA_FOLDER, TRANSFORMED_DATA_FOLDER
+from fantasy_football.constants import TRANSFORMED_DATA_FOLDER
 from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
 )
 from fantasy_football.optimisation.plan_report import write_plan_report
+from fantasy_football.storage.database import load_player_week
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
     Parameters
     ----------
     season: str
-        The season whose raw gameweek data to read.
+        The season whose player-week data to read.
     start_gw: int
         The pivot gameweek treated as "now".
 
@@ -93,11 +94,11 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
     dict[str, int]
         Mapping of player name to price in tenths of a million.
     """
-    merged = pl.read_csv(
-        RAW_DATA_FOLDER.joinpath(season, "gws", "merged_gw.csv")
-    ).filter(pl.col("GW") <= start_gw)
-    latest_gw = merged.group_by("name").agg(pl.col("GW").max().alias("GW"))
-    latest = merged.join(latest_gw, on=["name", "GW"], how="inner")
+    merged = load_player_week().filter(
+        (pl.col("season") == season) & (pl.col("gw") <= start_gw)
+    )
+    latest_gw = merged.group_by("name").agg(pl.col("gw").max().alias("gw"))
+    latest = merged.join(latest_gw, on=["name", "gw"], how="inner")
     return dict(
         zip(
             latest["name"].to_list(),

@@ -5,7 +5,7 @@ import polars as pl
 from pydantic import ConfigDict, TypeAdapter
 from pydantic.dataclasses import dataclass
 
-from fantasy_football.constants import RAW_DATA_FOLDER
+from fantasy_football.storage.database import load_player_week
 
 config = ConfigDict(extra="forbid")
 
@@ -52,7 +52,7 @@ def load_team_file(path: "Path | str") -> TeamFile:
 def resolve_names_to_ids(names: list[str], season: str) -> list[int]:
     """Map full player names to FPL element ids for a season.
 
-    The mapping is built from that season's ``merged_gw.csv`` (the ``name``
+    The mapping is built from that season's player-week data (the ``name``
     and ``element`` columns).
 
     Parameters
@@ -72,9 +72,7 @@ def resolve_names_to_ids(names: list[str], season: str) -> list[int]:
     ValueError
         If any name has no row, or maps to more than one distinct element.
     """
-    merged = pl.read_csv(
-        RAW_DATA_FOLDER.joinpath(season, "gws", "merged_gw.csv")
-    )
+    merged = load_player_week().filter(pl.col("season") == season)
     name_to_ids: dict[str, set[int]] = {}
     for name, element in zip(
         merged["name"].to_list(), merged["element"].to_list(), strict=True

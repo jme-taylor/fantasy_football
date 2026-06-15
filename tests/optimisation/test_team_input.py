@@ -3,12 +3,16 @@ import json
 import polars as pl
 import pytest
 
-from fantasy_football.optimisation import team_input
 from fantasy_football.optimisation.team_input import (
     TeamFile,
     load_team_file,
     resolve_ids_to_names,
     resolve_names_to_ids,
+)
+from fantasy_football.storage import database
+from fantasy_football.storage.database import (
+    get_connection,
+    upsert_current_season,
 )
 
 
@@ -58,49 +62,52 @@ def test_load_team_file_rejects_missing_field(tmp_path) -> None:
         load_team_file(path)
 
 
-def _write_merged_gw(tmp_path, rows) -> None:
-    raw = tmp_path / "raw" / "2025-26" / "gws"
-    raw.mkdir(parents=True)
-    pl.DataFrame(rows).write_csv(raw / "merged_gw.csv")
+def _seed_player_week(
+    tmp_path, monkeypatch, *, name, element, gw, value=None, season="2025-26"
+) -> None:
+    """Seed the player_week DB with rows and point DATABASE_PATH at it."""
+    n = len(name)
+    frame = pl.DataFrame(
+        {
+            "season": [season] * n,
+            "gw": gw,
+            "element": element,
+            "name": name,
+            "position": ["MID"] * n,
+            "team": ["T"] * n,
+            "bonus": [0] * n,
+            "minutes": [0] * n,
+            "round": gw,
+            "total_points": [0] * n,
+            "value": value if value is not None else [0] * n,
+        }
+    )
+    db_path = tmp_path / "t.duckdb"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    connection = get_connection(db_path)
+    try:
+        upsert_current_season(connection, frame, season)
+    finally:
+        connection.close()
 
 
 def test_resolve_names_to_ids_maps_names(tmp_path, monkeypatch) -> None:
     """resolve_names_to_ids returns the element id for each name, in order."""
-    _write_merged_gw(
-        tmp_path,
-        {
-            "name": ["Mohamed Salah", "Mohamed Salah", "Erling Haaland"],
-            "element": [328, 328, 351],
-            "GW": [4, 5, 5],
-        },
-    )
-    monkeypatch.setattr(team_input, "RAW_DATA_FOLDER", tmp_path / "raw")
+    _seed_player_week(tmp_path, monkeypatch, name=["Mohamed Salah", "Mohamed Salah", "Erling Haaland"], element=[328, 328, 351], gw=[4, 5, 5])
     ids = resolve_names_to_ids(["Erling Haaland", "Mohamed Salah"], "2025-26")
     assert ids == [351, 328]
 
 
 def test_resolve_names_to_ids_reports_unmatched(tmp_path, monkeypatch) -> None:
     """An unmatched name is named in the raised ValueError."""
-    _write_merged_gw(
-        tmp_path,
-        {"name": ["Mohamed Salah"], "element": [328], "GW": [5]},
-    )
-    monkeypatch.setattr(team_input, "RAW_DATA_FOLDER", tmp_path / "raw")
+    _seed_player_week(tmp_path, monkeypatch, name=["Mohamed Salah"], element=[328], gw=[5])
     with pytest.raises(ValueError, match="Ghost Player"):
         resolve_names_to_ids(["Mohamed Salah", "Ghost Player"], "2025-26")
 
 
 def test_resolve_names_to_ids_reports_ambiguous(tmp_path, monkeypatch) -> None:
     """A name mapping to multiple elements raises an 'ambiguous' ValueError."""
-    _write_merged_gw(
-        tmp_path,
-        {
-            "name": ["Danny Ward", "Danny Ward"],
-            "element": [11, 22],
-            "GW": [5, 5],
-        },
-    )
-    monkeypatch.setattr(team_input, "RAW_DATA_FOLDER", tmp_path / "raw")
+    _seed_player_week(tmp_path, monkeypatch, name=["Danny Ward", "Danny Ward"], element=[11, 22], gw=[5, 5])
     with pytest.raises(ValueError, match="ambiguous"):
         resolve_names_to_ids(["Danny Ward"], "2025-26")
 
@@ -109,15 +116,7 @@ def test_resolve_names_to_ids_reports_unmatched_and_ambiguous_together(
     tmp_path, monkeypatch
 ) -> None:
     """Both unmatched and ambiguous offenders are named in one error."""
-    _write_merged_gw(
-        tmp_path,
-        {
-            "name": ["Danny Ward", "Danny Ward"],
-            "element": [11, 22],
-            "GW": [5, 5],
-        },
-    )
-    monkeypatch.setattr(team_input, "RAW_DATA_FOLDER", tmp_path / "raw")
+    _seed_player_week(tmp_path, monkeypatch, name=["Danny Ward", "Danny Ward"], element=[11, 22], gw=[5, 5])
     with pytest.raises(ValueError) as exc:
         resolve_names_to_ids(["Danny Ward", "Ghost Player"], "2025-26")
     assert "Danny Ward" in str(exc.value)

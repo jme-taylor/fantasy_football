@@ -7,6 +7,11 @@ from fantasy_football.optimisation.optimiser import (
     Plan,
     _load_prices,
 )
+from fantasy_football.storage import database
+from fantasy_football.storage.database import (
+    get_connection,
+    upsert_current_season,
+)
 
 
 def test_plan_to_frame_has_one_row_per_gameweek() -> None:
@@ -47,26 +52,47 @@ def test_plan_to_frame_has_one_row_per_gameweek() -> None:
     assert frame.filter(pl.col("gw") == 11)["transfers_in"].item() == "P15"
 
 
-def _write_merged_gw(tmp_path, rows) -> None:
-    """Write a minimal merged_gw.csv under tmp_path/raw/<season>/gws/."""
-    raw = tmp_path / "raw" / "2025-26" / "gws"
-    raw.mkdir(parents=True)
-    pl.DataFrame(rows).write_csv(raw / "merged_gw.csv")
+def _seed_player_week(
+    tmp_path, monkeypatch, *, name, element, gw, value=None, season="2025-26"
+) -> None:
+    """Seed the player_week DB with rows and point DATABASE_PATH at it."""
+    n = len(name)
+    frame = pl.DataFrame(
+        {
+            "season": [season] * n,
+            "gw": gw,
+            "element": element,
+            "name": name,
+            "position": ["MID"] * n,
+            "team": ["T"] * n,
+            "bonus": [0] * n,
+            "minutes": [0] * n,
+            "round": gw,
+            "total_points": [0] * n,
+            "value": value if value is not None else [0] * n,
+        }
+    )
+    db_path = tmp_path / "t.duckdb"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    connection = get_connection(db_path)
+    try:
+        upsert_current_season(connection, frame, season)
+    finally:
+        connection.close()
 
 
 def test_load_prices_uses_latest_value_at_or_before_start_gw(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """_load_prices returns the latest price at or before start_gw per player."""
-    _write_merged_gw(
+    _seed_player_week(
         tmp_path,
-        {
-            "name": ["P1", "P1", "P1", "P2"],
-            "value": [50, 55, 60, 80],
-            "GW": [9, 10, 11, 10],
-        },
+        monkeypatch,
+        name=["P1", "P1", "P1", "P2"],
+        element=[1, 1, 1, 2],
+        gw=[9, 10, 11, 10],
+        value=[50, 55, 60, 80],
     )
-    monkeypatch.setattr(optimisation, "RAW_DATA_FOLDER", tmp_path / "raw")
     prices = _load_prices("2025-26", start_gw=10)
     assert prices["P1"] == 55  # GW10 value, not the later GW11=60
     assert prices["P2"] == 80
@@ -302,21 +328,30 @@ def test_extract_plan_reports_start_gw_transfers_with_initial_squad() -> None:
 
 
 def _setup_artifacts(tmp_path, monkeypatch, predictions, prices, gws):
-    """Write predictions/merged_gw to a temp tree and patch folder constants."""
+    """Write predictions to a temp tree, seed prices into the DB, patch paths."""
     transformed = tmp_path / "transformed"
     transformed.mkdir()
     predictions.write_csv(transformed / "predictions.csv")
-    raw = tmp_path / "raw" / "2025-26" / "gws"
-    raw.mkdir(parents=True)
-    rows = {"name": [], "value": [], "GW": []}
-    for name, value in prices.items():
-        for gw in gws:
-            rows["name"].append(name)
-            rows["value"].append(value)
-            rows["GW"].append(gw)
-    pl.DataFrame(rows).write_csv(raw / "merged_gw.csv")
     monkeypatch.setattr(optimisation, "TRANSFORMED_DATA_FOLDER", transformed)
-    monkeypatch.setattr(optimisation, "RAW_DATA_FOLDER", tmp_path / "raw")
+
+    name_col: list[str] = []
+    element_col: list[int] = []
+    gw_col: list[int] = []
+    value_col: list[int] = []
+    for index, (name, value) in enumerate(prices.items(), start=1):
+        for gw in gws:
+            name_col.append(name)
+            element_col.append(index)
+            gw_col.append(gw)
+            value_col.append(value)
+    _seed_player_week(
+        tmp_path,
+        monkeypatch,
+        name=name_col,
+        element=element_col,
+        gw=gw_col,
+        value=value_col,
+    )
     return transformed
 
 
