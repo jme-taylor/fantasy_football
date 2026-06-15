@@ -2,9 +2,9 @@
 
 FCI replaces Vaastav as the data source from 2025-26 onwards. Its per-gameweek
 folders hold mostly season-to-date snapshots, so this module reconstructs
-Vaastav-shaped ``merged_gw.csv`` rows (one row per player per gameweek) from
-them. The pure ``build_merged_gw`` adapter does the reshaping; the IO and
-orchestration live in ``FciExtractor`` (added separately).
+Vaastav-shaped player-week rows (one row per player per gameweek) from them and
+upserts them into the player-week database. The pure ``build_merged_gw`` adapter
+does the reshaping; the IO and orchestration live in ``FciExtractor``.
 """
 
 import io
@@ -156,7 +156,7 @@ _GW_PATH_RE = re.compile(r"/By Gameweek/GW(\d+)/")
 
 
 class FciExtractor:
-    """Download FCI data and build a Vaastav-shaped current-season merged_gw.csv."""
+    """Download FCI data and upsert the current season's player-week rows."""
 
     def __init__(
         self,
