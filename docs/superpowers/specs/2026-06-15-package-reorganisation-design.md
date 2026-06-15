@@ -127,6 +127,29 @@ basenames, which remain unique after the move. If a collection clash appears,
 fall back to setting `[tool.pytest.ini_options] importmode = "importlib"` rather
 than adding test packages.
 
+## README
+
+The README's **Current State** section is currently a flat per-file bullet
+list (`fantasy_football/data_extraction.py — ...`). Rework it to show the new
+domain structure as a directory tree, grouped by package, so the README
+communicates the architecture at a glance:
+
+```text
+fantasy_football/
+├── constants.py, logging_config.py, fpl_types.py   # shared
+├── extraction/   — ingest raw data (FPL API, FCI, Vaastav)
+├── features/     — derive model-ready features (rolling points, fixtures, Elo)
+├── modelling/    — train, predict, evaluate
+└── optimisation/ — build the squad / transfer plan
+```
+
+Keep a short per-module description, but nested under its package rather than
+as a flat list. Also update every module path the README references, including
+the evaluation command:
+
+- `python -m fantasy_football.evaluation`
+  → `python -m fantasy_football.modelling.evaluation`
+
 ## Out of scope / unchanged
 
 - **`pyproject.toml`** — hatchling packages the whole `fantasy_football`
@@ -134,7 +157,6 @@ than adding test packages.
   so sub-packages are included automatically. No packaging change. There are no
   console entry-points.
 - **`main.py`** stays at root as the orchestrator; only its imports change.
-- **`README.md`** — update any module paths it references.
 
 ## Mechanics & sequence
 
@@ -151,3 +173,5 @@ than adding test packages.
 - `pytest`, `ruff check`, and the type checker all pass.
 - `main.py` runs end-to-end as before (imports resolve, no behaviour change).
 - No module retains a stuttering or redundant-prefix name.
+- The README's structure section and all module paths it references reflect the
+  new layout.
