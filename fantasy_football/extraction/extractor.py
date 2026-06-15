@@ -24,6 +24,37 @@ logger = logging.getLogger(__name__)
 RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 
 
+def _collapse_double_gameweeks(frame: pl.DataFrame) -> pl.DataFrame:
+    """Collapse multi-fixture rows to one row per ``(season, gw, element)``.
+
+    Vaastav data has one row per fixture, so a player in a double gameweek
+    appears twice for the same player-gameweek. Sum the additive stats and keep
+    a representative value for the descriptive columns, matching the
+    one-row-per-player-gameweek shape the FCI adapter produces.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        A frame with at least ``season, gw, element, bonus, minutes,
+        total_points, name, position, team, round, value`` columns.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per ``(season, gw, element)``.
+    """
+    return frame.group_by(["season", "gw", "element"]).agg(
+        pl.col("bonus").sum(),
+        pl.col("minutes").sum(),
+        pl.col("total_points").sum(),
+        pl.col("name").first(),
+        pl.col("position").first(),
+        pl.col("team").first(),
+        pl.col("round").first(),
+        pl.col("value").first(),
+    )
+
+
 def _historic_loaded(
     present: set[str], current_season: str, bridge_seasons: list[str]
 ) -> bool:
@@ -267,12 +298,14 @@ class DataExtractor:
             shaped = bridge.rename({"GW": "gw"}).with_columns(
                 pl.lit(season).alias("season")
             )
+            shaped = _collapse_double_gameweeks(shaped)
             write_immutable_season(connection, shaped, season)
 
         if not _historic_loaded(present, current_season, seasons):
             aggregate = self._read_csv(self.HISTORIC_FILE).rename(
                 {"season_x": "season", "team_x": "team", "GW": "gw"}
             )
+            aggregate = _collapse_double_gameweeks(aggregate)
             for season in sorted(aggregate["season"].unique().to_list()):
                 slice_ = aggregate.filter(pl.col("season") == season)
                 write_immutable_season(connection, slice_, season)

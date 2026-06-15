@@ -385,3 +385,71 @@ def test_github_api_client_defaults_to_vaastav() -> None:
     assert client.get_raw_file_url("data/x.csv") == (
         "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/x.csv"
     )
+
+
+def test_load_immutable_seasons_collapses_double_gameweeks(
+    mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path
+) -> None:
+    """A player's two fixture-rows in a double gameweek collapse to one row."""
+    from fantasy_football.storage.database import (
+        get_connection,
+        load_player_week,
+        write_immutable_season,
+    )
+
+    # Bridge season merged_gw with a double gameweek: element 5 plays twice in
+    # GW24 (two fixture rows, same season/gw/element).
+    bridge = pl.DataFrame(
+        {
+            "name": ["DGW Player", "DGW Player"],
+            "position": ["MID", "MID"],
+            "team": ["Arsenal", "Arsenal"],
+            "bonus": [1, 2],
+            "element": [5, 5],
+            "minutes": [90, 75],
+            "round": [24, 24],
+            "total_points": [6, 8],
+            "value": [80, 80],
+            "GW": [24, 24],
+        }
+    )
+    mocker.patch.object(
+        mock_data_extractor, "_read_csv", return_value=bridge
+    )
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        # Seed a historic season so _historic_loaded() short-circuits the
+        # aggregate download path, isolating the bridge-season collapse.
+        seed = pl.DataFrame(
+            {
+                "season": ["2019-20"],
+                "gw": [1],
+                "element": [1],
+                "name": ["Seed"],
+                "position": ["DEF"],
+                "team": ["Chelsea"],
+                "bonus": [0],
+                "minutes": [90],
+                "round": [1],
+                "total_points": [2],
+                "value": [40],
+            }
+        )
+        write_immutable_season(connection, seed, "2019-20")
+        mock_data_extractor.load_immutable_seasons(
+            connection, "2025-26", bridge_seasons=["2024-25"]
+        )
+        result = load_player_week(connection)
+    finally:
+        connection.close()
+
+    dgw = result.filter(
+        (pl.col("season") == "2024-25") & (pl.col("element") == 5)
+    )
+    assert dgw.height == 1
+    row = dgw.row(0, named=True)
+    assert row["total_points"] == 14  # 6 + 8
+    assert row["minutes"] == 165  # 90 + 75
+    assert row["bonus"] == 3  # 1 + 2
+    assert row["name"] == "DGW Player"
