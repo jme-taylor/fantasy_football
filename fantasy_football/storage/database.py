@@ -172,3 +172,40 @@ def write_immutable_season(
     logger.info(
         "Inserted %d rows for immutable season %s", shaped.height, season
     )
+
+
+def upsert_current_season(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Replace all stored rows for ``season`` with a freshly fetched frame.
+
+    The current season is re-fetched season-to-date each run. Deleting the
+    season's existing rows and re-inserting guarantees late corrections (bonus,
+    minutes) overwrite cleanly and brand-new gameweeks are added, while rows
+    that vanished upstream do not linger. Other seasons are untouched.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        The season-to-date rows, carrying every ``PLAYER_WEEK_COLUMNS`` name.
+    season : str
+        The current season being refreshed.
+    """
+    shaped = coerce_player_week(frame)
+    connection.register("incoming_player_week", shaped.to_arrow())
+    try:
+        connection.execute(
+            "DELETE FROM player_week WHERE season = ?", [season]
+        )
+        connection.execute(
+            "INSERT INTO player_week SELECT * FROM incoming_player_week"
+        )
+    finally:
+        connection.unregister("incoming_player_week")
+    logger.info(
+        "Upserted %d rows for current season %s", shaped.height, season
+    )

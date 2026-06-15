@@ -158,3 +158,73 @@ def test_write_immutable_season_is_noop_when_present(tmp_path: Path) -> None:
         connection.close()
 
     assert rows == [("Original",)]
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    upsert_current_season,
+)
+
+
+def _current_row(
+    gw: int, element: int, total_points: int
+) -> dict[str, object]:
+    """Build one current-season player-week record as a dict of lists' values."""
+    return {
+        "season": "2025-26",
+        "gw": gw,
+        "element": element,
+        "name": "Player",
+        "position": "MID",
+        "team": "Arsenal",
+        "bonus": 0,
+        "minutes": 90,
+        "round": gw,
+        "total_points": total_points,
+        "value": 75,
+    }
+
+
+def _frame(records: list[dict[str, object]]) -> pl.DataFrame:
+    """Build a player-week frame from a list of record dicts."""
+    return pl.DataFrame(records)
+
+
+def test_upsert_overwrites_changed_row_and_inserts_new_gw(
+    tmp_path: Path,
+) -> None:
+    """A later upsert corrects an existing GW's value and adds the next GW."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        # First pull: GW1 provisional points.
+        upsert_current_season(
+            connection, _frame([_current_row(1, 1, 5)]), "2025-26"
+        )
+        # Second pull: GW1 corrected to 7, GW2 newly available.
+        upsert_current_season(
+            connection,
+            _frame([_current_row(1, 1, 7), _current_row(2, 1, 9)]),
+            "2025-26",
+        )
+        rows = connection.execute(
+            "SELECT gw, total_points FROM player_week "
+            "WHERE season = '2025-26' ORDER BY gw"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert rows == [(1, 7), (2, 9)]
+
+
+def test_upsert_does_not_touch_other_seasons(tmp_path: Path) -> None:
+    """Upserting the current season leaves stored prior seasons intact."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "Old"), "2020-21"
+        )
+        upsert_current_season(
+            connection, _frame([_current_row(1, 1, 5)]), "2025-26"
+        )
+        assert seasons_present(connection) == {"2020-21", "2025-26"}
+    finally:
+        connection.close()
