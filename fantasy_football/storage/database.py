@@ -51,16 +51,16 @@ PLAYER_WEEK_SCHEMA: dict[str, pl.DataType] = {
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS player_week (
     season VARCHAR NOT NULL,
-    gw INTEGER NOT NULL,
-    element INTEGER NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
     name VARCHAR,
     position VARCHAR,
     team VARCHAR,
-    bonus INTEGER,
-    minutes INTEGER,
-    round INTEGER,
-    total_points INTEGER,
-    value INTEGER,
+    bonus BIGINT,
+    minutes BIGINT,
+    round BIGINT,
+    total_points BIGINT,
+    value BIGINT,
     PRIMARY KEY (season, gw, element)
 )
 """
@@ -80,6 +80,7 @@ def get_connection(
     -------
     duckdb.DuckDBPyConnection
         An open connection with the ``player_week`` table guaranteed to exist.
+        The caller is responsible for closing the connection.
     """
     path = db_path or DATABASE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
