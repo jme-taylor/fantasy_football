@@ -87,3 +87,32 @@ def get_connection(
     connection = duckdb.connect(str(path))
     connection.execute(_CREATE_TABLE)
     return connection
+
+
+def coerce_player_week(frame: pl.DataFrame) -> pl.DataFrame:
+    """Normalise an incoming frame to the canonical player-week shape.
+
+    Collapses the legacy ``GKP`` position label to ``GK``, selects exactly
+    ``PLAYER_WEEK_COLUMNS`` (ignoring any extra source columns), and pins the
+    dtypes to ``PLAYER_WEEK_SCHEMA``.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        A frame already carrying every name in ``PLAYER_WEEK_COLUMNS``.
+
+    Returns
+    -------
+    pl.DataFrame
+        The frame reduced to the canonical columns, order, and dtypes.
+    """
+    return (
+        frame.with_columns(
+            pl.when(pl.col("position") == "GKP")
+            .then(pl.lit("GK"))
+            .otherwise(pl.col("position"))
+            .alias("position")
+        )
+        .select(PLAYER_WEEK_COLUMNS)
+        .cast(PLAYER_WEEK_SCHEMA, strict=False)
+    )

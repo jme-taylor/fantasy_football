@@ -45,3 +45,58 @@ def test_get_connection_is_idempotent(tmp_path: Path) -> None:
     finally:
         second.close()
     assert count == 0
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    PLAYER_WEEK_COLUMNS,
+    coerce_player_week,
+)
+
+
+def test_coerce_player_week_normalises_gkp_and_selects_columns() -> None:
+    """GKP collapses to GK; output is exactly PLAYER_WEEK_COLUMNS in order."""
+    raw = pl.DataFrame(
+        {
+            "season": ["2020-21"],
+            "gw": [1],
+            "element": [1],
+            "name": ["Player1"],
+            "position": ["GKP"],
+            "team": ["Arsenal"],
+            "bonus": [1],
+            "minutes": [90],
+            "round": [1],
+            "total_points": [6],
+            "value": [50],
+            "unused_extra": ["drop me"],
+        }
+    )
+
+    result = coerce_player_week(raw)
+
+    assert result.columns == PLAYER_WEEK_COLUMNS
+    assert result["position"].to_list() == ["GK"]
+
+
+def test_coerce_player_week_pins_dtypes() -> None:
+    """Numeric columns arriving as Float64 are cast to Int64."""
+    raw = pl.DataFrame(
+        {
+            "season": ["2020-21"],
+            "gw": [1],
+            "element": [1],
+            "name": ["Player1"],
+            "position": ["GK"],
+            "team": ["Arsenal"],
+            "bonus": [1.0],
+            "minutes": [90.0],
+            "round": [1],
+            "total_points": [6],
+            "value": [50],
+        }
+    )
+
+    result = coerce_player_week(raw)
+
+    assert result.schema["bonus"] == pl.Int64
+    assert result.schema["minutes"] == pl.Int64
