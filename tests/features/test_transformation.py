@@ -1,6 +1,5 @@
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import polars as pl
 import pytest
@@ -20,9 +19,6 @@ from fantasy_football.storage.database import (
     upsert_current_season,
     write_immutable_season,
 )
-
-if TYPE_CHECKING:
-    pass
 
 
 @pytest.fixture
