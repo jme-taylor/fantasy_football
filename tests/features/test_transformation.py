@@ -14,6 +14,12 @@ from fantasy_football.features.transformation import (
     load_gw_data,
     rolling_column_name,
 )
+from fantasy_football.storage import database
+from fantasy_football.storage.database import (
+    get_connection,
+    upsert_current_season,
+    write_immutable_season,
+)
 
 if TYPE_CHECKING:
     pass
@@ -43,306 +49,63 @@ def sample_gw_data() -> pl.DataFrame:
     )
 
 
-def test_load_gw_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test the load_gw_data function.
-
-    Parameters
-    ----------
-    tmp_path : Path
-        A temporary directory path provided by pytest.
-    monkeypatch : pytest.MonkeyPatch
-        Pytest monkeypatch fixture used to redirect the module's data folders.
-    """
-    # Create temporary data structure
-    raw_data = tmp_path / "raw"
-    current_season = "2023-24"
-    season_data = raw_data / current_season / "gws"
-    season_data.mkdir(parents=True)
-    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
-    monkeypatch.setattr(data_transformation, "VASTAAV_BRIDGE_SEASONS", [])
-
-    # Create sample data files
-    previous_seasons_data = pl.DataFrame(
+def _seed_player_week_db(db_path: Path) -> None:
+    """Seed a temp DB with one historic (GKP) season and one current season."""
+    historic = pl.DataFrame(
         {
-            "season_x": ["2020-21", "2020-21"],
+            "season": ["2020-21", "2020-21"],
+            "gw": [1, 2],
+            "element": [1, 1],
             "name": ["Player1", "Player1"],
             "position": ["GKP", "GKP"],
-            "team_x": ["Arsenal", "Arsenal"],
+            "team": ["Arsenal", "Arsenal"],
             "bonus": [1, 2],
-            "element": [1, 1],
             "minutes": [90, 90],
             "round": [1, 2],
             "total_points": [6, 8],
-            "GW": [1, 2],
+            "value": [50, 50],
         }
     )
-    previous_seasons_data.write_csv(raw_data / "cleaned_merged_seasons.csv")
-
-    current_season_data = pl.DataFrame(
+    current = pl.DataFrame(
         {
+            "season": ["2025-26", "2025-26"],
+            "gw": [1, 2],
+            "element": [2, 2],
             "name": ["Player2", "Player2"],
             "position": ["GK", "GK"],
             "team": ["Chelsea", "Chelsea"],
             "bonus": [1, 2],
-            "element": [2, 2],
             "minutes": [90, 90],
             "round": [1, 2],
             "total_points": [7, 9],
-            "GW": [1, 2],
+            "value": [45, 45],
         }
     )
-    current_season_data.write_csv(season_data / "merged_gw.csv")
+    connection = get_connection(db_path)
+    try:
+        write_immutable_season(connection, historic, "2020-21")
+        upsert_current_season(connection, current, "2025-26")
+    finally:
+        connection.close()
 
-    # Test the function
-    result = load_gw_data(current_season)
 
-    # Assertions
+def test_load_gw_data_reads_all_seasons_from_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """load_gw_data returns every stored season with GKP collapsed to GK."""
+    db_path = tmp_path / "t.duckdb"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    _seed_player_week_db(db_path)
+
+    result = load_gw_data()
+
     assert isinstance(result, pl.DataFrame)
-    assert "season" in result.columns
-    assert "name" in result.columns
-    assert "position" in result.columns
-    assert "total_points" in result.columns
-    assert "gw" in result.columns
-    # Row count: 2 previous + 2 current
-    assert result.height == 4
-    # GKP collapsed into GK
+    assert set(result["season"].unique().to_list()) == {"2020-21", "2025-26"}
     assert result.filter(pl.col("position") == "GKP").height == 0
     assert result.filter(pl.col("position") == "GK").height == 4
-    # Previous-season rows keep their original season, current-season rows
-    # have ``current_season`` written into the season column.
-    assert result.filter(pl.col("name") == "Player1")[
-        "season"
-    ].unique().to_list() == ["2020-21"]
-    assert result.filter(pl.col("name") == "Player2")[
-        "season"
-    ].unique().to_list() == [current_season]
-    assert "team" in result.columns
     assert result.filter(pl.col("name") == "Player1")[
         "team"
     ].unique().to_list() == ["Arsenal"]
-    assert result.filter(pl.col("name") == "Player2")[
-        "team"
-    ].unique().to_list() == ["Chelsea"]
-
-
-def _write_aggregate(raw_data: Path) -> None:
-    """Write a minimal cleaned_merged_seasons.csv with one 2020-21 row."""
-    pl.DataFrame(
-        {
-            "season_x": ["2020-21"],
-            "name": ["Player1"],
-            "position": ["GKP"],
-            "team_x": ["Arsenal"],
-            "bonus": [1],
-            "element": [1],
-            "minutes": [90],
-            "round": [1],
-            "total_points": [6],
-            "GW": [1],
-        }
-    ).write_csv(raw_data / "cleaned_merged_seasons.csv")
-
-
-def _write_season_merged_gw(raw_data: Path, season: str, name: str) -> None:
-    """Write a minimal per-season merged_gw.csv with one row for ``name``."""
-    season_dir = raw_data / season / "gws"
-    season_dir.mkdir(parents=True)
-    pl.DataFrame(
-        {
-            "name": [name],
-            "position": ["DEF"],
-            "team": ["Leeds"],
-            "bonus": [2],
-            "element": [3],
-            "minutes": [90],
-            "round": [5],
-            "total_points": [8],
-            "GW": [5],
-        }
-    ).write_csv(season_dir / "merged_gw.csv")
-
-
-def test_load_gw_data_includes_bridge_season(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A present bridge season is loaded alongside aggregate and current.
-
-    Parameters
-    ----------
-    tmp_path : Path
-        A temporary directory path provided by pytest.
-    monkeypatch : pytest.MonkeyPatch
-        Pytest monkeypatch fixture used to redirect data folders and config.
-    """
-    raw_data = tmp_path / "raw"
-    current_season = "2025-26"
-    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
-    monkeypatch.setattr(
-        data_transformation, "VASTAAV_BRIDGE_SEASONS", ["2024-25"]
-    )
-    raw_data.mkdir(parents=True)
-    _write_aggregate(raw_data)
-    _write_season_merged_gw(raw_data, "2024-25", "Bridger")
-    _write_season_merged_gw(raw_data, current_season, "Currenter")
-
-    result = load_gw_data(current_season)
-
-    assert set(result["season"].unique().to_list()) == {
-        "2020-21",
-        "2024-25",
-        "2025-26",
-    }
-    bridger = result.filter(pl.col("name") == "Bridger")
-    assert bridger["season"].to_list() == ["2024-25"]
-    assert bridger["team"].to_list() == ["Leeds"]
-
-
-def test_load_gw_data_skips_absent_bridge_season(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """An absent bridge season is skipped with a warning, not an error.
-
-    Parameters
-    ----------
-    tmp_path : Path
-        A temporary directory path provided by pytest.
-    monkeypatch : pytest.MonkeyPatch
-        Pytest monkeypatch fixture used to redirect data folders and config.
-    caplog : pytest.LogCaptureFixture
-        Pytest fixture for capturing log records.
-    """
-    raw_data = tmp_path / "raw"
-    current_season = "2025-26"
-    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
-    monkeypatch.setattr(
-        data_transformation, "VASTAAV_BRIDGE_SEASONS", ["2024-25"]
-    )
-    raw_data.mkdir(parents=True)
-    _write_aggregate(raw_data)
-    _write_season_merged_gw(raw_data, current_season, "Currenter")
-
-    with caplog.at_level(
-        logging.WARNING, logger="fantasy_football.features.transformation"
-    ):
-        result = load_gw_data(current_season)
-
-    assert "2024-25" not in result["season"].unique().to_list()
-    assert any(
-        "Bridge season 2024-25" in record.getMessage()
-        for record in caplog.records
-    )
-
-
-def test_load_gw_data_missing_previous_seasons_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Missing previous-seasons CSV must raise.
-
-    Rather than silently dropping previous-season history, the function should
-    surface a ``FileNotFoundError`` when ``cleaned_merged_seasons.csv`` is
-    absent.
-    """
-    raw_data = tmp_path / "raw"
-    current_season = "2023-24"
-    season_data = raw_data / current_season / "gws"
-    season_data.mkdir(parents=True)
-    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
-
-    pl.DataFrame(
-        {
-            "name": ["Player2"],
-            "position": ["GK"],
-            "bonus": [1],
-            "element": [2],
-            "minutes": [90],
-            "round": [1],
-            "total_points": [7],
-            "GW": [1],
-        }
-    ).write_csv(season_data / "merged_gw.csv")
-
-    with pytest.raises(FileNotFoundError):
-        load_gw_data(current_season)
-
-
-def test_load_gw_data_missing_current_season_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Missing current-season CSV must raise.
-
-    Rather than returning only the historical data, the function should
-    surface a ``FileNotFoundError`` when ``merged_gw.csv`` is absent.
-    """
-    raw_data = tmp_path / "raw"
-    current_season = "2023-24"
-    (raw_data / current_season / "gws").mkdir(parents=True)
-    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
-
-    pl.DataFrame(
-        {
-            "season_x": ["2020-21"],
-            "name": ["Player1"],
-            "position": ["GKP"],
-            "team_x": ["Arsenal"],
-            "bonus": [1],
-            "element": [1],
-            "minutes": [90],
-            "round": [1],
-            "total_points": [6],
-            "GW": [1],
-        }
-    ).write_csv(raw_data / "cleaned_merged_seasons.csv")
-
-    with pytest.raises(FileNotFoundError):
-        load_gw_data(current_season)
-
-
-def test_load_gw_data_schema_drift_in_previous_seasons(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Schema drift in the previous-seasons CSV must raise.
-
-    If a required column (here ``total_points``) is missing, the function
-    should surface a Polars ``ColumnNotFoundError`` rather than silently
-    returning partial data.
-    """
-    raw_data = tmp_path / "raw"
-    current_season = "2023-24"
-    season_data = raw_data / current_season / "gws"
-    season_data.mkdir(parents=True)
-    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
-
-    # ``total_points`` deliberately omitted from previous-seasons data.
-    pl.DataFrame(
-        {
-            "season_x": ["2020-21"],
-            "name": ["Player1"],
-            "position": ["GKP"],
-            "bonus": [1],
-            "element": [1],
-            "minutes": [90],
-            "round": [1],
-            "GW": [1],
-        }
-    ).write_csv(raw_data / "cleaned_merged_seasons.csv")
-
-    pl.DataFrame(
-        {
-            "name": ["Player2"],
-            "position": ["GK"],
-            "bonus": [1],
-            "element": [2],
-            "minutes": [90],
-            "round": [1],
-            "total_points": [7],
-            "GW": [1],
-        }
-    ).write_csv(season_data / "merged_gw.csv")
-
-    with pytest.raises(pl.exceptions.ColumnNotFoundError):
-        load_gw_data(current_season)
 
 
 def test_create_rolling_average_column(sample_gw_data: pl.DataFrame) -> None:
@@ -563,51 +326,39 @@ def test_create_rolling_points_data_respects_rolling_window(
     tmp_path : Path
         A temporary directory path provided by pytest.
     monkeypatch : pytest.MonkeyPatch
-        Pytest monkeypatch fixture used to redirect the module's data folders.
+        Pytest monkeypatch fixture used to redirect the DB and output folder.
     rolling_window : int
         The rolling window size to test.
     """
-    raw_data = tmp_path / "raw"
+    db_path = tmp_path / "t.duckdb"
     transformed_data = tmp_path / "transformed"
-    current_season = "2023-24"
-    season_data = raw_data / current_season / "gws"
-    season_data.mkdir(parents=True)
-    monkeypatch.setattr(data_transformation, "RAW_DATA_FOLDER", raw_data)
+    current_season = "2025-26"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
     monkeypatch.setattr(
         data_transformation, "TRANSFORMED_DATA_FOLDER", transformed_data
     )
     assert not transformed_data.exists()
 
-    previous_seasons_data = pl.DataFrame(
+    historic = pl.DataFrame(
         {
-            "season_x": ["2020-21"] * 6,
+            "season": ["2020-21"] * 6,
+            "gw": [1, 2, 3, 4, 5, 6],
+            "element": [1] * 6,
             "name": ["Player1"] * 6,
             "position": ["GK"] * 6,
-            "team_x": ["Arsenal"] * 6,
+            "team": ["Arsenal"] * 6,
             "bonus": [0, 1, 2, 0, 1, 2],
-            "element": [1] * 6,
             "minutes": [90] * 6,
             "round": [1, 2, 3, 4, 5, 6],
             "total_points": [2, 4, 6, 8, 10, 12],
-            "GW": [1, 2, 3, 4, 5, 6],
+            "value": [50] * 6,
         }
     )
-    previous_seasons_data.write_csv(raw_data / "cleaned_merged_seasons.csv")
-
-    current_season_data = pl.DataFrame(
-        {
-            "name": ["Player2"] * 6,
-            "position": ["GK"] * 6,
-            "team": ["Chelsea"] * 6,
-            "bonus": [0, 1, 2, 0, 1, 2],
-            "element": [2] * 6,
-            "minutes": [90] * 6,
-            "round": [1, 2, 3, 4, 5, 6],
-            "total_points": [1, 3, 5, 7, 9, 11],
-            "GW": [1, 2, 3, 4, 5, 6],
-        }
-    )
-    current_season_data.write_csv(season_data / "merged_gw.csv")
+    connection = get_connection(db_path)
+    try:
+        write_immutable_season(connection, historic, "2020-21")
+    finally:
+        connection.close()
 
     create_rolling_points_data(current_season, rolling_window=rolling_window)
 

@@ -2,15 +2,11 @@ import logging
 
 import polars as pl
 
-from fantasy_football.constants import (
-    DATA_FOLDER,
-    ROLLING_WINDOW,
-    VASTAAV_BRIDGE_SEASONS,
-)
+from fantasy_football.constants import DATA_FOLDER, ROLLING_WINDOW
+from fantasy_football.storage.database import load_player_week
 
 logger = logging.getLogger(__name__)
 
-RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 
 KNOWN_POSITIONS: tuple[str, ...] = ("GK", "DEF", "MID", "FWD")
@@ -21,104 +17,20 @@ def rolling_column_name(rolling_column: str, rolling_window: int) -> str:
     return f"{rolling_column}_rolling_{rolling_window}"
 
 
-def _load_season_merged_gw(season: str) -> pl.DataFrame:
-    """Read a single season's ``merged_gw.csv`` and tag it with the season.
+def load_gw_data() -> pl.DataFrame:
+    """Load all player-week data across every season from the database.
 
-    Parameters
-    ----------
-    season : str
-        The season whose per-season file to read, in YYYY-YY format,
-        e.g. "2024-25".
+    Reads the entire ``player_week`` table — historic, bridge, and current
+    seasons — which the extraction step populated. Positions are already
+    normalised (``GKP`` collapsed to ``GK``) at write time.
 
     Returns
     -------
     pl.DataFrame
-        The season's gameweek rows with a ``gw`` column and a literal
-        ``season`` column.
+        One row per (player, gameweek) for all seasons, with a ``season`` and
+        ``gw`` column.
     """
-    season_columns = [
-        "name",
-        "position",
-        "team",
-        "bonus",
-        "element",
-        "minutes",
-        "round",
-        "total_points",
-        "GW",
-    ]
-    return (
-        pl.read_csv(
-            RAW_DATA_FOLDER.joinpath(season, "gws", "merged_gw.csv"),
-            columns=season_columns,
-        )
-        .rename({"GW": "gw"})
-        .with_columns(pl.lit(season).alias("season"))
-    )
-
-
-def load_gw_data(current_season: str) -> pl.DataFrame:
-    """Take all season's gameweek data and join to current season data.
-
-    This function reads the "cleaned_merged_seasons.csv" file, which is the
-    merged data from older complete seasons, then appends any Vaastav "bridge"
-    seasons not yet folded into that aggregate (see
-    ``VASTAAV_BRIDGE_SEASONS``), and finally appends the game week data for the
-    current season, giving a complete dataset of all game weeks for all
-    seasons. Bridge seasons whose file is absent are skipped with a warning;
-    the current season's file is required.
-
-    Parameters
-    ----------
-    current_season : str
-        The current season we are working with. Should be in a YYYY-YY format,
-        e.g. "2020-21"
-
-    Returns
-    -------
-        pl.DataFrame: A DataFrame containing all game week data for all seasons
-
-    """
-    previous_seasons_columns = [
-        "season_x",
-        "name",
-        "position",
-        "team_x",
-        "bonus",
-        "element",
-        "minutes",
-        "round",
-        "total_points",
-        "GW",
-    ]
-    previous_seasons = pl.read_csv(
-        RAW_DATA_FOLDER.joinpath("cleaned_merged_seasons.csv"),
-        columns=previous_seasons_columns,
-    ).rename({"season_x": "season", "GW": "gw", "team_x": "team"})
-
-    frames = [previous_seasons]
-    for season in VASTAAV_BRIDGE_SEASONS:
-        if season == current_season:
-            continue
-        bridge_path = RAW_DATA_FOLDER.joinpath(season, "gws", "merged_gw.csv")
-        if bridge_path.exists():
-            frames.append(_load_season_merged_gw(season))
-        else:
-            logger.warning(
-                "Bridge season %s data not found at %s; skipping.",
-                season,
-                bridge_path,
-            )
-    frames.append(_load_season_merged_gw(current_season))
-
-    gw_data = pl.concat(frames, how="diagonal")
-    gw_data = gw_data.with_columns(
-        pl.when(pl.col("position") == "GKP")
-        .then(pl.lit("GK"))
-        .otherwise(pl.col("position"))
-        .alias("position")
-    )
-    return gw_data
+    return load_player_week()
 
 
 def create_rolling_average_column(
@@ -228,7 +140,7 @@ def create_rolling_points_data(
         The window size to calculate the rolling average over. Defaults to 5.
 
     """
-    gw_data = load_gw_data(current_season)
+    gw_data = load_gw_data()
     rolling_column = rolling_column_name("total_points", rolling_window)
     gw_data = create_rolling_average_column(
         gw_data, "name", "total_points", rolling_window
