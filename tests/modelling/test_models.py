@@ -4,7 +4,10 @@ import polars as pl
 import pytest
 
 from fantasy_football.features.transformation import KNOWN_POSITIONS
-from fantasy_football.models import MODELS_BY_POSITION, RollingFormulaModel
+from fantasy_football.modelling.models import (
+    MODELS_BY_POSITION,
+    RollingFormulaModel,
+)
 
 
 def test_rolling_formula_model_is_deterministic_product() -> None:

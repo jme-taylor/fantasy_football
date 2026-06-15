@@ -11,7 +11,6 @@ import logging
 import mlflow
 import polars as pl
 
-from fantasy_football import metrics
 from fantasy_football.constants import (
     EXPERIMENT_BY_POSITION,
     MLFLOW_TRACKING_URI,
@@ -20,7 +19,8 @@ from fantasy_football.constants import (
     TRANSFORMED_DATA_FOLDER,
 )
 from fantasy_football.features.transformation import KNOWN_POSITIONS
-from fantasy_football.prediction import _predict
+from fantasy_football.modelling import metrics
+from fantasy_football.modelling.prediction import _predict
 
 logger = logging.getLogger(__name__)
 

@@ -7,8 +7,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from fantasy_football import prediction
-from fantasy_football.prediction import _baselines, predict_points
+from fantasy_football.modelling import prediction
+from fantasy_football.modelling.prediction import _baselines, predict_points
 
 
 def _setup_artifacts(
@@ -228,7 +228,7 @@ def test_predict_points_missing_opponent_elo_uses_median_and_warns(
     )
 
     with caplog.at_level(
-        logging.WARNING, logger="fantasy_football.prediction"
+        logging.WARNING, logger="fantasy_football.modelling.prediction"
     ):
         result = predict_points("2025-26", horizon_n=1)
 

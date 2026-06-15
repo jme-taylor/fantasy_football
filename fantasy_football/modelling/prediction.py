@@ -13,7 +13,7 @@ from fantasy_football.features.transformation import (
     KNOWN_POSITIONS,
     rolling_column_name,
 )
-from fantasy_football.models import MODELS_BY_POSITION
+from fantasy_football.modelling.models import MODELS_BY_POSITION
 
 logger = logging.getLogger(__name__)
 

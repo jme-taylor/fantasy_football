@@ -5,7 +5,7 @@ import math
 import polars as pl
 import pytest
 
-from fantasy_football.metrics import (
+from fantasy_football.modelling.metrics import (
     mae,
     poisson_deviance,
     precision_at_k,

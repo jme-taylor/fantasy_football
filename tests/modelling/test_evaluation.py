@@ -5,7 +5,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from fantasy_football import evaluation, prediction
+from fantasy_football.modelling import evaluation, prediction
 
 
 def _rolling_two_seasons() -> pl.DataFrame:
