@@ -209,3 +209,45 @@ def upsert_current_season(
     logger.info(
         "Upserted %d rows for current season %s", shaped.height, season
     )
+
+
+def load_player_week(
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> pl.DataFrame:
+    """Return the entire ``player_week`` table as a Polars frame.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. When None, a connection to ``DATABASE_PATH`` is
+        opened and closed inside this call.
+
+    Returns
+    -------
+    pl.DataFrame
+        All player-week rows, columns in ``PLAYER_WEEK_COLUMNS`` order, sorted
+        by ``(season, gw, element)``.
+    """
+    owns_connection = connection is None
+    conn = connection or get_connection()
+    try:
+        return conn.execute(
+            "SELECT season, gw, element, name, position, team, bonus, "
+            "minutes, round, total_points, value FROM player_week "
+            "ORDER BY season, gw, element"
+        ).pl()
+    finally:
+        if owns_connection:
+            conn.close()
+
+
+def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
+    """Drop and recreate the ``player_week`` table (full-rebuild escape hatch).
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    """
+    connection.execute("DROP TABLE IF EXISTS player_week")
+    connection.execute(_CREATE_TABLE)

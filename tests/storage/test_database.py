@@ -228,3 +228,44 @@ def test_upsert_does_not_touch_other_seasons(tmp_path: Path) -> None:
         assert seasons_present(connection) == {"2020-21", "2025-26"}
     finally:
         connection.close()
+
+
+from fantasy_football.storage import database  # noqa: E402
+from fantasy_football.storage.database import (  # noqa: E402
+    load_player_week,
+    reset_database,
+)
+
+
+def test_load_player_week_returns_all_rows_ordered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """load_player_week opens the default DB and returns every row, ordered."""
+    db_path = tmp_path / "t.duckdb"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    connection = get_connection(db_path)
+    write_immutable_season(
+        connection, _historic_row("2020-21", 2, "Older"), "2020-21"
+    )
+    upsert_current_season(
+        connection, _frame([_current_row(1, 1, 5)]), "2025-26"
+    )
+    connection.close()
+
+    result = load_player_week()
+
+    assert result.columns == PLAYER_WEEK_COLUMNS
+    assert result["season"].to_list() == ["2020-21", "2025-26"]
+
+
+def test_reset_database_empties_the_table(tmp_path: Path) -> None:
+    """reset_database drops all rows but leaves a usable empty table."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "P1"), "2020-21"
+        )
+        reset_database(connection)
+        assert seasons_present(connection) == set()
+    finally:
+        connection.close()
