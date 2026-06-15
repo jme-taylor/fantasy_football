@@ -116,3 +116,59 @@ def coerce_player_week(frame: pl.DataFrame) -> pl.DataFrame:
         .select(PLAYER_WEEK_COLUMNS)
         .cast(PLAYER_WEEK_SCHEMA, strict=False)
     )
+
+
+def seasons_present(connection: duckdb.DuckDBPyConnection) -> set[str]:
+    """Return the set of seasons already stored in ``player_week``.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+
+    Returns
+    -------
+    set[str]
+        Distinct ``season`` values currently in the table.
+    """
+    rows = connection.execute(
+        "SELECT DISTINCT season FROM player_week"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def write_immutable_season(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Insert a completed season's rows, but only if it is not already stored.
+
+    Completed (historic and bridge) seasons never change, so an existing season
+    is left untouched and the frame is discarded.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        Rows for a single season, carrying every ``PLAYER_WEEK_COLUMNS`` name.
+    season : str
+        The season these rows belong to.
+    """
+    if season in seasons_present(connection):
+        logger.info(
+            "Season %s already present; skipping immutable load.", season
+        )
+        return
+    shaped = coerce_player_week(frame)
+    connection.register("incoming_player_week", shaped.to_arrow())
+    try:
+        connection.execute(
+            "INSERT INTO player_week SELECT * FROM incoming_player_week"
+        )
+    finally:
+        connection.unregister("incoming_player_week")
+    logger.info(
+        "Inserted %d rows for immutable season %s", shaped.height, season
+    )

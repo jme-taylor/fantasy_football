@@ -100,3 +100,61 @@ def test_coerce_player_week_pins_dtypes() -> None:
 
     assert result.schema["bonus"] == pl.Int64
     assert result.schema["minutes"] == pl.Int64
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    seasons_present,
+    write_immutable_season,
+)
+
+
+def _historic_row(season: str, element: int, name: str) -> pl.DataFrame:
+    """Build a one-row player-week frame for a given season/player."""
+    return pl.DataFrame(
+        {
+            "season": [season],
+            "gw": [1],
+            "element": [element],
+            "name": [name],
+            "position": ["DEF"],
+            "team": ["Arsenal"],
+            "bonus": [1],
+            "minutes": [90],
+            "round": [1],
+            "total_points": [6],
+            "value": [50],
+        }
+    )
+
+
+def test_seasons_present_reflects_writes(tmp_path: Path) -> None:
+    """seasons_present returns the distinct seasons inserted so far."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        assert seasons_present(connection) == set()
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "P1"), "2020-21"
+        )
+        assert seasons_present(connection) == {"2020-21"}
+    finally:
+        connection.close()
+
+
+def test_write_immutable_season_is_noop_when_present(tmp_path: Path) -> None:
+    """Re-writing an existing season does not change or duplicate its rows."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "Original"), "2020-21"
+        )
+        # Attempt to overwrite the same season with different data.
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "Changed"), "2020-21"
+        )
+        rows = connection.execute(
+            "SELECT name FROM player_week WHERE season = '2020-21'"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert rows == [("Original",)]
