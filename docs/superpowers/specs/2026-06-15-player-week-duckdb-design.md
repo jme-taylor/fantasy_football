@@ -117,6 +117,16 @@ Details:
   check is per-season, not all-or-nothing.
 - **`value` for historic rows:** the Vaastav aggregate carries `value`, mapped
   straight in.
+- **Double gameweeks (decided during implementation):** Vaastav `merged_gw.csv`
+  has one row per *fixture*, so a player in a double gameweek appears twice for
+  the same `(season, gw, element)` — which would violate the primary key. The
+  FCI current-season adapter already collapses double gameweeks to one row per
+  player-gameweek. To keep all seasons consistent (and the primary key valid),
+  the Vaastav loading path collapses fixture-rows to one row per
+  `(season, gw, element)`: `bonus`, `minutes`, and `total_points` are summed;
+  `name`, `position`, `team`, `round`, and `value` take the first value. This is
+  a small behaviour change versus the old CSV pipeline, which kept duplicate
+  fixture rows.
 
 ## Downstream reads
 
