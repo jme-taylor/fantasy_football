@@ -1,4 +1,5 @@
 import logging
+from typing import TYPE_CHECKING
 
 import polars as pl
 
@@ -18,28 +19,38 @@ from fantasy_football.optimisation.team_input import (
     resolve_ids_to_names,
     resolve_names_to_ids,
 )
+from fantasy_football.storage.database import get_connection, reset_database
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
 
 
-def update_current_season(season: str) -> None:
-    """Refresh the current season's merged_gw.csv from the correct source.
+def update_current_season(
+    season: str, connection: "DuckDBPyConnection"
+) -> None:
+    """Refresh the current season's player-week rows from the correct source.
 
     Parameters
     ----------
     season : str
         Short-form season string, e.g. ``"2025-26"``.
+    connection : duckdb.DuckDBPyConnection
+        Open connection to the player-week database.
     """
     if source_for_season(season) == DataSource.FCI:
-        FciExtractor().build_current_season_merged_gw(season)
+        FciExtractor().build_current_season_merged_gw(season, connection)
     else:
-        # Historic seasons are served by the frozen Vaastav dataset.
-        DataExtractor().save_all_data_files()
+        raise NotImplementedError(
+            f"Current-season ingestion for the Vaastav-sourced season "
+            f"{season} is not supported; current seasons come from FCI."
+        )
 
 
 def main(
     *,
-    download_all_data: bool = False,
+    rebuild: bool = False,
     team_file: str | None = None,
     evaluate: bool = False,
 ) -> None:
@@ -47,8 +58,10 @@ def main(
 
     Parameters
     ----------
-    download_all_data : bool, optional
-        When True, also refresh the Vaastav historic dataset. Defaults to False.
+    rebuild : bool, optional
+        When True, drops and reloads every season from scratch (full refresh /
+        recovery escape hatch). Defaults to False, which loads only missing
+        immutable seasons and upserts the current season.
     team_file : str | None, optional
         Path to a name-authored team JSON. When given, optimisation carries
         in that squad from its gameweek instead of free-building. Defaults to
@@ -59,9 +72,14 @@ def main(
         evaluation aborts the run. Defaults to False.
     """
     configure_logging()
-    if download_all_data:
-        DataExtractor().save_all_data_files()
-    update_current_season(CURRENT_SEASON)
+    connection = get_connection()
+    try:
+        if rebuild:
+            reset_database(connection)
+        DataExtractor().load_immutable_seasons(connection, CURRENT_SEASON)
+        update_current_season(CURRENT_SEASON, connection)
+    finally:
+        connection.close()
 
     create_rolling_points_data(CURRENT_SEASON)
     build_fixtures_enriched(CURRENT_SEASON)
@@ -99,4 +117,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(download_all_data=True, team_file="data/dummy_team.json")
+    main(team_file="data/dummy_team.json")
