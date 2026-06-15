@@ -6,8 +6,8 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from fantasy_football import elo
-from fantasy_football.elo import build_team_elo, normalize_elo_frame
+from fantasy_football.features import elo
+from fantasy_football.features.elo import build_team_elo, normalize_elo_frame
 
 
 def _clubelo_df(rows: list[dict]) -> pd.DataFrame:
@@ -66,7 +66,9 @@ def test_normalize_elo_frame_warns_and_drops_unknown_teams(
         ]
     )
 
-    with caplog.at_level(logging.WARNING, logger="fantasy_football.elo"):
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.features.elo"
+    ):
         result = normalize_elo_frame(raw)
 
     assert result.is_empty()
@@ -220,7 +222,9 @@ def test_build_team_elo_falls_back_to_cache_on_scrape_failure(
 
     monkeypatch.setattr(elo, "ClubElo", ExplodingClubElo)
 
-    with caplog.at_level(logging.WARNING, logger="fantasy_football.elo"):
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.features.elo"
+    ):
         result = build_team_elo(force=False)
 
     assert result["elo"].to_list() == [1900.0]

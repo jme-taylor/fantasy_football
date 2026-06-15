@@ -10,7 +10,7 @@ from typing import Protocol
 
 import polars as pl
 
-from fantasy_football.data_transformation import KNOWN_POSITIONS
+from fantasy_football.features.transformation import KNOWN_POSITIONS
 
 
 class PointsModel(Protocol):

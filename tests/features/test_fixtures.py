@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import polars as pl
 import pytest
 
-from fantasy_football.fixtures import enrich_fixtures
+from fantasy_football.features.fixtures import enrich_fixtures
 from fantasy_football.fpl_types import FplFixture, FplFixtures, FplTeamInfo
 
 

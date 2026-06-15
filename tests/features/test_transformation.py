@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
-from fantasy_football import data_transformation
-from fantasy_football.data_transformation import (
+from fantasy_football.features import transformation as data_transformation
+from fantasy_football.features.transformation import (
     KNOWN_POSITIONS,
     create_rolling_average_column,
     create_rolling_points_data,
@@ -224,7 +224,7 @@ def test_load_gw_data_skips_absent_bridge_season(
     _write_season_merged_gw(raw_data, current_season, "Currenter")
 
     with caplog.at_level(
-        logging.WARNING, logger="fantasy_football.data_transformation"
+        logging.WARNING, logger="fantasy_football.features.transformation"
     ):
         result = load_gw_data(current_season)
 
@@ -526,7 +526,7 @@ def test_fill_missing_values_by_position_warns_on_unknown_position(
     )
 
     with caplog.at_level(
-        logging.WARNING, logger="fantasy_football.data_transformation"
+        logging.WARNING, logger="fantasy_football.features.transformation"
     ):
         result = fill_missing_values_by_position(data, "total_points")
 
@@ -543,7 +543,7 @@ def test_fill_missing_values_by_position_no_warning_for_known_positions(
 ) -> None:
     """Inputs that only contain known positions must not trigger a warning."""
     with caplog.at_level(
-        logging.WARNING, logger="fantasy_football.data_transformation"
+        logging.WARNING, logger="fantasy_football.features.transformation"
     ):
         fill_missing_values_by_position(sample_gw_data, "total_points")
 

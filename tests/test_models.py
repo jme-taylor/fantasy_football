@@ -3,7 +3,7 @@
 import polars as pl
 import pytest
 
-from fantasy_football.data_transformation import KNOWN_POSITIONS
+from fantasy_football.features.transformation import KNOWN_POSITIONS
 from fantasy_football.models import MODELS_BY_POSITION, RollingFormulaModel
 
 

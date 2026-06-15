@@ -9,7 +9,7 @@ from fantasy_football.constants import (
     OPPONENT_FACTOR_EXPONENT,
     ROLLING_WINDOW,
 )
-from fantasy_football.data_transformation import (
+from fantasy_football.features.transformation import (
     KNOWN_POSITIONS,
     rolling_column_name,
 )

@@ -19,7 +19,7 @@ from fantasy_football.constants import (
     ROLLING_WINDOW,
     TRANSFORMED_DATA_FOLDER,
 )
-from fantasy_football.data_transformation import KNOWN_POSITIONS
+from fantasy_football.features.transformation import KNOWN_POSITIONS
 from fantasy_football.prediction import _predict
 
 logger = logging.getLogger(__name__)
