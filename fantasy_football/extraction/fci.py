@@ -10,6 +10,7 @@ orchestration live in ``FciExtractor`` (added separately).
 import io
 import logging
 import re
+from typing import TYPE_CHECKING
 
 import polars as pl
 import requests
@@ -18,6 +19,13 @@ from fantasy_football.constants import RAW_DATA_FOLDER
 from fantasy_football.extraction.extractor import GitHubAPIClient
 from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.extraction.seasons import season_short_to_long
+from fantasy_football.storage.database import (
+    coerce_player_week,
+    upsert_current_season,
+)
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
 
@@ -276,30 +284,32 @@ class FciExtractor:
         return snapshots, matchstats, players
 
     def build_current_season_merged_gw(
-        self, short_season: str
+        self, short_season: str, connection: "DuckDBPyConnection"
     ) -> pl.DataFrame:
-        """Build and write ``data/raw/{short_season}/gws/merged_gw.csv``.
+        """Build current-season player-week rows and upsert them into the DB.
 
         Parameters
         ----------
         short_season : str
             Short-form season string, e.g. ``"2025-26"``.
+        connection : duckdb.DuckDBPyConnection
+            Open connection to the player-week database.
 
         Returns
         -------
         pl.DataFrame
-            The merged_gw frame that was written.
+            The coerced player-week frame that was upserted.
         """
         long_season = season_short_to_long(short_season)
         snapshots, matchstats, players = self.fetch_season_frames(long_season)
         merged = build_merged_gw(
             snapshots, matchstats, players, self._team_code_to_name()
         )
-        out_dir = self.raw_data_folder / short_season / "gws"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / "merged_gw.csv"
-        merged.write_csv(out_path)
-        logger.info(
-            "Wrote %d FCI merged_gw rows for %s", merged.height, short_season
+        player_week = merged.rename({"GW": "gw"}).with_columns(
+            pl.lit(short_season).alias("season")
         )
-        return merged
+        upsert_current_season(connection, player_week, short_season)
+        logger.info(
+            "Upserted %d FCI rows for %s", player_week.height, short_season
+        )
+        return coerce_player_week(player_week)

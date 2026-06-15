@@ -163,17 +163,22 @@ def test_fetch_season_frames_raises_when_no_gameweeks(
         extractor.fetch_season_frames("2025-2026")
 
 
-def test_build_current_season_merged_gw_writes_contract_columns(
+def test_build_current_season_merged_gw_upserts_to_db(
     mocker: MockerFixture, tmp_path
 ) -> None:
-    """End-to-end build writes a merged_gw.csv with load_gw_data's columns."""
+    """End-to-end build upserts player-week rows readable via load_player_week."""
+    from fantasy_football.storage.database import (
+        PLAYER_WEEK_COLUMNS,
+        get_connection,
+        load_player_week,
+    )
+
     extractor = FciExtractor(
         api_client=GitHubAPIClient(
             api_key="k", owner="o", repo="r", branch="main"
         ),
         fpl_api=mocker.Mock(),
     )
-    extractor.raw_data_folder = tmp_path
     mocker.patch.object(
         extractor,
         "fetch_season_frames",
@@ -183,22 +188,16 @@ def test_build_current_season_merged_gw_writes_contract_columns(
         extractor, "_team_code_to_name", return_value=TEAM_CODE_TO_NAME
     )
 
-    extractor.build_current_season_merged_gw("2025-26")
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        extractor.build_current_season_merged_gw("2025-26", connection)
+        stored = load_player_week(connection)
+    finally:
+        connection.close()
 
-    written = pl.read_csv(tmp_path / "2025-26" / "gws" / "merged_gw.csv")
-    required = {
-        "name",
-        "position",
-        "team",
-        "bonus",
-        "element",
-        "minutes",
-        "round",
-        "total_points",
-        "GW",
-        "value",
-    }
-    assert required.issubset(set(written.columns))
+    assert stored.columns == PLAYER_WEEK_COLUMNS
+    assert stored.height == 4
+    assert stored["season"].unique().to_list() == ["2025-26"]
 
 
 def test_fetch_season_frames_drops_inconsistent_unused_columns(
