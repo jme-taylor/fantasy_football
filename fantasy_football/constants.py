@@ -7,6 +7,9 @@ RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 MODELS_FOLDER = PROJECT_ROOT.joinpath("models")
 MLFLOW_DB_PATH = MODELS_FOLDER.joinpath("mlflow.db")
+# Single-file duckdb database; source of truth for player-week data.
+# Lives under the gitignored data/ folder.
+DATABASE_PATH = DATA_FOLDER.joinpath("fantasy_football.duckdb")
 
 FPL_ID = "7515957"
 CURRENT_SEASON = "2025-26"

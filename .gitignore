@@ -11,6 +11,7 @@ docs/
 
 # data folder + other local data
 data/
+data/*.duckdb
 *.json
 *.jsonl
 

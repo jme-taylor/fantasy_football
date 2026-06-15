@@ -9,6 +9,7 @@ dependencies = [
     "requests>=2.31.0,<3",
     "beautifulsoup4>=4.12.3,<5",
     "polars>=0.20.3,<0.21",
+    "duckdb>=1.0,<2",
     "python-dotenv>=1.0.0,<2",
     "pydantic>=2.5.3,<3",
     "numpy>=2.2.4,<3",
