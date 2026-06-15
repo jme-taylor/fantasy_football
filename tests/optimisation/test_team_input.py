@@ -3,8 +3,8 @@ import json
 import polars as pl
 import pytest
 
-from fantasy_football import team_input
-from fantasy_football.team_input import (
+from fantasy_football.optimisation import team_input
+from fantasy_football.optimisation.team_input import (
     TeamFile,
     load_team_file,
     resolve_ids_to_names,

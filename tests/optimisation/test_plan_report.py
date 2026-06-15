@@ -4,7 +4,7 @@ from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
 )
-from fantasy_football.plan_report import (
+from fantasy_football.optimisation.plan_report import (
     _ordered_rows,
     _render_gameweek,
     render_plan_markdown,

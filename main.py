@@ -12,8 +12,8 @@ from fantasy_football.features.transformation import create_rolling_points_data
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.modelling.evaluation import run_evaluation
 from fantasy_football.modelling.prediction import predict_points
-from fantasy_football.optimisation import optimise_plan
-from fantasy_football.team_input import (
+from fantasy_football.optimisation.optimiser import optimise_plan
+from fantasy_football.optimisation.team_input import (
     load_team_file,
     resolve_ids_to_names,
     resolve_names_to_ids,

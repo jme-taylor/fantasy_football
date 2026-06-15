@@ -1,8 +1,12 @@
 import polars as pl
 import pytest
 
-from fantasy_football import optimisation
-from fantasy_football.optimisation import GameweekPlan, Plan, _load_prices
+from fantasy_football.optimisation import optimiser as optimisation
+from fantasy_football.optimisation.optimiser import (
+    GameweekPlan,
+    Plan,
+    _load_prices,
+)
 
 
 def test_plan_to_frame_has_one_row_per_gameweek() -> None:
@@ -68,7 +72,10 @@ def test_load_prices_uses_latest_value_at_or_before_start_gw(
     assert prices["P2"] == 80
 
 
-from fantasy_football.optimisation import _build_problem, _solve_problem
+from fantasy_football.optimisation.optimiser import (
+    _build_problem,
+    _solve_problem,
+)
 
 
 def _feasible_universe(gws):
@@ -251,7 +258,10 @@ def test_initial_squad_pays_a_hit_to_make_extra_transfer() -> None:
     assert round(v["paid"][10].value()) == 1  # one free, one paid (-4)
 
 
-from fantasy_football.optimisation import _extract_plan, optimise_plan
+from fantasy_football.optimisation.optimiser import (
+    _extract_plan,
+    optimise_plan,
+)
 
 
 def test_extract_plan_reads_solved_variables() -> None:
@@ -573,7 +583,7 @@ def test_start_gw_transfers_reduce_banked_free_transfers() -> None:
     assert round(v["paid"][11].value()) == 1
 
 
-from fantasy_football.optimisation import _validate_initial_squad
+from fantasy_football.optimisation.optimiser import _validate_initial_squad
 
 
 def test_validate_initial_squad_accepts_a_legal_squad() -> None:
@@ -707,7 +717,7 @@ def test_optimise_plan_bank_raises_effective_budget(
 
 
 from fantasy_football.fpl_types import GameWeekPlan
-from fantasy_football.optimisation import _to_gameweek_plans
+from fantasy_football.optimisation.optimiser import _to_gameweek_plans
 
 
 def test_to_gameweek_plans_maps_ids_and_points() -> None:

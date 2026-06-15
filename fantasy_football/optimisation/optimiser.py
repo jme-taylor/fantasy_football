@@ -10,7 +10,7 @@ from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
 )
-from fantasy_football.plan_report import write_plan_report
+from fantasy_football.optimisation.plan_report import write_plan_report
 
 logger = logging.getLogger(__name__)
 
