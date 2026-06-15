@@ -117,4 +117,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(team_file="data/dummy_team.json")
+    main(rebuild=True, team_file="data/dummy_team.json")
