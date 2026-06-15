@@ -2,8 +2,8 @@
 
 For every completed gameweek across all available seasons, predict the next
 gameweek one step ahead, join to the actual points, and score each position
-with the metrics in :mod:`fantasy_football.metrics`. Results are logged to
-MLflow, one experiment per position.
+with the metrics in :mod:`fantasy_football.modelling.metrics`. Results are
+logged to MLflow, one experiment per position.
 """
 
 import logging
