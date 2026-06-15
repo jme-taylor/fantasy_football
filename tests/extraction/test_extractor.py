@@ -1,10 +1,10 @@
 from pathlib import Path
 
+import polars as pl
 import pytest
 import requests
 from pytest_mock import MockerFixture
 
-from fantasy_football.extraction import extractor
 from fantasy_football.extraction.extractor import (
     DataExtractor,
     GitHubAPIClient,
@@ -231,23 +231,114 @@ def test_save_file_propagates_http_error_and_writes_no_file(
     assert not expected_file.exists()
 
 
-def test_save_all_data_files_downloads_aggregate_and_bridge_seasons(
-    mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path: Path
+def test_historic_loaded_detects_seasons_beyond_current_and_bridge() -> None:
+    """A season outside current/bridge means the historic aggregate is loaded."""
+    from fantasy_football.extraction.extractor import _historic_loaded
+
+    assert not _historic_loaded(set(), "2025-26", ["2024-25"])
+    assert not _historic_loaded({"2025-26", "2024-25"}, "2025-26", ["2024-25"])
+    assert _historic_loaded({"2020-21"}, "2025-26", ["2024-25"])
+
+
+def test_load_immutable_seasons_loads_aggregate_and_bridge(
+    mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path
 ) -> None:
-    """The historic refresh fetches the aggregate plus each bridge season."""
-    mocker.patch.object(extractor, "VASTAAV_BRIDGE_SEASONS", ["2024-25"])
-    mock_data_extractor.raw_data_folder = tmp_path
-    mock_save_file = mocker.patch.object(mock_data_extractor, "save_file")
+    """Aggregate (split by season) and bridge seasons are inserted once."""
+    from fantasy_football.storage.database import (
+        get_connection,
+        seasons_present,
+    )
 
-    mock_data_extractor.save_all_data_files()
+    aggregate = pl.DataFrame(
+        {
+            "season_x": ["2019-20", "2020-21"],
+            "name": ["A", "B"],
+            "position": ["GKP", "DEF"],
+            "team_x": ["Arsenal", "Chelsea"],
+            "bonus": [1, 2],
+            "element": [1, 2],
+            "minutes": [90, 90],
+            "round": [1, 1],
+            "total_points": [6, 8],
+            "value": [50, 55],
+            "GW": [1, 1],
+        }
+    )
+    bridge = pl.DataFrame(
+        {
+            "name": ["C"],
+            "position": ["MID"],
+            "team": ["Leeds"],
+            "bonus": [3],
+            "element": [3],
+            "minutes": [90],
+            "round": [5],
+            "total_points": [9],
+            "value": [60],
+            "GW": [5],
+        }
+    )
 
-    saved_paths = [
-        call.args[0]["path"] for call in mock_save_file.call_args_list
-    ]
-    assert saved_paths == [
-        "data/cleaned_merged_seasons.csv",
-        "data/2024-25/gws/merged_gw.csv",
-    ]
+    def fake_read_csv(path: str) -> pl.DataFrame:
+        return bridge if "2024-25" in path else aggregate
+
+    mocker.patch.object(
+        mock_data_extractor, "_read_csv", side_effect=fake_read_csv
+    )
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        mock_data_extractor.load_immutable_seasons(
+            connection, "2025-26", bridge_seasons=["2024-25"]
+        )
+        present = seasons_present(connection)
+    finally:
+        connection.close()
+
+    assert present == {"2019-20", "2020-21", "2024-25"}
+
+
+def test_load_immutable_seasons_skips_when_already_present(
+    mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path
+) -> None:
+    """With historic + bridge already stored, no downloads happen."""
+    from fantasy_football.storage.database import (
+        get_connection,
+        write_immutable_season,
+    )
+
+    seeded = pl.DataFrame(
+        {
+            "season": ["2020-21", "2024-25"],
+            "gw": [1, 1],
+            "element": [1, 2],
+            "name": ["A", "C"],
+            "position": ["DEF", "MID"],
+            "team": ["Arsenal", "Leeds"],
+            "bonus": [1, 2],
+            "minutes": [90, 90],
+            "round": [1, 1],
+            "total_points": [6, 8],
+            "value": [50, 60],
+        }
+    )
+    read_csv = mocker.patch.object(mock_data_extractor, "_read_csv")
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        write_immutable_season(
+            connection, seeded.filter(pl.col("season") == "2020-21"), "2020-21"
+        )
+        write_immutable_season(
+            connection, seeded.filter(pl.col("season") == "2024-25"), "2024-25"
+        )
+        mock_data_extractor.load_immutable_seasons(
+            connection, "2025-26", bridge_seasons=["2024-25"]
+        )
+    finally:
+        connection.close()
+
+    read_csv.assert_not_called()
 
 
 def test_data_extractor_with_custom_client() -> None:

@@ -1,17 +1,53 @@
+import io
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import polars as pl
 import requests
 from dotenv import load_dotenv
 
 from fantasy_football.constants import DATA_FOLDER, VASTAAV_BRIDGE_SEASONS
+from fantasy_football.storage.database import (
+    seasons_present,
+    write_immutable_season,
+)
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
+
+
+def _historic_loaded(
+    present: set[str], current_season: str, bridge_seasons: list[str]
+) -> bool:
+    """Return True if the historic aggregate has already been loaded.
+
+    The aggregate covers many older seasons and is loaded once. We infer it is
+    loaded when any stored season falls outside the current season and the
+    enumerable bridge seasons.
+
+    Parameters
+    ----------
+    present : set[str]
+        Seasons already stored in the DB.
+    current_season : str
+        The current season (sourced from FCI, not the aggregate).
+    bridge_seasons : list[str]
+        Vaastav bridge seasons handled by their own per-season check.
+
+    Returns
+    -------
+    bool
+        True if historic seasons are present, False otherwise.
+    """
+    return bool(set(present) - {current_season} - set(bridge_seasons))
 
 
 class GitHubAPIClient:
@@ -177,22 +213,66 @@ class DataExtractor:
         with open(local_path, "wb") as f:
             f.write(response.content)
 
-    def save_all_data_files(self) -> None:
-        """Download the frozen Vaastav historic dataset.
+    def _read_csv(self, file_path: str) -> pl.DataFrame:
+        """Download a Vaastav repo CSV into a Polars DataFrame in memory.
 
-        Fetches ``cleaned_merged_seasons.csv`` (the aggregate of older seasons)
-        plus each Vaastav "bridge" season's ``merged_gw.csv`` — the recent
-        seasons not yet folded into that aggregate (see
-        ``VASTAAV_BRIDGE_SEASONS``). Current-season data comes from FCI.
+        Parameters
+        ----------
+        file_path : str
+            Repo-relative path of the CSV.
+
+        Returns
+        -------
+        pl.DataFrame
+            The parsed CSV.
         """
-        self.raw_data_folder.mkdir(parents=True, exist_ok=True)
-        bridge_files = [
-            f"data/{season}/gws/merged_gw.csv"
-            for season in VASTAAV_BRIDGE_SEASONS
-        ]
-        for path in [self.HISTORIC_FILE, *bridge_files]:
-            try:
-                self.save_file({"path": path})
-                logger.info("Successfully saved: %s", path)
-            except Exception:
-                logger.exception("Error saving %s", path)
+        url = self.api_client.get_raw_file_url(file_path)
+        response = requests.get(url)
+        response.raise_for_status()
+        return pl.read_csv(io.BytesIO(response.content))
+
+    def load_immutable_seasons(
+        self,
+        connection: "DuckDBPyConnection",
+        current_season: str,
+        bridge_seasons: list[str] | None = None,
+    ) -> None:
+        """Load completed seasons (aggregate + bridge) into the DB if absent.
+
+        Bridge seasons are checked individually. The historic aggregate is
+        downloaded and split by season only when no historic seasons are yet
+        stored, so a normal run touches the network only for already-missing
+        data.
+
+        Parameters
+        ----------
+        connection : duckdb.DuckDBPyConnection
+            Open connection to the player-week database.
+        current_season : str
+            The current season, excluded from the historic-loaded check.
+        bridge_seasons : list[str] | None, optional
+            Vaastav bridge seasons. Defaults to ``VASTAAV_BRIDGE_SEASONS``.
+        """
+        seasons = (
+            bridge_seasons
+            if bridge_seasons is not None
+            else VASTAAV_BRIDGE_SEASONS
+        )
+        present = seasons_present(connection)
+
+        for season in seasons:
+            if season in present:
+                continue
+            bridge = self._read_csv(f"data/{season}/gws/merged_gw.csv")
+            shaped = bridge.rename({"GW": "gw"}).with_columns(
+                pl.lit(season).alias("season")
+            )
+            write_immutable_season(connection, shaped, season)
+
+        if not _historic_loaded(present, current_season, seasons):
+            aggregate = self._read_csv(self.HISTORIC_FILE).rename(
+                {"season_x": "season", "team_x": "team", "GW": "gw"}
+            )
+            for season in sorted(aggregate["season"].unique().to_list()):
+                slice_ = aggregate.filter(pl.col("season") == season)
+                write_immutable_season(connection, slice_, season)
