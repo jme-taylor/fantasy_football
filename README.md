@@ -8,23 +8,36 @@ A personal project to automatically pick my Fantasy Premier League (FPL) team. T
 
 ## Current State
 
-This is an early-stage work in progress. The repository currently contains:
+This is an early-stage work in progress. `main.py` is the entry point that
+refreshes the current season's data, transforms it, predicts points, and runs
+the optimiser. The package is organised by domain:
 
-* `main.py` — entry point that refreshes the current season's data from the correct source (FCI for 2025-26+, Vaastav for historic seasons), transforms it, predicts points, and runs the optimiser.
-* `fantasy_football/data_extraction.py` — downloads the frozen Vaastav historic dataset (`cleaned_merged_seasons.csv`).
-* `fantasy_football/fci_extraction.py` — downloads current-season data from FPL Core Insights and reconstructs it into Vaastav's `merged_gw.csv` shape.
-* `fantasy_football/seasons.py` — season-string conversions and data-source routing.
-* `fantasy_football/data_transformation.py` — functions for transforming raw data into rolling/feature datasets.
-* `fantasy_football/elo.py` / `fantasy_football/fixtures.py` — build team ELO ratings and the enriched fixtures table used as model features.
-* `fantasy_football/models.py` — per-position points models (one model per position behind a shared interface; all currently wrap the same rolling-points formula).
-* `fantasy_football/prediction.py` — applies the per-position models to produce per-(player, gameweek) point predictions.
-* `fantasy_football/metrics.py` — pure regression metrics for scoring predictions (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance).
-* `fantasy_football/evaluation.py` — replays every historical gameweek one step ahead, scores each position, and logs the results to MLflow.
-* `fantasy_football/optimisation.py` — linear-programming optimiser that turns predictions into a squad, starting XI, captain, and transfer plan.
-* `fantasy_football/fpl.py` — wrappers around the live FPL API (players, teams, fixtures).
-* `fantasy_football/fpl_types.py` — Pydantic types describing FPL API responses.
-* `fantasy_football/constants.py` — shared constants such as the current season.
-* `tests/` — unit tests for the modules above.
+```text
+fantasy_football/
+├── constants.py        — shared constants such as the current season
+├── logging_config.py   — logging setup
+├── fpl_types.py        — Pydantic types describing FPL API responses
+├── extraction/         — ingest raw data
+│   ├── fpl.py          — wrappers around the live FPL API (players, teams, fixtures)
+│   ├── fci.py          — download current-season data from FPL Core Insights and reshape to merged_gw.csv
+│   ├── extractor.py    — download the frozen Vaastav historic dataset
+│   └── seasons.py      — season-string conversions and data-source routing
+├── features/           — derive model-ready features
+│   ├── transformation.py — transform raw data into rolling/feature datasets
+│   ├── fixtures.py     — build the enriched fixtures table used as model features
+│   └── elo.py          — build team Elo ratings
+├── modelling/          — train, predict, evaluate
+│   ├── models.py       — per-position points models behind a shared interface
+│   ├── prediction.py   — apply the models to produce per-(player, gameweek) predictions
+│   ├── metrics.py      — regression metrics (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
+│   └── evaluation.py   — replay historical gameweeks one step ahead and log to MLflow
+└── optimisation/       — build the plan
+    ├── optimiser.py    — linear-programming optimiser → squad, XI, captain, transfers
+    ├── plan_report.py  — format the optimiser output into readable decisions
+    └── team_input.py   — load and resolve a carried-in squad
+```
+
+`tests/` mirrors this structure.
 
 ## Data sources
 
@@ -102,7 +115,7 @@ Run an evaluation (this writes runs to a local SQLite store at
 `models/mlflow.db`):
 
 ```bash
-uv run python -m fantasy_football.evaluation
+uv run python -m fantasy_football.modelling.evaluation
 ```
 
 Browse the results in the MLflow UI using the helper scripts:
