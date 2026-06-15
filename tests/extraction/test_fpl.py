@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_mock import MockerFixture
 
-from fantasy_football.fpl import FplAPI
+from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.fpl_types import (
     FplFixture,
     FplFixtures,
@@ -453,7 +453,10 @@ class TestFplAPI:
     ) -> None:
         """Test parse_fixtures method."""
         # Create mock fixture responses
-        from fantasy_football.fpl import FixtureResponse, FplFixtureResponses
+        from fantasy_football.extraction.fpl import (
+            FixtureResponse,
+            FplFixtureResponses,
+        )
 
         fixture_responses = FplFixtureResponses(
             fixtures=[
@@ -546,7 +549,10 @@ class TestFplAPI:
         )
 
         # Create mock fixture responses
-        from fantasy_football.fpl import FixtureResponse, FplFixtureResponses
+        from fantasy_football.extraction.fpl import (
+            FixtureResponse,
+            FplFixtureResponses,
+        )
 
         fixture_responses = FplFixtureResponses(
             fixtures=[

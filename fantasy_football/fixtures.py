@@ -4,7 +4,7 @@ from datetime import datetime
 import polars as pl
 
 from fantasy_football.constants import DATA_FOLDER
-from fantasy_football.fpl import FplAPI
+from fantasy_football.extraction.fpl import FplAPI
 
 logger = logging.getLogger(__name__)
 

@@ -2,8 +2,8 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
-from fantasy_football.data_extraction import GitHubAPIClient
-from fantasy_football.fci_extraction import FciExtractor, build_merged_gw
+from fantasy_football.extraction.extractor import GitHubAPIClient
+from fantasy_football.extraction.fci import FciExtractor, build_merged_gw
 
 # Two players across two gameweeks; player 2 has a double gameweek in GW2.
 SNAPSHOTS = pl.DataFrame(

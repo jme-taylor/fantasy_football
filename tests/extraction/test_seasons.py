@@ -1,6 +1,6 @@
 import pytest
 
-from fantasy_football.seasons import (
+from fantasy_football.extraction.seasons import (
     DataSource,
     season_long_to_short,
     season_short_to_long,

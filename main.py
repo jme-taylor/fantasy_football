@@ -3,16 +3,16 @@ import logging
 import polars as pl
 
 from fantasy_football.constants import CURRENT_SEASON, TRANSFORMED_DATA_FOLDER
-from fantasy_football.data_extraction import DataExtractor
 from fantasy_football.data_transformation import create_rolling_points_data
 from fantasy_football.elo import build_team_elo
 from fantasy_football.evaluation import run_evaluation
-from fantasy_football.fci_extraction import FciExtractor
+from fantasy_football.extraction.extractor import DataExtractor
+from fantasy_football.extraction.fci import FciExtractor
+from fantasy_football.extraction.seasons import DataSource, source_for_season
 from fantasy_football.fixtures import build_fixtures_enriched
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.optimisation import optimise_plan
 from fantasy_football.prediction import predict_points
-from fantasy_football.seasons import DataSource, source_for_season
 from fantasy_football.team_input import (
     load_team_file,
     resolve_ids_to_names,

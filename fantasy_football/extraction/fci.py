@@ -15,9 +15,9 @@ import polars as pl
 import requests
 
 from fantasy_football.constants import RAW_DATA_FOLDER
-from fantasy_football.data_extraction import GitHubAPIClient
-from fantasy_football.fpl import FplAPI
-from fantasy_football.seasons import season_short_to_long
+from fantasy_football.extraction.extractor import GitHubAPIClient
+from fantasy_football.extraction.fpl import FplAPI
+from fantasy_football.extraction.seasons import season_short_to_long
 
 logger = logging.getLogger(__name__)
 

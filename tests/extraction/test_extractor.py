@@ -4,8 +4,8 @@ import pytest
 import requests
 from pytest_mock import MockerFixture
 
-from fantasy_football import data_extraction
-from fantasy_football.data_extraction import (
+from fantasy_football.extraction import extractor
+from fantasy_football.extraction.extractor import (
     DataExtractor,
     GitHubAPIClient,
 )
@@ -235,7 +235,7 @@ def test_save_all_data_files_downloads_aggregate_and_bridge_seasons(
     mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path: Path
 ) -> None:
     """The historic refresh fetches the aggregate plus each bridge season."""
-    mocker.patch.object(data_extraction, "VASTAAV_BRIDGE_SEASONS", ["2024-25"])
+    mocker.patch.object(extractor, "VASTAAV_BRIDGE_SEASONS", ["2024-25"])
     mock_data_extractor.raw_data_folder = tmp_path
     mock_save_file = mocker.patch.object(mock_data_extractor, "save_file")
 
