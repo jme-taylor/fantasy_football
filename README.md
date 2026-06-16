@@ -37,7 +37,9 @@ fantasy_football/
     └── team_input.py   — load and resolve a carried-in squad
 ```
 
-`tests/` mirrors this structure.
+`tests/unit/` mirrors this structure and runs in CI. `tests/integration/`
+holds tests that hit live network data sources (FPL / fplcache); they are
+marked `@pytest.mark.integration` and deselected by default.
 
 ## Data sources
 
@@ -131,10 +133,11 @@ which is gitignored — only the scripts are tracked.
 
 ## Development
 
-Run the test suite and linters with `uv`:
+Run the unit suite and linters with `uv`:
 
 ```bash
-uv run pytest
+uv run pytest                  # unit tests only (integration deselected)
+uv run pytest -m integration   # live network integration tests
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
