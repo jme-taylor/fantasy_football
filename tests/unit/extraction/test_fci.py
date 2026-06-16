@@ -21,8 +21,14 @@ SNAPSHOTS = pl.DataFrame(
 MATCHSTATS = pl.DataFrame(
     {
         "gw": [1, 1, 2, 2, 2],
-        "player_id": [1, 2, 1, 2, 2],  # player 2 plays twice in GW2
-        "match_id": ["m1", "m1", "m2", "m2", "m3"],
+        "player_id": [1, 2, 1, 2, 2],  # player 2 plays twice in GW2 (real PL DGW)
+        "match_id": [
+            "25-26-prem-arsenal-vs-chelsea",
+            "25-26-prem-arsenal-vs-chelsea",
+            "25-26-prem-arsenal-vs-spurs",
+            "25-26-prem-man-city-vs-spurs",
+            "25-26-prem-man-city-vs-wolves",
+        ],
         "minutes_played": [90, 90, 90, 80, 30],
     },
     schema_overrides={"gw": pl.Int32},
@@ -109,6 +115,29 @@ def test_build_merged_gw_bonus_is_event_level_diff() -> None:
         (pl.col("element") == 2) & (pl.col("GW") == 1)
     ).row(0, named=True)
     assert haaland_gw1["bonus"] == 3
+
+
+def test_build_merged_gw_excludes_non_prem_match_minutes() -> None:
+    """Cup / European minutes are not summed into the gameweek total."""
+    matchstats = pl.DataFrame(
+        {
+            "gw": [1, 1],
+            "player_id": [1, 1],
+            "match_id": [
+                "25-26-prem-arsenal-vs-chelsea",
+                "25-26-efl-cup-arsenal-vs-brighton",
+            ],
+            "minutes_played": [90, 90],
+        },
+        schema_overrides={"gw": pl.Int32},
+    )
+    result = build_merged_gw(
+        SNAPSHOTS, matchstats, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
+    )
+    raya_gw1 = result.filter(
+        (pl.col("element") == 1) & (pl.col("GW") == 1)
+    ).row(0, named=True)
+    assert raya_gw1["minutes"] == 90  # PL only, not 180
 
 
 def test_build_merged_gw_fills_missing_minutes_with_zero() -> None:
