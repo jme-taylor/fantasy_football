@@ -1,0 +1,273 @@
+from pathlib import Path
+
+import polars as pl  # noqa: F401  # used by later tasks appended to this file
+import pytest  # noqa: F401  # used by later tasks appended to this file
+
+from fantasy_football.storage.database import get_connection
+
+
+def test_get_connection_creates_player_week_table(tmp_path: Path) -> None:
+    """get_connection creates the DB file and an empty player_week table."""
+    db_path = tmp_path / "test.duckdb"
+    connection = get_connection(db_path)
+    try:
+        columns = [
+            row[0]
+            for row in connection.execute("DESCRIBE player_week").fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert db_path.exists()
+    assert columns == [
+        "season",
+        "gw",
+        "element",
+        "name",
+        "position",
+        "team",
+        "bonus",
+        "minutes",
+        "round",
+        "total_points",
+        "value",
+    ]
+
+
+def test_get_connection_is_idempotent(tmp_path: Path) -> None:
+    """Opening the same DB twice does not error or duplicate the schema."""
+    db_path = tmp_path / "test.duckdb"
+    first = get_connection(db_path)
+    first.close()
+    second = get_connection(db_path)
+    try:
+        count = second.execute("SELECT COUNT(*) FROM player_week").fetchone()[
+            0
+        ]
+    finally:
+        second.close()
+    assert count == 0
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    PLAYER_WEEK_COLUMNS,
+    coerce_player_week,
+)
+
+
+def test_coerce_player_week_normalises_gkp_and_selects_columns() -> None:
+    """GKP collapses to GK; output is exactly PLAYER_WEEK_COLUMNS in order."""
+    raw = pl.DataFrame(
+        {
+            "season": ["2020-21"],
+            "gw": [1],
+            "element": [1],
+            "name": ["Player1"],
+            "position": ["GKP"],
+            "team": ["Arsenal"],
+            "bonus": [1],
+            "minutes": [90],
+            "round": [1],
+            "total_points": [6],
+            "value": [50],
+            "unused_extra": ["drop me"],
+        }
+    )
+
+    result = coerce_player_week(raw)
+
+    assert result.columns == PLAYER_WEEK_COLUMNS
+    assert result["position"].to_list() == ["GK"]
+
+
+def test_coerce_player_week_pins_dtypes() -> None:
+    """Numeric columns arriving as Float64 are cast to Int64."""
+    raw = pl.DataFrame(
+        {
+            "season": ["2020-21"],
+            "gw": [1],
+            "element": [1],
+            "name": ["Player1"],
+            "position": ["GK"],
+            "team": ["Arsenal"],
+            "bonus": [1.0],
+            "minutes": [90.0],
+            "round": [1],
+            "total_points": [6],
+            "value": [50],
+        }
+    )
+
+    result = coerce_player_week(raw)
+
+    assert result.schema["bonus"] == pl.Int64
+    assert result.schema["minutes"] == pl.Int64
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    seasons_present,
+    write_immutable_season,
+)
+
+
+def _historic_row(season: str, element: int, name: str) -> pl.DataFrame:
+    """Build a one-row player-week frame for a given season/player."""
+    return pl.DataFrame(
+        {
+            "season": [season],
+            "gw": [1],
+            "element": [element],
+            "name": [name],
+            "position": ["DEF"],
+            "team": ["Arsenal"],
+            "bonus": [1],
+            "minutes": [90],
+            "round": [1],
+            "total_points": [6],
+            "value": [50],
+        }
+    )
+
+
+def test_seasons_present_reflects_writes(tmp_path: Path) -> None:
+    """seasons_present returns the distinct seasons inserted so far."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        assert seasons_present(connection) == set()
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "P1"), "2020-21"
+        )
+        assert seasons_present(connection) == {"2020-21"}
+    finally:
+        connection.close()
+
+
+def test_write_immutable_season_is_noop_when_present(tmp_path: Path) -> None:
+    """Re-writing an existing season does not change or duplicate its rows."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "Original"), "2020-21"
+        )
+        # Attempt to overwrite the same season with different data.
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "Changed"), "2020-21"
+        )
+        rows = connection.execute(
+            "SELECT name FROM player_week WHERE season = '2020-21'"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert rows == [("Original",)]
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    upsert_current_season,
+)
+
+
+def _current_row(
+    gw: int, element: int, total_points: int
+) -> dict[str, object]:
+    """Build one current-season player-week record as a dict of lists' values."""
+    return {
+        "season": "2025-26",
+        "gw": gw,
+        "element": element,
+        "name": "Player",
+        "position": "MID",
+        "team": "Arsenal",
+        "bonus": 0,
+        "minutes": 90,
+        "round": gw,
+        "total_points": total_points,
+        "value": 75,
+    }
+
+
+def _frame(records: list[dict[str, object]]) -> pl.DataFrame:
+    """Build a player-week frame from a list of record dicts."""
+    return pl.DataFrame(records)
+
+
+def test_upsert_overwrites_changed_row_and_inserts_new_gw(
+    tmp_path: Path,
+) -> None:
+    """A later upsert corrects an existing GW's value and adds the next GW."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        # First pull: GW1 provisional points.
+        upsert_current_season(
+            connection, _frame([_current_row(1, 1, 5)]), "2025-26"
+        )
+        # Second pull: GW1 corrected to 7, GW2 newly available.
+        upsert_current_season(
+            connection,
+            _frame([_current_row(1, 1, 7), _current_row(2, 1, 9)]),
+            "2025-26",
+        )
+        rows = connection.execute(
+            "SELECT gw, total_points FROM player_week "
+            "WHERE season = '2025-26' ORDER BY gw"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert rows == [(1, 7), (2, 9)]
+
+
+def test_upsert_does_not_touch_other_seasons(tmp_path: Path) -> None:
+    """Upserting the current season leaves stored prior seasons intact."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "Old"), "2020-21"
+        )
+        upsert_current_season(
+            connection, _frame([_current_row(1, 1, 5)]), "2025-26"
+        )
+        assert seasons_present(connection) == {"2020-21", "2025-26"}
+    finally:
+        connection.close()
+
+
+from fantasy_football.storage import database  # noqa: E402
+from fantasy_football.storage.database import (  # noqa: E402
+    load_player_week,
+    reset_database,
+)
+
+
+def test_load_player_week_returns_all_rows_ordered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """load_player_week opens the default DB and returns every row, ordered."""
+    db_path = tmp_path / "t.duckdb"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    connection = get_connection(db_path)
+    write_immutable_season(
+        connection, _historic_row("2020-21", 2, "Older"), "2020-21"
+    )
+    upsert_current_season(
+        connection, _frame([_current_row(1, 1, 5)]), "2025-26"
+    )
+    connection.close()
+
+    result = load_player_week()
+
+    assert result.columns == PLAYER_WEEK_COLUMNS
+    assert result["season"].to_list() == ["2020-21", "2025-26"]
+
+
+def test_reset_database_empties_the_table(tmp_path: Path) -> None:
+    """reset_database drops all rows but leaves a usable empty table."""
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        write_immutable_season(
+            connection, _historic_row("2020-21", 1, "P1"), "2020-21"
+        )
+        reset_database(connection)
+        assert seasons_present(connection) == set()
+    finally:
+        connection.close()

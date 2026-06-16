@@ -1,0 +1,253 @@
+"""DuckDB storage for player-week data — the single source of truth.
+
+This module is the only place that touches duckdb. Extractors hand it Polars
+frames; downstream code reads frames back. The ``player_week`` table holds one
+row per (player, gameweek) across every season, keyed on
+``(season, gw, element)``.
+"""
+
+import logging
+from pathlib import Path
+
+import duckdb
+import polars as pl
+
+from fantasy_football.constants import DATABASE_PATH
+
+logger = logging.getLogger(__name__)
+
+# Canonical player-week column order. Both the table and every frame written
+# to or read from it use exactly these columns in this order.
+PLAYER_WEEK_COLUMNS: list[str] = [
+    "season",
+    "gw",
+    "element",
+    "name",
+    "position",
+    "team",
+    "bonus",
+    "minutes",
+    "round",
+    "total_points",
+    "value",
+]
+
+# Polars dtypes the incoming frames are pinned to before insertion, so a value
+# read as Float64 in one source and Int64 in another lands consistently.
+PLAYER_WEEK_SCHEMA: dict[str, pl.DataType] = {
+    "season": pl.Utf8,
+    "gw": pl.Int64,
+    "element": pl.Int64,
+    "name": pl.Utf8,
+    "position": pl.Utf8,
+    "team": pl.Utf8,
+    "bonus": pl.Int64,
+    "minutes": pl.Int64,
+    "round": pl.Int64,
+    "total_points": pl.Int64,
+    "value": pl.Int64,
+}
+
+_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS player_week (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
+    name VARCHAR,
+    position VARCHAR,
+    team VARCHAR,
+    bonus BIGINT,
+    minutes BIGINT,
+    round BIGINT,
+    total_points BIGINT,
+    value BIGINT,
+    PRIMARY KEY (season, gw, element)
+)
+"""
+
+
+def get_connection(
+    db_path: Path | None = None,
+) -> duckdb.DuckDBPyConnection:
+    """Open the duckdb database, creating the file and schema if absent.
+
+    Parameters
+    ----------
+    db_path : Path | None, optional
+        Path to the database file. Defaults to ``DATABASE_PATH``.
+
+    Returns
+    -------
+    duckdb.DuckDBPyConnection
+        An open connection with the ``player_week`` table guaranteed to exist.
+        The caller is responsible for closing the connection.
+    """
+    path = db_path or DATABASE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = duckdb.connect(str(path))
+    connection.execute(_CREATE_TABLE)
+    return connection
+
+
+def coerce_player_week(frame: pl.DataFrame) -> pl.DataFrame:
+    """Normalise an incoming frame to the canonical player-week shape.
+
+    Collapses the legacy ``GKP`` position label to ``GK``, selects exactly
+    ``PLAYER_WEEK_COLUMNS`` (ignoring any extra source columns), and pins the
+    dtypes to ``PLAYER_WEEK_SCHEMA``.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        A frame already carrying every name in ``PLAYER_WEEK_COLUMNS``.
+
+    Returns
+    -------
+    pl.DataFrame
+        The frame reduced to the canonical columns, order, and dtypes.
+    """
+    return (
+        frame.with_columns(
+            pl.when(pl.col("position") == "GKP")
+            .then(pl.lit("GK"))
+            .otherwise(pl.col("position"))
+            .alias("position")
+        )
+        .select(PLAYER_WEEK_COLUMNS)
+        .cast(PLAYER_WEEK_SCHEMA, strict=False)
+    )
+
+
+def seasons_present(connection: duckdb.DuckDBPyConnection) -> set[str]:
+    """Return the set of seasons already stored in ``player_week``.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+
+    Returns
+    -------
+    set[str]
+        Distinct ``season`` values currently in the table.
+    """
+    rows = connection.execute(
+        "SELECT DISTINCT season FROM player_week"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def write_immutable_season(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Insert a completed season's rows, but only if it is not already stored.
+
+    Completed (historic and bridge) seasons never change, so an existing season
+    is left untouched and the frame is discarded.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        Rows for a single season, carrying every ``PLAYER_WEEK_COLUMNS`` name.
+    season : str
+        The season these rows belong to.
+    """
+    if season in seasons_present(connection):
+        logger.info(
+            "Season %s already present; skipping immutable load.", season
+        )
+        return
+    shaped = coerce_player_week(frame)
+    connection.register("incoming_player_week", shaped.to_arrow())
+    try:
+        connection.execute(
+            "INSERT INTO player_week SELECT * FROM incoming_player_week"
+        )
+    finally:
+        connection.unregister("incoming_player_week")
+    logger.info(
+        "Inserted %d rows for immutable season %s", shaped.height, season
+    )
+
+
+def upsert_current_season(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Replace all stored rows for ``season`` with a freshly fetched frame.
+
+    The current season is re-fetched season-to-date each run. Deleting the
+    season's existing rows and re-inserting guarantees late corrections (bonus,
+    minutes) overwrite cleanly and brand-new gameweeks are added, while rows
+    that vanished upstream do not linger. Other seasons are untouched.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        The season-to-date rows, carrying every ``PLAYER_WEEK_COLUMNS`` name.
+    season : str
+        The current season being refreshed.
+    """
+    shaped = coerce_player_week(frame)
+    connection.register("incoming_player_week", shaped.to_arrow())
+    try:
+        connection.execute(
+            "DELETE FROM player_week WHERE season = ?", [season]
+        )
+        connection.execute(
+            "INSERT INTO player_week SELECT * FROM incoming_player_week"
+        )
+    finally:
+        connection.unregister("incoming_player_week")
+    logger.info(
+        "Upserted %d rows for current season %s", shaped.height, season
+    )
+
+
+def load_player_week(
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> pl.DataFrame:
+    """Return the entire ``player_week`` table as a Polars frame.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. When None, a connection to ``DATABASE_PATH`` is
+        opened and closed inside this call.
+
+    Returns
+    -------
+    pl.DataFrame
+        All player-week rows, columns in ``PLAYER_WEEK_COLUMNS`` order, sorted
+        by ``(season, gw, element)``.
+    """
+    owns_connection = connection is None
+    conn = connection or get_connection()
+    try:
+        return conn.execute(
+            "SELECT season, gw, element, name, position, team, bonus, "
+            "minutes, round, total_points, value FROM player_week "
+            "ORDER BY season, gw, element"
+        ).pl()
+    finally:
+        if owns_connection:
+            conn.close()
+
+
+def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
+    """Drop and recreate the ``player_week`` table (full-rebuild escape hatch).
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    """
+    connection.execute("DROP TABLE IF EXISTS player_week")
+    connection.execute(_CREATE_TABLE)
