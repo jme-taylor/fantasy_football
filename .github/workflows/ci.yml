@@ -30,4 +30,5 @@ jobs:
         run: uv run ty check
 
       - name: Pytest
+        # addopts in pyproject deselects @pytest.mark.integration, so CI runs unit tests only.
         run: uv run pytest

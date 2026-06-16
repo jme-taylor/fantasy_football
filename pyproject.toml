@@ -47,3 +47,10 @@ ignore = ["D100", "D413", "D204"]
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: hits live network data sources; deselected by default",
+]
+addopts = "-m 'not integration'"
