@@ -109,13 +109,12 @@ def build_merged_gw(
     """
     # Per-GW minutes: sum across Premier League matches only so double
     # gameweeks accumulate but cup/European fixtures (also present in
-    # playermatchstats) do not inflate the total. ``match_id`` encodes the
-    # competition as ``<yy>-<yy>-<comp>-...``; ``prem`` is the only PL token.
+    # playermatchstats) do not inflate the total.
     # Cast ``gw`` to Int64 so the join key matches the fplcache per-GW team
     # table regardless of the caller's source dtype (production emits Int32).
     minutes = (
         matchstats.filter(
-            pl.col("match_id").str.contains(r"^\d{2}-\d{2}-prem-")
+            pl.col("match_id").str.contains(_PREM_MATCH_ID_RE)
         )
         .group_by(["gw", "player_id"])
         .agg(pl.col("minutes_played").sum().alias("minutes"))
@@ -192,6 +191,11 @@ def build_merged_gw(
 
 
 _GW_PATH_RE = re.compile(r"/By Gameweek/GW(\d+)/")
+
+# FCI match_ids encode the competition as ``<yy>-<yy>-<comp>-...``; only the
+# ``prem`` token counts towards FPL minutes. Anchored so a later token (e.g. a
+# team name) containing "prem" cannot match.
+_PREM_MATCH_ID_RE = r"^\d{2}-\d{2}-prem-"
 
 
 class FciExtractor:
