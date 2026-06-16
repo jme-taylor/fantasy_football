@@ -69,6 +69,7 @@ SNAPSHOT_SCHEMA: dict[str, pl.DataType] = {
 MATCHSTATS_SCHEMA: dict[str, pl.DataType] = {
     "player_id": pl.Int64,
     "minutes_played": pl.Int64,
+    "match_id": pl.Utf8,
 }
 
 
@@ -89,7 +90,9 @@ def build_merged_gw(
         now_cost, event_points, bonus`` (``bonus`` cumulative for the season).
     matchstats : pl.DataFrame
         Concatenated ``playermatchstats`` with a ``gw`` column. Must contain
-        ``gw, player_id, minutes_played``.
+        ``gw, player_id, minutes_played, match_id``. ``match_id`` encodes the
+        competition as ``<yy>-<yy>-<comp>-<home>-vs-<away>``; only Premier
+        League rows (``prem`` competition token) count towards FPL minutes.
     players : pl.DataFrame
         Season ``players`` file. Must contain ``player_id, position,
         team_code``.
@@ -104,11 +107,17 @@ def build_merged_gw(
     pl.DataFrame
         One row per (player, gameweek) with columns ``MERGED_GW_COLUMNS``.
     """
-    # Per-GW minutes: sum across matches so double gameweeks accumulate. Cast
-    # ``gw`` to Int64 so the join key matches the fplcache per-GW team table
-    # regardless of the caller's source dtype (production emits Int32).
+    # Per-GW minutes: sum across Premier League matches only so double
+    # gameweeks accumulate but cup/European fixtures (also present in
+    # playermatchstats) do not inflate the total. ``match_id`` encodes the
+    # competition as ``<yy>-<yy>-<comp>-...``; ``prem`` is the only PL token.
+    # Cast ``gw`` to Int64 so the join key matches the fplcache per-GW team
+    # table regardless of the caller's source dtype (production emits Int32).
     minutes = (
-        matchstats.group_by(["gw", "player_id"])
+        matchstats.filter(
+            pl.col("match_id").str.contains(r"^\d{2}-\d{2}-prem-")
+        )
+        .group_by(["gw", "player_id"])
         .agg(pl.col("minutes_played").sum().alias("minutes"))
         .with_columns(pl.col("gw").cast(pl.Int64))
     )

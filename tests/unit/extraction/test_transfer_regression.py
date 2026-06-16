@@ -28,6 +28,12 @@ MATCHSTATS = pl.DataFrame(
         "gw": [1, 1, 2, 2],
         "player_id": [82, 200, 82, 200],
         "minutes_played": [90, 90, 90, 90],
+        "match_id": [
+            "25-26-prem-bou-vs-mci",
+            "25-26-prem-bou-vs-mci",
+            "25-26-prem-mci-vs-ars",
+            "25-26-prem-mci-vs-ars",
+        ],
     },
     schema_overrides={"gw": pl.Int32},
 )
