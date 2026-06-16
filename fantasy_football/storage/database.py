@@ -113,8 +113,9 @@ def get_connection(
     Returns
     -------
     duckdb.DuckDBPyConnection
-        An open connection with the ``player_week`` table guaranteed to exist.
-        The caller is responsible for closing the connection.
+        An open connection with the ``player_week`` and ``team_fixture`` tables
+        guaranteed to exist. The caller is responsible for closing the
+        connection.
     """
     path = db_path or DATABASE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,7 +328,7 @@ def load_player_week(
 
 
 def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
-    """Drop and recreate the ``player_week`` table (full-rebuild escape hatch).
+    """Drop and recreate the ``player_week`` and ``team_fixture`` tables (full-rebuild escape hatch).
 
     Parameters
     ----------

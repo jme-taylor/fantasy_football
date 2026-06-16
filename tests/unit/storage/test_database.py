@@ -240,7 +240,6 @@ from fantasy_football.storage.database import (  # noqa: E402
 )
 
 
-
 def test_load_player_week_returns_all_rows_ordered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -312,19 +311,17 @@ def test_get_connection_creates_team_fixture_table(tmp_path) -> None:
     """get_connection creates the team_fixture table."""
     conn = _conn(tmp_path)
     try:
-        names = {
+        columns = [
             row[0]
-            for row in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'team_fixture'"
-            ).fetchall()
-        }
-        assert names == set(TEAM_FIXTURE_COLUMNS)
+            for row in conn.execute("DESCRIBE team_fixture").fetchall()
+        ]
     finally:
         conn.close()
 
+    assert columns == TEAM_FIXTURE_COLUMNS
 
-def test_coerce_team_fixture_selects_and_orders_columns(tmp_path) -> None:
+
+def test_coerce_team_fixture_selects_and_orders_columns() -> None:
     """coerce_team_fixture reduces a frame to the canonical columns/order."""
     frame = _fixture_frame().with_columns(pl.lit("extra").alias("junk"))
     shaped = coerce_team_fixture(frame)
