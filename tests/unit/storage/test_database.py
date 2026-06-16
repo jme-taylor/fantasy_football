@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import duckdb
 import polars as pl  # noqa: F401  # used by later tasks appended to this file
 import pytest  # noqa: F401  # used by later tasks appended to this file
 
@@ -239,6 +240,7 @@ from fantasy_football.storage.database import (  # noqa: E402
 )
 
 
+
 def test_load_player_week_returns_all_rows_ordered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -271,3 +273,87 @@ def test_reset_database_empties_the_table(tmp_path: Path) -> None:
         assert seasons_present(connection) == set()
     finally:
         connection.close()
+
+
+# ---------------------------------------------------------------------------
+# team_fixture tests
+# ---------------------------------------------------------------------------
+
+from datetime import datetime  # noqa: E402
+
+from fantasy_football.storage.database import (  # noqa: E402
+    TEAM_FIXTURE_COLUMNS,
+    coerce_team_fixture,
+    load_team_fixture,
+)
+
+
+def _conn(tmp_path) -> duckdb.DuckDBPyConnection:
+    return get_connection(tmp_path / "test.duckdb")
+
+
+def _fixture_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 1],
+            "team": ["Arsenal", "Chelsea"],
+            "is_home": [True, False],
+            "opposition": ["Chelsea", "Arsenal"],
+            "kickoff_time": [
+                datetime(2023, 8, 11, 19, 0),
+                datetime(2023, 8, 11, 19, 0),
+            ],
+        }
+    )
+
+
+def test_get_connection_creates_team_fixture_table(tmp_path) -> None:
+    """get_connection creates the team_fixture table."""
+    conn = _conn(tmp_path)
+    try:
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'team_fixture'"
+            ).fetchall()
+        }
+        assert names == set(TEAM_FIXTURE_COLUMNS)
+    finally:
+        conn.close()
+
+
+def test_coerce_team_fixture_selects_and_orders_columns(tmp_path) -> None:
+    """coerce_team_fixture reduces a frame to the canonical columns/order."""
+    frame = _fixture_frame().with_columns(pl.lit("extra").alias("junk"))
+    shaped = coerce_team_fixture(frame)
+    assert shaped.columns == TEAM_FIXTURE_COLUMNS
+
+
+def test_load_team_fixture_round_trips(tmp_path) -> None:
+    """A frame inserted directly is read back via load_team_fixture."""
+    conn = _conn(tmp_path)
+    try:
+        conn.register("incoming", coerce_team_fixture(_fixture_frame()).to_arrow())
+        conn.execute("INSERT INTO team_fixture SELECT * FROM incoming")
+        conn.unregister("incoming")
+        out = load_team_fixture(conn)
+        assert out.columns == TEAM_FIXTURE_COLUMNS
+        assert out.height == 2
+        assert set(out["team"].to_list()) == {"Arsenal", "Chelsea"}
+    finally:
+        conn.close()
+
+
+def test_reset_database_drops_team_fixture_rows(tmp_path) -> None:
+    """reset_database recreates an empty team_fixture table."""
+    conn = _conn(tmp_path)
+    try:
+        conn.register("incoming", coerce_team_fixture(_fixture_frame()).to_arrow())
+        conn.execute("INSERT INTO team_fixture SELECT * FROM incoming")
+        conn.unregister("incoming")
+        reset_database(conn)
+        assert load_team_fixture(conn).height == 0
+    finally:
+        conn.close()
