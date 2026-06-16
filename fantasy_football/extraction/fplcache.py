@@ -13,6 +13,7 @@ import logging
 import lzma
 from datetime import datetime, timedelta, timezone
 
+import polars as pl
 import requests
 
 from fantasy_football.extraction.extractor import GitHubAPIClient
@@ -144,3 +145,41 @@ class FplCacheExtractor:
                 if taken >= deadline:
                     return f"{directory}/{name}"
         raise ValueError(f"No fplcache snapshot found at or after {deadline}")
+
+    def build_player_gw_team(self, gameweeks: list[int]) -> pl.DataFrame:
+        """Build the per-gameweek player team_code table.
+
+        Parameters
+        ----------
+        gameweeks : list[int]
+            Gameweek numbers to resolve.
+
+        Returns
+        -------
+        pl.DataFrame
+            One row per ``(gw, element)`` with columns ``gw, element,
+            team_code`` (all ``Int64``), where ``element`` is the FPL element
+            id (== FCI ``player_id``).
+        """
+        deadlines = self.event_deadlines()
+        frames: list[pl.DataFrame] = []
+        for gw in gameweeks:
+            path = self._snapshot_path_for(deadlines[gw])
+            snapshot = self._read_snapshot(path)
+            frames.append(
+                pl.DataFrame(
+                    {
+                        "gw": gw,
+                        "element": [e["id"] for e in snapshot["elements"]],
+                        "team_code": [
+                            e["team_code"] for e in snapshot["elements"]
+                        ],
+                    },
+                    schema={
+                        "gw": pl.Int64,
+                        "element": pl.Int64,
+                        "team_code": pl.Int64,
+                    },
+                )
+            )
+        return pl.concat(frames, how="vertical")

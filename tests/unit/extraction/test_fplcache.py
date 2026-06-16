@@ -122,3 +122,37 @@ def test_snapshot_path_for_rolls_to_next_day(mocker: MockerFixture) -> None:
         extractor._snapshot_path_for(deadline)
         == "cache/2025/8/17/0205.json.xz"
     )
+
+
+def test_build_player_gw_team_emits_per_gw_team_code(
+    mocker: MockerFixture,
+) -> None:
+    """A player's team_code reflects the snapshot active each gameweek."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor,
+        "event_deadlines",
+        return_value={
+            1: datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc),
+            2: datetime(2025, 8, 22, 17, 30, tzinfo=timezone.utc),
+        },
+    )
+    mocker.patch.object(
+        extractor,
+        "_snapshot_path_for",
+        side_effect=lambda d: f"cache/{d.day}.json.xz",
+    )
+    snapshots = {
+        "cache/15.json.xz": {"elements": [{"id": 82, "team_code": 91}]},
+        "cache/22.json.xz": {"elements": [{"id": 82, "team_code": 43}]},
+    }
+    mocker.patch.object(
+        extractor, "_read_snapshot", side_effect=lambda p: snapshots[p]
+    )
+
+    result = extractor.build_player_gw_team([1, 2]).sort("gw")
+    assert result.columns == ["gw", "element", "team_code"]
+    assert result.to_dicts() == [
+        {"gw": 1, "element": 82, "team_code": 91},
+        {"gw": 2, "element": 82, "team_code": 43},
+    ]
