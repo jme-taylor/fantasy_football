@@ -354,3 +354,59 @@ def test_reset_database_drops_team_fixture_rows(tmp_path) -> None:
         assert load_team_fixture(conn).height == 0
     finally:
         conn.close()
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    fixture_seasons_present,
+    upsert_current_fixtures,
+    write_immutable_fixtures,
+)
+
+
+def test_write_immutable_fixtures_inserts_once(tmp_path) -> None:
+    """write_immutable_fixtures inserts a new season but skips a present one."""
+    conn = _conn(tmp_path)
+    try:
+        write_immutable_fixtures(conn, _fixture_frame(), "2023-24")
+        assert load_team_fixture(conn).height == 2
+        # Second call with different data is ignored — season already present.
+        changed = _fixture_frame().with_columns(pl.lit("Spurs").alias("team"))
+        write_immutable_fixtures(conn, changed, "2023-24")
+        teams = set(load_team_fixture(conn)["team"].to_list())
+        assert teams == {"Arsenal", "Chelsea"}
+    finally:
+        conn.close()
+
+
+def test_upsert_current_fixtures_replaces_season(tmp_path) -> None:
+    """upsert_current_fixtures deletes then reinserts the season's rows."""
+    conn = _conn(tmp_path)
+    try:
+        upsert_current_fixtures(conn, _fixture_frame(), "2023-24")
+        replacement = pl.DataFrame(
+            {
+                "season": ["2023-24"],
+                "gw": [2],
+                "team": ["Arsenal"],
+                "is_home": [True],
+                "opposition": ["Spurs"],
+                "kickoff_time": [datetime(2023, 8, 19, 15, 0)],
+            }
+        )
+        upsert_current_fixtures(conn, replacement, "2023-24")
+        out = load_team_fixture(conn)
+        assert out.height == 1
+        assert out.row(0, named=True)["opposition"] == "Spurs"
+    finally:
+        conn.close()
+
+
+def test_fixture_seasons_present(tmp_path) -> None:
+    """fixture_seasons_present returns distinct stored seasons."""
+    conn = _conn(tmp_path)
+    try:
+        assert fixture_seasons_present(conn) == set()
+        write_immutable_fixtures(conn, _fixture_frame(), "2023-24")
+        assert fixture_seasons_present(conn) == {"2023-24"}
+    finally:
+        conn.close()
