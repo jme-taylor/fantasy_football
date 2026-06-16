@@ -113,9 +113,7 @@ def build_merged_gw(
     # Cast ``gw`` to Int64 so the join key matches the fplcache per-GW team
     # table regardless of the caller's source dtype (production emits Int32).
     minutes = (
-        matchstats.filter(
-            pl.col("match_id").str.contains(_PREM_MATCH_ID_RE)
-        )
+        matchstats.filter(pl.col("match_id").str.contains(_PREM_MATCH_ID_RE))
         .group_by(["gw", "player_id"])
         .agg(pl.col("minutes_played").sum().alias("minutes"))
         .with_columns(pl.col("gw").cast(pl.Int64))

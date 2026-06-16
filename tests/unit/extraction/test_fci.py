@@ -21,7 +21,13 @@ SNAPSHOTS = pl.DataFrame(
 MATCHSTATS = pl.DataFrame(
     {
         "gw": [1, 1, 2, 2, 2],
-        "player_id": [1, 2, 1, 2, 2],  # player 2 plays twice in GW2 (real PL DGW)
+        "player_id": [
+            1,
+            2,
+            1,
+            2,
+            2,
+        ],  # player 2 plays twice in GW2 (real PL DGW)
         "match_id": [
             "25-26-prem-arsenal-vs-chelsea",
             "25-26-prem-arsenal-vs-chelsea",
