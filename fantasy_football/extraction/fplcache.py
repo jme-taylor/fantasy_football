@@ -35,6 +35,37 @@ class FplCacheExtractor:
             owner="Randdalf", repo="fplcache", branch="main"
         )
 
+    def _list_names(self, path: str) -> list[str]:
+        """List the entry names directly under a repo directory.
+
+        Parameters
+        ----------
+        path : str
+            Repo-relative directory path.
+
+        Returns
+        -------
+        list[str]
+            The ``name`` of each entry in the directory.
+        """
+        return [
+            entry["name"] for entry in self.api_client.get_file_details(path)
+        ]
+
+    def _latest_snapshot_path(self) -> str:
+        """Return the path of the newest snapshot in the cache.
+
+        Returns
+        -------
+        str
+            Repo-relative path of the most recent ``.json.xz`` snapshot.
+        """
+        year = max(self._list_names("cache"), key=int)
+        month = max(self._list_names(f"cache/{year}"), key=int)
+        day = max(self._list_names(f"cache/{year}/{month}"), key=int)
+        time = max(self._list_names(f"cache/{year}/{month}/{day}"))
+        return f"cache/{year}/{month}/{day}/{time}"
+
     def _read_snapshot(self, path: str) -> dict:
         """Download an LZMA-compressed JSON snapshot and parse it.
 
