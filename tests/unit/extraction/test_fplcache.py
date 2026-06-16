@@ -1,5 +1,6 @@
 import json
 import lzma
+from datetime import datetime, timezone
 
 from pytest_mock import MockerFixture
 
@@ -56,3 +57,68 @@ def test_latest_snapshot_path_walks_descending(
     )
 
     assert extractor._latest_snapshot_path() == "cache/2025/12/26/1833.json.xz"
+
+
+def test_event_deadlines_parses_from_latest_snapshot(
+    mocker: MockerFixture,
+) -> None:
+    """event_deadlines reads the events array from the latest snapshot."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "_latest_snapshot_path", return_value="cache/x.json.xz"
+    )
+    mocker.patch.object(
+        extractor,
+        "_read_snapshot",
+        return_value={
+            "events": [
+                {"id": 1, "deadline_time": "2025-08-15T17:30:00Z"},
+                {"id": 2, "deadline_time": "2025-08-22T17:30:00Z"},
+            ]
+        },
+    )
+
+    deadlines = extractor.event_deadlines()
+    assert deadlines[1] == datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc)
+    assert deadlines[2] == datetime(2025, 8, 22, 17, 30, tzinfo=timezone.utc)
+
+
+def test_snapshot_path_for_picks_first_at_or_after_deadline(
+    mocker: MockerFixture,
+) -> None:
+    """The chosen snapshot is the earliest one at or after the deadline."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor,
+        "_list_names",
+        return_value=[
+            "0202.json.xz",
+            "0636.json.xz",
+            "1250.json.xz",
+            "1833.json.xz",
+        ],
+    )
+    deadline = datetime(2025, 8, 16, 13, 0, tzinfo=timezone.utc)
+    assert (
+        extractor._snapshot_path_for(deadline)
+        == "cache/2025/8/16/1833.json.xz"
+    )
+
+
+def test_snapshot_path_for_rolls_to_next_day(mocker: MockerFixture) -> None:
+    """When no snapshot follows the deadline that day, roll to the next day."""
+    extractor = _make_extractor()
+
+    def fake_list(path: str) -> list[str]:
+        if path == "cache/2025/8/16":
+            return ["0202.json.xz", "0636.json.xz"]
+        if path == "cache/2025/8/17":
+            return ["0205.json.xz", "0640.json.xz"]
+        return []
+
+    mocker.patch.object(extractor, "_list_names", side_effect=fake_list)
+    deadline = datetime(2025, 8, 16, 17, 30, tzinfo=timezone.utc)
+    assert (
+        extractor._snapshot_path_for(deadline)
+        == "cache/2025/8/17/0205.json.xz"
+    )
