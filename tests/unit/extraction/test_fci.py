@@ -234,6 +234,12 @@ def test_build_current_season_merged_gw_upserts_to_db(
     mocker.patch.object(
         extractor, "_team_code_to_name", return_value=TEAM_CODE_TO_NAME
     )
+    mocker.patch.object(
+        extractor.fpl_cache,
+        "build_player_gw_team",
+        return_value=PLAYER_GW_TEAM,
+    )
+    mocker.patch.object(extractor, "list_gameweeks", return_value=[1, 2])
 
     connection = get_connection(tmp_path / "t.duckdb")
     try:

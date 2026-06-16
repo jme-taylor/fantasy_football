@@ -18,6 +18,7 @@ import requests
 from fantasy_football.constants import RAW_DATA_FOLDER
 from fantasy_football.extraction.extractor import GitHubAPIClient
 from fantasy_football.extraction.fpl import FplAPI
+from fantasy_football.extraction.fplcache import FplCacheExtractor
 from fantasy_football.extraction.seasons import season_short_to_long
 from fantasy_football.storage.database import (
     coerce_player_week,
@@ -185,6 +186,7 @@ class FciExtractor:
         self,
         api_client: GitHubAPIClient | None = None,
         fpl_api: FplAPI | None = None,
+        fpl_cache: FplCacheExtractor | None = None,
     ) -> None:
         """Initialise the extractor.
 
@@ -196,12 +198,16 @@ class FciExtractor:
         fpl_api : FplAPI | None, optional
             Live FPL API client, used to resolve team names. Defaults to a new
             ``FplAPI`` instance.
+        fpl_cache : FplCacheExtractor | None, optional
+            Source of per-gameweek team_code. Defaults to a new
+            ``FplCacheExtractor``.
         """
         self.api_client = api_client or GitHubAPIClient(
             owner="olbauday", repo="FPL-Core-Insights", branch="main"
         )
         self.fpl_api = fpl_api or FplAPI()
         self.raw_data_folder = RAW_DATA_FOLDER
+        self.fpl_cache = fpl_cache or FplCacheExtractor()
 
     def _gw_number_from_path(self, path: str) -> int | None:
         """Return the gameweek number embedded in a By-Gameweek path, or None."""
@@ -325,8 +331,14 @@ class FciExtractor:
         """
         long_season = season_short_to_long(short_season)
         snapshots, matchstats, players = self.fetch_season_frames(long_season)
+        gameweeks = self.list_gameweeks(long_season)
+        player_gw_team = self.fpl_cache.build_player_gw_team(gameweeks)
         merged = build_merged_gw(
-            snapshots, matchstats, players, self._team_code_to_name()
+            snapshots,
+            matchstats,
+            players,
+            player_gw_team,
+            self._team_code_to_name(),
         )
         player_week = merged.rename({"GW": "gw"}).with_columns(
             pl.lit(short_season).alias("season")
