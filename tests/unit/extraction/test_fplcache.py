@@ -1,8 +1,6 @@
-import io
 import json
 import lzma
 
-import polars as pl
 from pytest_mock import MockerFixture
 
 from fantasy_football.extraction.extractor import GitHubAPIClient

@@ -51,5 +51,6 @@ class FplCacheExtractor:
         url = self.api_client.get_raw_file_url(path)
         response = requests.get(url)
         response.raise_for_status()
-        raw = lzma.open(io.BytesIO(response.content)).read()
+        with lzma.open(io.BytesIO(response.content)) as snapshot:
+            raw = snapshot.read()
         return json.loads(raw)
