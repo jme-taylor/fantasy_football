@@ -93,21 +93,35 @@ def _seed_player_week(
 
 def test_resolve_names_to_ids_maps_names(tmp_path, monkeypatch) -> None:
     """resolve_names_to_ids returns the element id for each name, in order."""
-    _seed_player_week(tmp_path, monkeypatch, name=["Mohamed Salah", "Mohamed Salah", "Erling Haaland"], element=[328, 328, 351], gw=[4, 5, 5])
+    _seed_player_week(
+        tmp_path,
+        monkeypatch,
+        name=["Mohamed Salah", "Mohamed Salah", "Erling Haaland"],
+        element=[328, 328, 351],
+        gw=[4, 5, 5],
+    )
     ids = resolve_names_to_ids(["Erling Haaland", "Mohamed Salah"], "2025-26")
     assert ids == [351, 328]
 
 
 def test_resolve_names_to_ids_reports_unmatched(tmp_path, monkeypatch) -> None:
     """An unmatched name is named in the raised ValueError."""
-    _seed_player_week(tmp_path, monkeypatch, name=["Mohamed Salah"], element=[328], gw=[5])
+    _seed_player_week(
+        tmp_path, monkeypatch, name=["Mohamed Salah"], element=[328], gw=[5]
+    )
     with pytest.raises(ValueError, match="Ghost Player"):
         resolve_names_to_ids(["Mohamed Salah", "Ghost Player"], "2025-26")
 
 
 def test_resolve_names_to_ids_reports_ambiguous(tmp_path, monkeypatch) -> None:
     """A name mapping to multiple elements raises an 'ambiguous' ValueError."""
-    _seed_player_week(tmp_path, monkeypatch, name=["Danny Ward", "Danny Ward"], element=[11, 22], gw=[5, 5])
+    _seed_player_week(
+        tmp_path,
+        monkeypatch,
+        name=["Danny Ward", "Danny Ward"],
+        element=[11, 22],
+        gw=[5, 5],
+    )
     with pytest.raises(ValueError, match="ambiguous"):
         resolve_names_to_ids(["Danny Ward"], "2025-26")
 
@@ -116,7 +130,13 @@ def test_resolve_names_to_ids_reports_unmatched_and_ambiguous_together(
     tmp_path, monkeypatch
 ) -> None:
     """Both unmatched and ambiguous offenders are named in one error."""
-    _seed_player_week(tmp_path, monkeypatch, name=["Danny Ward", "Danny Ward"], element=[11, 22], gw=[5, 5])
+    _seed_player_week(
+        tmp_path,
+        monkeypatch,
+        name=["Danny Ward", "Danny Ward"],
+        element=[11, 22],
+        gw=[5, 5],
+    )
     with pytest.raises(ValueError) as exc:
         resolve_names_to_ids(["Danny Ward", "Ghost Player"], "2025-26")
     assert "Danny Ward" in str(exc.value)

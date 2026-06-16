@@ -41,7 +41,9 @@ def test_get_connection_is_idempotent(tmp_path: Path) -> None:
     first.close()
     second = get_connection(db_path)
     try:
-        count = second.execute("SELECT COUNT(*) FROM player_week").fetchone()[0]
+        count = second.execute("SELECT COUNT(*) FROM player_week").fetchone()[
+            0
+        ]
     finally:
         second.close()
     assert count == 0

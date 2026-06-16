@@ -413,9 +413,7 @@ def test_load_immutable_seasons_collapses_double_gameweeks(
             "GW": [24, 24],
         }
     )
-    mocker.patch.object(
-        mock_data_extractor, "_read_csv", return_value=bridge
-    )
+    mocker.patch.object(mock_data_extractor, "_read_csv", return_value=bridge)
 
     connection = get_connection(tmp_path / "t.duckdb")
     try:
