@@ -34,10 +34,22 @@ PLAYERS = pl.DataFrame(
 )
 TEAM_CODE_TO_NAME = {3: "Arsenal", 43: "Man City"}
 
+# Per-gameweek team_code: player 2 is at Arsenal (3) in GW1, Man City (43) GW2.
+PLAYER_GW_TEAM = pl.DataFrame(
+    {
+        "gw": [1, 1, 2, 2],
+        "element": [1, 2, 1, 2],
+        "team_code": [3, 3, 3, 43],
+    },
+    schema={"gw": pl.Int64, "element": pl.Int64, "team_code": pl.Int64},
+)
+
 
 def test_build_merged_gw_columns_and_shape() -> None:
     """Adapter returns exactly the merged_gw columns, one row per player-gw."""
-    result = build_merged_gw(SNAPSHOTS, MATCHSTATS, PLAYERS, TEAM_CODE_TO_NAME)
+    result = build_merged_gw(
+        SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
+    )
     assert set(result.columns) == {
         "name",
         "position",
@@ -56,7 +68,7 @@ def test_build_merged_gw_columns_and_shape() -> None:
 def test_build_merged_gw_maps_core_fields() -> None:
     """Core fields map from the FCI snapshot for a known player-gw."""
     result = build_merged_gw(
-        SNAPSHOTS, MATCHSTATS, PLAYERS, TEAM_CODE_TO_NAME
+        SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
     ).sort(["GW", "element"])
     raya_gw1 = result.filter(
         (pl.col("element") == 1) & (pl.col("GW") == 1)
@@ -71,7 +83,9 @@ def test_build_merged_gw_maps_core_fields() -> None:
 
 def test_build_merged_gw_sums_double_gameweek_minutes() -> None:
     """Minutes are summed across a player's matches within one gameweek."""
-    result = build_merged_gw(SNAPSHOTS, MATCHSTATS, PLAYERS, TEAM_CODE_TO_NAME)
+    result = build_merged_gw(
+        SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
+    )
     haaland_gw2 = result.filter(
         (pl.col("element") == 2) & (pl.col("GW") == 2)
     ).row(0, named=True)
@@ -80,7 +94,9 @@ def test_build_merged_gw_sums_double_gameweek_minutes() -> None:
 
 def test_build_merged_gw_bonus_is_event_level_diff() -> None:
     """Event bonus is the cumulative-snapshot difference; first gw kept as-is."""
-    result = build_merged_gw(SNAPSHOTS, MATCHSTATS, PLAYERS, TEAM_CODE_TO_NAME)
+    result = build_merged_gw(
+        SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
+    )
     # Player 2 cumulative bonus 3 -> 7, so GW2 event bonus = 4.
     haaland_gw2 = result.filter(
         (pl.col("element") == 2) & (pl.col("GW") == 2)
@@ -100,11 +116,42 @@ def test_build_merged_gw_fills_missing_minutes_with_zero() -> None:
     matchstats = MATCHSTATS.filter(
         ~((pl.col("gw") == 2) & (pl.col("player_id") == 1))
     )
-    result = build_merged_gw(snaps, matchstats, PLAYERS, TEAM_CODE_TO_NAME)
+    result = build_merged_gw(
+        snaps, matchstats, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
+    )
     raya_gw2 = result.filter(
         (pl.col("element") == 1) & (pl.col("GW") == 2)
     ).row(0, named=True)
     assert raya_gw2["minutes"] == 0
+
+
+def test_build_merged_gw_uses_per_gameweek_team() -> None:
+    """Team comes from the per-gameweek snapshot, not static team_code."""
+    result = build_merged_gw(
+        SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
+    )
+    # Player 2 (static team_code 43 = Man City) was at Arsenal in GW1.
+    p2_gw1 = result.filter((pl.col("element") == 2) & (pl.col("GW") == 1)).row(
+        0, named=True
+    )
+    assert p2_gw1["team"] == "Arsenal"
+    p2_gw2 = result.filter((pl.col("element") == 2) & (pl.col("GW") == 2)).row(
+        0, named=True
+    )
+    assert p2_gw2["team"] == "Man City"
+
+
+def test_build_merged_gw_falls_back_to_static_team() -> None:
+    """A player absent from the per-gameweek table keeps the static team."""
+    # Drop player 1 from the per-gameweek table entirely.
+    partial = PLAYER_GW_TEAM.filter(pl.col("element") != 1)
+    result = build_merged_gw(
+        SNAPSHOTS, MATCHSTATS, PLAYERS, partial, TEAM_CODE_TO_NAME
+    )
+    p1_gw1 = result.filter((pl.col("element") == 1) & (pl.col("GW") == 1)).row(
+        0, named=True
+    )
+    assert p1_gw1["team"] == "Arsenal"  # static team_code 3
 
 
 def test_gw_number_from_path() -> None:

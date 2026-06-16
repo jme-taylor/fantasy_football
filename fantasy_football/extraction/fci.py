@@ -75,6 +75,7 @@ def build_merged_gw(
     snapshots: pl.DataFrame,
     matchstats: pl.DataFrame,
     players: pl.DataFrame,
+    player_gw_team: pl.DataFrame,
     team_code_to_name: dict[int, str],
 ) -> pl.DataFrame:
     """Reconstruct Vaastav-shaped per-gameweek rows from FCI frames.
@@ -91,6 +92,9 @@ def build_merged_gw(
     players : pl.DataFrame
         Season ``players`` file. Must contain ``player_id, position,
         team_code``.
+    player_gw_team : pl.DataFrame
+        Per-gameweek team table from fplcache. Must contain ``gw, element,
+        team_code``; ``element`` is the FPL element id (== ``id``).
     team_code_to_name : dict[int, str]
         Maps FCI ``team_code`` (== FPL team ``code``) to official team name.
 
@@ -121,6 +125,10 @@ def build_merged_gw(
         }
     )
 
+    per_gw_team = player_gw_team.rename(
+        {"element": "id", "team_code": "team_code_gw"}
+    )
+
     merged = (
         snap.join(
             players.select("player_id", "position", "team_code"),
@@ -128,6 +136,21 @@ def build_merged_gw(
             right_on="player_id",
             how="left",
             coalesce=True,
+        )
+        .rename({"team_code": "team_code_static"})
+        .join(per_gw_team, on=["gw", "id"], how="left", coalesce=True)
+        .sort(["id", "gw"])
+        .with_columns(
+            pl.col("team_code_gw")
+            .fill_null(strategy="forward")
+            .fill_null(strategy="backward")
+            .over("id")
+            .alias("team_code_filled")
+        )
+        .with_columns(
+            pl.coalesce(["team_code_filled", "team_code_static"]).alias(
+                "team_code"
+            )
         )
         .join(team_map, on="team_code", how="left", coalesce=True)
         .join(
