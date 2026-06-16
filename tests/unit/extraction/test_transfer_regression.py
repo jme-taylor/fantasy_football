@@ -20,14 +20,16 @@ SNAPSHOTS = pl.DataFrame(
         "now_cost": [7.0, 5.0, 7.1, 5.1],
         "event_points": [6, 2, 8, 5],
         "bonus": [1, 0, 1, 1],
-    }
+    },
+    schema_overrides={"gw": pl.Int32},
 )
 MATCHSTATS = pl.DataFrame(
     {
         "gw": [1, 1, 2, 2],
         "player_id": [82, 200, 82, 200],
         "minutes_played": [90, 90, 90, 90],
-    }
+    },
+    schema_overrides={"gw": pl.Int32},
 )
 # Static club is the FINAL club (Man City, 43) for both -- the bug source.
 PLAYERS = pl.DataFrame(

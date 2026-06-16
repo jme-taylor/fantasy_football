@@ -104,17 +104,23 @@ def build_merged_gw(
     pl.DataFrame
         One row per (player, gameweek) with columns ``MERGED_GW_COLUMNS``.
     """
-    # Per-GW minutes: sum across matches so double gameweeks accumulate.
-    minutes = matchstats.group_by(["gw", "player_id"]).agg(
-        pl.col("minutes_played").sum().alias("minutes")
+    # Per-GW minutes: sum across matches so double gameweeks accumulate. Cast
+    # ``gw`` to Int64 so the join key matches the fplcache per-GW team table
+    # regardless of the caller's source dtype (production emits Int32).
+    minutes = (
+        matchstats.group_by(["gw", "player_id"])
+        .agg(pl.col("minutes_played").sum().alias("minutes"))
+        .with_columns(pl.col("gw").cast(pl.Int64))
     )
 
     # Event-level bonus: difference of cumulative season bonus per player; the
-    # first gameweek keeps its cumulative value.
+    # first gameweek keeps its cumulative value. Also normalise ``gw`` to Int64
+    # so all gw-keyed joins share a consistent dtype.
     snap = snapshots.sort(["id", "gw"]).with_columns(
         (pl.col("bonus") - pl.col("bonus").shift(1).over("id"))
         .fill_null(pl.col("bonus"))
-        .alias("event_bonus")
+        .alias("event_bonus"),
+        pl.col("gw").cast(pl.Int64),
     )
 
     # Map team_code -> name via a small mapping frame join (this polars version

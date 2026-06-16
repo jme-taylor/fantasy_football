@@ -15,7 +15,8 @@ SNAPSHOTS = pl.DataFrame(
         "now_cost": [6.0, 14.0, 6.1, 14.2],
         "event_points": [6, 9, 2, 13],
         "bonus": [1, 3, 1, 7],  # cumulative season bonus
-    }
+    },
+    schema_overrides={"gw": pl.Int32},
 )
 MATCHSTATS = pl.DataFrame(
     {
@@ -23,7 +24,8 @@ MATCHSTATS = pl.DataFrame(
         "player_id": [1, 2, 1, 2, 2],  # player 2 plays twice in GW2
         "match_id": ["m1", "m1", "m2", "m2", "m3"],
         "minutes_played": [90, 90, 90, 80, 30],
-    }
+    },
+    schema_overrides={"gw": pl.Int32},
 )
 PLAYERS = pl.DataFrame(
     {
