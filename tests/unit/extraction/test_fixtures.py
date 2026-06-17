@@ -125,3 +125,60 @@ def test_build_current_fixtures_empty_when_no_fixtures() -> None:
     result = build_current_fixtures("2025-26", _api([_team(1, "Arsenal")], []))
     assert result.is_empty()
     assert "kickoff_time" in result.columns
+
+
+from fantasy_football.extraction.fixtures import build_vaastav_fixtures  # noqa: E402
+
+
+def _vaastav_extractor(fixtures_df, teams_df) -> MagicMock:
+    """A DataExtractor stub whose _read_csv routes by path suffix."""
+    extractor = MagicMock()
+
+    def _read_csv(path: str):
+        if path.endswith("teams.csv"):
+            return teams_df
+        if path.endswith("fixtures.csv"):
+            return fixtures_df
+        raise AssertionError(f"unexpected path {path}")
+
+    extractor._read_csv.side_effect = _read_csv
+    return extractor
+
+
+def test_build_vaastav_fixtures_maps_local_team_ids() -> None:
+    """Season-local team ids are resolved via teams.csv."""
+    teams_df = pl.DataFrame({"id": [6, 13], "name": ["Arsenal", "Liverpool"]})
+    fixtures_df = pl.DataFrame(
+        {
+            "event": [1],
+            "kickoff_time": ["2023-08-11T19:00:00Z"],
+            "team_h": [6],
+            "team_a": [13],
+        }
+    )
+    extractor = _vaastav_extractor(fixtures_df, teams_df)
+    result = build_vaastav_fixtures("2023-24", extractor)
+    assert result.height == 2
+    home = result.filter(pl.col("is_home")).row(0, named=True)
+    assert home["team"] == "Arsenal"
+    assert home["opposition"] == "Liverpool"
+    assert home["season"] == "2023-24"
+    extractor._read_csv.assert_any_call("data/2023-24/teams.csv")
+    extractor._read_csv.assert_any_call("data/2023-24/fixtures.csv")
+
+
+def test_build_vaastav_fixtures_drops_unscheduled_rows() -> None:
+    """Rows with a null event or blank kickoff_time are dropped."""
+    teams_df = pl.DataFrame({"id": [6, 13], "name": ["Arsenal", "Liverpool"]})
+    fixtures_df = pl.DataFrame(
+        {
+            "event": [1, None],
+            "kickoff_time": ["2023-08-11T19:00:00Z", None],
+            "team_h": [6, 6],
+            "team_a": [13, 13],
+        }
+    )
+    extractor = _vaastav_extractor(fixtures_df, teams_df)
+    result = build_vaastav_fixtures("2023-24", extractor)
+    assert result.height == 2  # only the one scheduled fixture, exploded
+    assert result["gw"].unique().to_list() == [1]

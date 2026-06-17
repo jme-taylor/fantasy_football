@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import polars as pl
 
+from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.storage.database import TEAM_FIXTURE_SCHEMA
 
@@ -117,5 +118,44 @@ def build_current_fixtures(season: str, api: FplAPI) -> pl.DataFrame:
     fixtures: list[NormalisedFixture] = [
         (fixture.event, fixture.kickoff_time, fixture.team_h, fixture.team_a)
         for fixture in api.get_fixtures().fixtures
+    ]
+    return fixtures_to_team_rows(fixtures, teams_by_id, season)
+
+
+def build_vaastav_fixtures(
+    season: str, extractor: DataExtractor
+) -> pl.DataFrame:
+    """Build ``team_fixture`` rows for a historic season from Vaastav.
+
+    Reads the season's ``fixtures.csv`` and ``teams.csv`` from the Vaastav
+    repo. Fixtures with a missing gameweek or kickoff time (postponed /
+    unscheduled) are dropped. Team ids are season-local and resolved via that
+    season's ``teams.csv``.
+
+    Parameters
+    ----------
+    season : str
+        Short-form season string, e.g. ``"2023-24"``.
+    extractor : DataExtractor
+        Provides ``_read_csv`` to download a repo CSV into a Polars frame.
+
+    Returns
+    -------
+    pl.DataFrame
+        Team-fixture rows in the canonical schema.
+    """
+    teams_df = extractor._read_csv(f"data/{season}/teams.csv")
+    teams_by_id = dict(
+        zip(teams_df["id"].to_list(), teams_df["name"].to_list())
+    )
+    fixtures_df = extractor._read_csv(f"data/{season}/fixtures.csv")
+    scheduled = fixtures_df.filter(
+        pl.col("event").is_not_null()
+        & pl.col("kickoff_time").is_not_null()
+        & (pl.col("kickoff_time") != "")
+    )
+    fixtures: list[NormalisedFixture] = [
+        (int(row["event"]), row["kickoff_time"], int(row["team_h"]), int(row["team_a"]))
+        for row in scheduled.iter_rows(named=True)
     ]
     return fixtures_to_team_rows(fixtures, teams_by_id, season)
