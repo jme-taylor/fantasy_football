@@ -187,6 +187,10 @@ def test_build_vaastav_fixtures_drops_unscheduled_rows() -> None:
 import requests  # noqa: E402,F401  (used to raise HTTPError in a test)
 
 from fantasy_football.extraction.fixtures import load_fixtures  # noqa: E402
+from fantasy_football.extraction.seasons import (  # noqa: E402
+    DataSource,
+    source_for_season,
+)
 from fantasy_football.storage.database import (  # noqa: E402
     fixture_seasons_present,
     get_connection,
@@ -290,6 +294,43 @@ def test_load_fixtures_vaastav_fetch_failure_is_skipped(tmp_path, monkeypatch) -
             lambda season, api: fixtures_to_team_rows([], {}, season),
         )
         load_fixtures(conn, "2099-00", api=MagicMock(), extractor=MagicMock())
+        assert fixture_seasons_present(conn) == {"2023-24"}
+    finally:
+        conn.close()
+
+
+def test_load_fixtures_skips_non_current_fci_season(tmp_path, monkeypatch) -> None:
+    """A non-current FCI-era season in player_week is warned about and skipped.
+
+    "2030-31" is beyond Vaastav's last season (2024-25) so it routes to FCI,
+    but it is not the current season ("2099-00"), so there is no fixture source
+    for it and it must be skipped.  "2023-24" is a Vaastav season and should
+    be loaded normally.  The current season "2099-00" is always upserted but
+    the empty frame contributes nothing.
+    """
+    # Confirm routing up-front so the test is self-documenting.
+    assert source_for_season("2030-31") == DataSource.FCI
+
+    conn = get_connection(tmp_path / "t.duckdb")
+    try:
+        _seed_player_week(conn, ["2023-24", "2030-31"])
+
+        monkeypatch.setattr(
+            "fantasy_football.extraction.fixtures.build_vaastav_fixtures",
+            lambda season, extractor: fixtures_to_team_rows(
+                [(1, "2023-08-11T19:00:00Z", 1, 2)],
+                {1: "Arsenal", 2: "Chelsea"},
+                season,
+            ),
+        )
+        monkeypatch.setattr(
+            "fantasy_football.extraction.fixtures.build_current_fixtures",
+            lambda season, api: fixtures_to_team_rows([], {}, season),
+        )
+
+        load_fixtures(conn, "2099-00", api=MagicMock(), extractor=MagicMock())
+
+        # "2030-31" was skipped; "2099-00" is empty; only "2023-24" landed.
         assert fixture_seasons_present(conn) == {"2023-24"}
     finally:
         conn.close()

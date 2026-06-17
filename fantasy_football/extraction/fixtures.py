@@ -180,14 +180,24 @@ def load_fixtures(
     api: FplAPI | None = None,
     extractor: DataExtractor | None = None,
 ) -> None:
-    """Populate ``team_fixture`` for every season present in ``player_week``.
+    """Populate ``team_fixture`` for the current season and historic seasons.
 
-    Seasons already in ``team_fixture`` are skipped. Each remaining season is
-    routed by data source: Vaastav historic seasons are built and written
-    immutably; the current live season is upserted from the FPL API. A
-    non-current FCI-era season has no kickoff source and is skipped (Vaastav
-    backfills it once it falls within the Vaastav range). A Vaastav fetch
-    failure for one season is logged and skipped, not fatal.
+    Two distinct behaviours run on every call:
+
+    * **Historic seasons** — driven by the seasons present in ``player_week``.
+      Each season already in ``team_fixture`` is skipped (immutable, already
+      complete). For remaining seasons, Vaastav is the only supported historic
+      source; a non-current FCI-era season (beyond Vaastav's last season but
+      not the live season) has no kickoff source and is logged and skipped.  A
+      Vaastav HTTP error for a single season is also logged and skipped rather
+      than aborting the entire run.
+
+    * **Current season** — the live season is **always** re-fetched from the
+      FPL API and upserted on every call, regardless of whether it already
+      appears in ``player_week`` or ``team_fixture``.  This ensures the fixture
+      schedule (kickoff times, new gameweeks) is available for prediction and
+      optimisation even before player-week stats are published, and stays
+      up-to-date as the season progresses.
 
     Parameters
     ----------
@@ -204,6 +214,7 @@ def load_fixtures(
     extractor = extractor or DataExtractor()
     already = fixture_seasons_present(connection)
 
+    # Season strings sort lexicographically in calendar order (e.g. "2023-24" < "2024-25").
     for season in sorted(seasons_present(connection)):
         if season in already or season == current_season:
             continue
