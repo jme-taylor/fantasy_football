@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import polars as pl
 
+from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.storage.database import TEAM_FIXTURE_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -94,3 +95,27 @@ def fixtures_to_team_rows(
     if not rows:
         return pl.DataFrame(schema=TEAM_FIXTURE_SCHEMA)
     return pl.DataFrame(rows).cast(TEAM_FIXTURE_SCHEMA, strict=False)
+
+
+def build_current_fixtures(season: str, api: FplAPI) -> pl.DataFrame:
+    """Build ``team_fixture`` rows for the current season from the FPL API.
+
+    Parameters
+    ----------
+    season : str
+        Short-form season string for the live season, e.g. ``"2025-26"``.
+    api : FplAPI
+        The FPL API client. ``get_fixtures`` already drops fixtures with no
+        gameweek or kickoff time.
+
+    Returns
+    -------
+    pl.DataFrame
+        Team-fixture rows in the canonical schema.
+    """
+    teams_by_id = {team.id: team.name for team in api.get_teams()}
+    fixtures: list[NormalisedFixture] = [
+        (fixture.event, fixture.kickoff_time, fixture.team_h, fixture.team_a)
+        for fixture in api.get_fixtures().fixtures
+    ]
+    return fixtures_to_team_rows(fixtures, teams_by_id, season)

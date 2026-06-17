@@ -68,3 +68,60 @@ def test_transform_unknown_team_id_raises() -> None:
     fixtures = [(1, "2023-08-11T19:00:00Z", 1, 2)]
     with pytest.raises(KeyError):
         fixtures_to_team_rows(fixtures, teams, season="2023-24")
+
+
+from unittest.mock import MagicMock  # noqa: E402
+
+from fantasy_football.extraction.fixtures import build_current_fixtures  # noqa: E402
+from fantasy_football.fpl_types import (  # noqa: E402
+    FplFixture,
+    FplFixtures,
+    FplTeamInfo,
+)
+
+
+def _team(id: int, name: str) -> FplTeamInfo:
+    return FplTeamInfo(
+        id=id, code=id * 10, name=name, short_name=name[:3].upper()
+    )
+
+
+def _fix(event: int, team_h: int, team_a: int, kickoff: str) -> FplFixture:
+    return FplFixture(
+        code=event * 100 + team_h,
+        event=event,
+        finished=False,
+        id=event * 100 + team_h,
+        kickoff_time=kickoff,
+        team_a=team_a,
+        team_a_difficulty=3,
+        team_h=team_h,
+        team_h_difficulty=3,
+    )
+
+
+def _api(teams, fixtures) -> MagicMock:
+    api = MagicMock()
+    api.get_teams.return_value = teams
+    api.get_fixtures.return_value = FplFixtures(fixtures=fixtures)
+    return api
+
+
+def test_build_current_fixtures_from_api() -> None:
+    """build_current_fixtures maps FPL fixtures into team_fixture rows."""
+    teams = [_team(1, "Arsenal"), _team(2, "Chelsea")]
+    fixtures = [_fix(1, 1, 2, "2025-08-16T15:00:00Z")]
+    result = build_current_fixtures("2025-26", _api(teams, fixtures))
+    assert result.height == 2
+    home = result.filter(pl.col("is_home")).row(0, named=True)
+    assert home["team"] == "Arsenal"
+    assert home["opposition"] == "Chelsea"
+    assert home["gw"] == 1
+    assert home["season"] == "2025-26"
+
+
+def test_build_current_fixtures_empty_when_no_fixtures() -> None:
+    """No fixtures yields an empty canonical frame."""
+    result = build_current_fixtures("2025-26", _api([_team(1, "Arsenal")], []))
+    assert result.is_empty()
+    assert "kickoff_time" in result.columns
