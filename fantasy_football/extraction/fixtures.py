@@ -9,12 +9,24 @@ transform explodes each fixture into two team-perspective rows. See
 
 import logging
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import polars as pl
+import requests
 
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fpl import FplAPI
-from fantasy_football.storage.database import TEAM_FIXTURE_SCHEMA
+from fantasy_football.extraction.seasons import DataSource, source_for_season
+from fantasy_football.storage.database import (
+    TEAM_FIXTURE_SCHEMA,
+    fixture_seasons_present,
+    seasons_present,
+    upsert_current_fixtures,
+    write_immutable_fixtures,
+)
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
 
@@ -159,3 +171,60 @@ def build_vaastav_fixtures(
         for row in scheduled.iter_rows(named=True)
     ]
     return fixtures_to_team_rows(fixtures, teams_by_id, season)
+
+
+def load_fixtures(
+    connection: "DuckDBPyConnection",
+    current_season: str,
+    *,
+    api: FplAPI | None = None,
+    extractor: DataExtractor | None = None,
+) -> None:
+    """Populate ``team_fixture`` for every season present in ``player_week``.
+
+    Seasons already in ``team_fixture`` are skipped. Each remaining season is
+    routed by data source: Vaastav historic seasons are built and written
+    immutably; the current live season is upserted from the FPL API. A
+    non-current FCI-era season has no kickoff source and is skipped (Vaastav
+    backfills it once it falls within the Vaastav range). A Vaastav fetch
+    failure for one season is logged and skipped, not fatal.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        Open connection to the database.
+    current_season : str
+        The current live season, e.g. ``"2025-26"``.
+    api : FplAPI | None, optional
+        FPL API client for the current season. Defaults to a new ``FplAPI``.
+    extractor : DataExtractor | None, optional
+        Vaastav CSV reader. Defaults to a new ``DataExtractor``.
+    """
+    api = api or FplAPI()
+    extractor = extractor or DataExtractor()
+    already = fixture_seasons_present(connection)
+
+    for season in sorted(seasons_present(connection)):
+        if season in already or season == current_season:
+            continue
+        if source_for_season(season) != DataSource.VAASTAV:
+            logger.warning(
+                "No fixture source for non-current FCI season %s; skipping.",
+                season,
+            )
+            continue
+        try:
+            frame = build_vaastav_fixtures(season, extractor)
+        except requests.HTTPError as exc:
+            logger.warning(
+                "Could not fetch Vaastav fixtures for %s (%s); skipping.",
+                season,
+                exc,
+            )
+            continue
+        write_immutable_fixtures(connection, frame, season)
+
+    # Always refresh the current season (kickoff times and new gameweeks can
+    # change), matching the player-week upsert behaviour.
+    frame = build_current_fixtures(current_season, api)
+    upsert_current_fixtures(connection, frame, current_season)

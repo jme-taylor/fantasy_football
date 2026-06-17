@@ -182,3 +182,114 @@ def test_build_vaastav_fixtures_drops_unscheduled_rows() -> None:
     result = build_vaastav_fixtures("2023-24", extractor)
     assert result.height == 2  # only the one scheduled fixture, exploded
     assert result["gw"].unique().to_list() == [1]
+
+
+import requests  # noqa: E402,F401  (used to raise HTTPError in a test)
+
+from fantasy_football.extraction.fixtures import load_fixtures  # noqa: E402
+from fantasy_football.storage.database import (  # noqa: E402
+    fixture_seasons_present,
+    get_connection,
+    load_team_fixture,
+)
+
+
+def _seed_player_week(conn, seasons) -> None:
+    for i, season in enumerate(seasons):
+        conn.execute(
+            "INSERT INTO player_week (season, gw, element) VALUES (?, ?, ?)",
+            [season, 1, i + 1],
+        )
+
+
+def test_load_fixtures_routes_historic_and_current(tmp_path, monkeypatch) -> None:
+    """Historic seasons use Vaastav; the current season uses the API."""
+    conn = get_connection(tmp_path / "t.duckdb")
+    try:
+        _seed_player_week(conn, ["2023-24", "2025-26"])
+
+        def fake_vaastav(season, extractor):
+            return fixtures_to_team_rows(
+                [(1, "2023-08-11T19:00:00Z", 1, 2)],
+                {1: "Arsenal", 2: "Chelsea"},
+                season,
+            )
+
+        def fake_current(season, api):
+            return fixtures_to_team_rows(
+                [(1, "2025-08-16T15:00:00Z", 1, 2)],
+                {1: "Arsenal", 2: "Chelsea"},
+                season,
+            )
+
+        monkeypatch.setattr(
+            "fantasy_football.extraction.fixtures.build_vaastav_fixtures",
+            fake_vaastav,
+        )
+        monkeypatch.setattr(
+            "fantasy_football.extraction.fixtures.build_current_fixtures",
+            fake_current,
+        )
+
+        load_fixtures(conn, "2025-26", api=MagicMock(), extractor=MagicMock())
+
+        assert fixture_seasons_present(conn) == {"2023-24", "2025-26"}
+        assert load_team_fixture(conn).height == 4
+    finally:
+        conn.close()
+
+
+def test_load_fixtures_skips_seasons_already_present(tmp_path, monkeypatch) -> None:
+    """A season already in team_fixture is not rebuilt."""
+    conn = get_connection(tmp_path / "t.duckdb")
+    try:
+        _seed_player_week(conn, ["2023-24"])
+        calls = []
+        monkeypatch.setattr(
+            "fantasy_football.extraction.fixtures.build_vaastav_fixtures",
+            lambda season, extractor: (
+                calls.append(season)
+                or fixtures_to_team_rows(
+                    [(1, "2023-08-11T19:00:00Z", 1, 2)],
+                    {1: "A", 2: "B"},
+                    season,
+                )
+            ),
+        )
+        monkeypatch.setattr(
+            "fantasy_football.extraction.fixtures.build_current_fixtures",
+            lambda season, api: fixtures_to_team_rows([], {}, season),
+        )
+        load_fixtures(conn, "2099-00", api=MagicMock(), extractor=MagicMock())
+        load_fixtures(conn, "2099-00", api=MagicMock(), extractor=MagicMock())
+        assert calls == ["2023-24"]  # built once, skipped on the second run
+    finally:
+        conn.close()
+
+
+def test_load_fixtures_vaastav_fetch_failure_is_skipped(tmp_path, monkeypatch) -> None:
+    """A Vaastav fetch error logs and skips rather than aborting the run."""
+    conn = get_connection(tmp_path / "t.duckdb")
+    try:
+        _seed_player_week(conn, ["2016-17", "2023-24"])
+
+        def flaky(season, extractor):
+            if season == "2016-17":
+                raise requests.HTTPError("404")
+            return fixtures_to_team_rows(
+                [(1, "2023-08-11T19:00:00Z", 1, 2)],
+                {1: "A", 2: "B"},
+                season,
+            )
+
+        monkeypatch.setattr(
+            "fantasy_football.extraction.fixtures.build_vaastav_fixtures", flaky
+        )
+        monkeypatch.setattr(
+            "fantasy_football.extraction.fixtures.build_current_fixtures",
+            lambda season, api: fixtures_to_team_rows([], {}, season),
+        )
+        load_fixtures(conn, "2099-00", api=MagicMock(), extractor=MagicMock())
+        assert fixture_seasons_present(conn) == {"2023-24"}
+    finally:
+        conn.close()
