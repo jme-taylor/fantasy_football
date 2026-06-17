@@ -4,7 +4,10 @@ from unittest.mock import MagicMock
 import polars as pl
 import pytest
 
-from fantasy_football.features.fixtures import enrich_fixtures
+from fantasy_football.features.fixtures import (
+    count_fixtures_in_gw,
+    enrich_fixtures,
+)
 from fantasy_football.fpl_types import FplFixture, FplFixtures, FplTeamInfo
 
 
@@ -94,3 +97,81 @@ def test_enrich_fixtures_unknown_team_id_raises() -> None:
     ]
     with pytest.raises(KeyError):
         enrich_fixtures(_api(teams, fixtures), season="2025-26")
+
+
+@pytest.fixture
+def sample_team_fixtures() -> pl.DataFrame:
+    """team_fixture rows covering a normal week, a double gameweek and two seasons."""
+    return pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24", "2023-24", "2023-24", "2024-25"],
+            "gw": [1, 1, 2, 2, 1],
+            "team": ["Arsenal", "Chelsea", "Arsenal", "Arsenal", "Arsenal"],
+            "is_home": [True, False, True, False, True],
+            "opposition": ["Chelsea", "Arsenal", "Spurs", "Everton", "Forest"],
+            "kickoff_time": [None, None, None, None, None],
+        }
+    )
+
+
+def test_count_fixtures_in_gw_normal_week(sample_team_fixtures: pl.DataFrame) -> None:
+    """A team with one fixture in a gameweek counts 1."""
+    result = count_fixtures_in_gw(sample_team_fixtures)
+    row = result.filter(
+        (pl.col("season") == "2023-24")
+        & (pl.col("gw") == 1)
+        & (pl.col("team") == "Arsenal")
+    )
+    assert row.get_column("fixtures_in_gw").item() == 1
+
+
+def test_count_fixtures_in_gw_double_gameweek(
+    sample_team_fixtures: pl.DataFrame,
+) -> None:
+    """Two fixtures in one gameweek (different oppositions) count 2."""
+    result = count_fixtures_in_gw(sample_team_fixtures)
+    row = result.filter(
+        (pl.col("season") == "2023-24")
+        & (pl.col("gw") == 2)
+        & (pl.col("team") == "Arsenal")
+    )
+    assert row.get_column("fixtures_in_gw").item() == 2
+
+
+def test_count_fixtures_in_gw_partitions_by_season(
+    sample_team_fixtures: pl.DataFrame,
+) -> None:
+    """Same gw/team in another season is not pooled."""
+    result = count_fixtures_in_gw(sample_team_fixtures)
+    row = result.filter(
+        (pl.col("season") == "2024-25")
+        & (pl.col("gw") == 1)
+        & (pl.col("team") == "Arsenal")
+    )
+    assert row.get_column("fixtures_in_gw").item() == 1
+
+
+def test_count_fixtures_in_gw_counts_each_side_once(
+    sample_team_fixtures: pl.DataFrame,
+) -> None:
+    """Home and away sides of one fixture each count 1 for their own team."""
+    result = count_fixtures_in_gw(sample_team_fixtures)
+    chelsea = result.filter(
+        (pl.col("season") == "2023-24")
+        & (pl.col("gw") == 1)
+        & (pl.col("team") == "Chelsea")
+    )
+    assert chelsea.get_column("fixtures_in_gw").item() == 1
+
+
+def test_count_fixtures_in_gw_omits_blanks(
+    sample_team_fixtures: pl.DataFrame,
+) -> None:
+    """A team with no rows in a gameweek produces no output row (blank = absent)."""
+    result = count_fixtures_in_gw(sample_team_fixtures)
+    chelsea_gw2 = result.filter(
+        (pl.col("season") == "2023-24")
+        & (pl.col("gw") == 2)
+        & (pl.col("team") == "Chelsea")
+    )
+    assert chelsea_gw2.height == 0
