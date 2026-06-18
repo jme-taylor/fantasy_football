@@ -84,7 +84,6 @@ CLUBELO_SCRAPE_NAMES: list[str] = [
 ]
 
 # Mapping from the `Club` column value (as returned by ClubElo) to the
-# team name used in our FPL data (data/raw/<season>/teams.csv).
 # Update this when team set changes (promotions/relegations).
 CLUBELO_TO_FPL: dict[str, str] = {
     "Arsenal": "Arsenal",
@@ -111,3 +110,6 @@ CLUBELO_TO_FPL: dict[str, str] = {
     "West Ham": "West Ham",
     "Wolves": "Wolves",
 }
+
+# First season with player <> team mapping
+PLAYER_TEAM_MAPPING_FIRST_SEASON = "2020-21"
