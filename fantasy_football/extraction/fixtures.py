@@ -167,7 +167,12 @@ def build_vaastav_fixtures(
         & (pl.col("kickoff_time") != "")
     )
     fixtures: list[NormalisedFixture] = [
-        (int(row["event"]), row["kickoff_time"], int(row["team_h"]), int(row["team_a"]))
+        (
+            int(row["event"]),
+            row["kickoff_time"],
+            int(row["team_h"]),
+            int(row["team_a"]),
+        )
         for row in scheduled.iter_rows(named=True)
     ]
     return fixtures_to_team_rows(fixtures, teams_by_id, season)

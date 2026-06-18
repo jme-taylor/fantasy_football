@@ -72,7 +72,9 @@ def test_transform_unknown_team_id_raises() -> None:
 
 from unittest.mock import MagicMock  # noqa: E402
 
-from fantasy_football.extraction.fixtures import build_current_fixtures  # noqa: E402
+from fantasy_football.extraction.fixtures import (
+    build_current_fixtures,  # noqa: E402
+)
 from fantasy_football.fpl_types import (  # noqa: E402
     FplFixture,
     FplFixtures,
@@ -127,11 +129,13 @@ def test_build_current_fixtures_empty_when_no_fixtures() -> None:
     assert "kickoff_time" in result.columns
 
 
-from fantasy_football.extraction.fixtures import build_vaastav_fixtures  # noqa: E402
+from fantasy_football.extraction.fixtures import (
+    build_vaastav_fixtures,  # noqa: E402
+)
 
 
 def _vaastav_extractor(fixtures_df, teams_df) -> MagicMock:
-    """A DataExtractor stub whose _read_csv routes by path suffix."""
+    """DataExtractor stub whose _read_csv routes by path suffix."""
     extractor = MagicMock()
 
     def _read_csv(path: str):
@@ -206,7 +210,9 @@ def _seed_player_week(conn, seasons) -> None:
         )
 
 
-def test_load_fixtures_routes_historic_and_current(tmp_path, monkeypatch) -> None:
+def test_load_fixtures_routes_historic_and_current(
+    tmp_path, monkeypatch
+) -> None:
     """Historic seasons use Vaastav; the current season uses the API."""
     conn = get_connection(tmp_path / "t.duckdb")
     try:
@@ -243,7 +249,9 @@ def test_load_fixtures_routes_historic_and_current(tmp_path, monkeypatch) -> Non
         conn.close()
 
 
-def test_load_fixtures_skips_seasons_already_present(tmp_path, monkeypatch) -> None:
+def test_load_fixtures_skips_seasons_already_present(
+    tmp_path, monkeypatch
+) -> None:
     """A season already in team_fixture is not rebuilt."""
     conn = get_connection(tmp_path / "t.duckdb")
     try:
@@ -271,7 +279,9 @@ def test_load_fixtures_skips_seasons_already_present(tmp_path, monkeypatch) -> N
         conn.close()
 
 
-def test_load_fixtures_vaastav_fetch_failure_is_skipped(tmp_path, monkeypatch) -> None:
+def test_load_fixtures_vaastav_fetch_failure_is_skipped(
+    tmp_path, monkeypatch
+) -> None:
     """A Vaastav fetch error logs and skips rather than aborting the run."""
     conn = get_connection(tmp_path / "t.duckdb")
     try:
@@ -287,7 +297,8 @@ def test_load_fixtures_vaastav_fetch_failure_is_skipped(tmp_path, monkeypatch) -
             )
 
         monkeypatch.setattr(
-            "fantasy_football.extraction.fixtures.build_vaastav_fixtures", flaky
+            "fantasy_football.extraction.fixtures.build_vaastav_fixtures",
+            flaky,
         )
         monkeypatch.setattr(
             "fantasy_football.extraction.fixtures.build_current_fixtures",
@@ -299,7 +310,9 @@ def test_load_fixtures_vaastav_fetch_failure_is_skipped(tmp_path, monkeypatch) -
         conn.close()
 
 
-def test_load_fixtures_skips_non_current_fci_season(tmp_path, monkeypatch) -> None:
+def test_load_fixtures_skips_non_current_fci_season(
+    tmp_path, monkeypatch
+) -> None:
     """A non-current FCI-era season in player_week is warned about and skipped.
 
     "2030-31" is beyond Vaastav's last season (2024-25) so it routes to FCI,

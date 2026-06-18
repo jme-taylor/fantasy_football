@@ -312,8 +312,7 @@ def test_get_connection_creates_team_fixture_table(tmp_path) -> None:
     conn = _conn(tmp_path)
     try:
         columns = [
-            row[0]
-            for row in conn.execute("DESCRIBE team_fixture").fetchall()
+            row[0] for row in conn.execute("DESCRIBE team_fixture").fetchall()
         ]
     finally:
         conn.close()
@@ -332,7 +331,9 @@ def test_load_team_fixture_round_trips(tmp_path) -> None:
     """A frame inserted directly is read back via load_team_fixture."""
     conn = _conn(tmp_path)
     try:
-        conn.register("incoming", coerce_team_fixture(_fixture_frame()).to_arrow())
+        conn.register(
+            "incoming", coerce_team_fixture(_fixture_frame()).to_arrow()
+        )
         conn.execute("INSERT INTO team_fixture SELECT * FROM incoming")
         conn.unregister("incoming")
         out = load_team_fixture(conn)
@@ -347,7 +348,9 @@ def test_reset_database_drops_team_fixture_rows(tmp_path) -> None:
     """reset_database recreates an empty team_fixture table."""
     conn = _conn(tmp_path)
     try:
-        conn.register("incoming", coerce_team_fixture(_fixture_frame()).to_arrow())
+        conn.register(
+            "incoming", coerce_team_fixture(_fixture_frame()).to_arrow()
+        )
         conn.execute("INSERT INTO team_fixture SELECT * FROM incoming")
         conn.unregister("incoming")
         reset_database(conn)

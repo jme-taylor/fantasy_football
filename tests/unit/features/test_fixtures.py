@@ -114,7 +114,9 @@ def sample_team_fixtures() -> pl.DataFrame:
     )
 
 
-def test_count_fixtures_in_gw_normal_week(sample_team_fixtures: pl.DataFrame) -> None:
+def test_count_fixtures_in_gw_normal_week(
+    sample_team_fixtures: pl.DataFrame,
+) -> None:
     """A team with one fixture in a gameweek counts 1."""
     result = count_fixtures_in_gw(sample_team_fixtures)
     row = result.filter(

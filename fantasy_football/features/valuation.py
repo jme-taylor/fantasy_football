@@ -25,7 +25,10 @@ def add_team_value(data: pl.DataFrame) -> pl.DataFrame:
 
     """
     data = data.with_columns(
-        pl.col("value").sum().over(["season", "gw", "team"]).alias("team_value")
+        pl.col("value")
+        .sum()
+        .over(["season", "gw", "team"])
+        .alias("team_value")
     )
     return data.with_columns(
         (pl.col("value") / pl.col("team_value")).alias("value_share_of_team")
