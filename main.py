@@ -6,6 +6,7 @@ import polars as pl
 from fantasy_football.constants import CURRENT_SEASON, TRANSFORMED_DATA_FOLDER
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fci import FciExtractor
+from fantasy_football.extraction.fixtures import load_fixtures
 from fantasy_football.extraction.seasons import DataSource, source_for_season
 from fantasy_football.features.elo import build_team_elo
 from fantasy_football.features.fixtures import build_fixtures_enriched
@@ -78,6 +79,7 @@ def main(
             reset_database(connection)
         DataExtractor().load_immutable_seasons(connection, CURRENT_SEASON)
         update_current_season(CURRENT_SEASON, connection)
+        load_fixtures(connection, CURRENT_SEASON)
     finally:
         connection.close()
 

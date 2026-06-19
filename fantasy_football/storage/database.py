@@ -66,6 +66,40 @@ CREATE TABLE IF NOT EXISTS player_week (
 """
 
 
+# Canonical team-fixture column order. Both the table and every frame written
+# to or read from it use exactly these columns in this order.
+TEAM_FIXTURE_COLUMNS: list[str] = [
+    "season",
+    "gw",
+    "team",
+    "is_home",
+    "opposition",
+    "kickoff_time",
+]
+
+# Polars dtypes incoming fixture frames are pinned to before insertion.
+TEAM_FIXTURE_SCHEMA: dict[str, pl.DataType] = {
+    "season": pl.Utf8,
+    "gw": pl.Int64,
+    "team": pl.Utf8,
+    "is_home": pl.Boolean,
+    "opposition": pl.Utf8,
+    "kickoff_time": pl.Datetime("us"),
+}
+
+_CREATE_TEAM_FIXTURE_TABLE = """
+CREATE TABLE IF NOT EXISTS team_fixture (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    team VARCHAR NOT NULL,
+    is_home BOOLEAN,
+    opposition VARCHAR NOT NULL,
+    kickoff_time TIMESTAMP,
+    PRIMARY KEY (season, gw, team, opposition)
+)
+"""
+
+
 def get_connection(
     db_path: Path | None = None,
 ) -> duckdb.DuckDBPyConnection:
@@ -79,13 +113,15 @@ def get_connection(
     Returns
     -------
     duckdb.DuckDBPyConnection
-        An open connection with the ``player_week`` table guaranteed to exist.
-        The caller is responsible for closing the connection.
+        An open connection with the ``player_week`` and ``team_fixture`` tables
+        guaranteed to exist. The caller is responsible for closing the
+        connection.
     """
     path = db_path or DATABASE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(str(path))
     connection.execute(_CREATE_TABLE)
+    connection.execute(_CREATE_TEAM_FIXTURE_TABLE)
     return connection
 
 
@@ -116,6 +152,56 @@ def coerce_player_week(frame: pl.DataFrame) -> pl.DataFrame:
         .select(PLAYER_WEEK_COLUMNS)
         .cast(PLAYER_WEEK_SCHEMA, strict=False)
     )
+
+
+def coerce_team_fixture(frame: pl.DataFrame) -> pl.DataFrame:
+    """Normalise an incoming frame to the canonical team-fixture shape.
+
+    Selects exactly ``TEAM_FIXTURE_COLUMNS`` (ignoring any extra source
+    columns) and pins the dtypes to ``TEAM_FIXTURE_SCHEMA``.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        A frame already carrying every name in ``TEAM_FIXTURE_COLUMNS``.
+
+    Returns
+    -------
+    pl.DataFrame
+        The frame reduced to the canonical columns, order, and dtypes.
+    """
+    return frame.select(TEAM_FIXTURE_COLUMNS).cast(
+        TEAM_FIXTURE_SCHEMA, strict=False
+    )
+
+
+def load_team_fixture(
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> pl.DataFrame:
+    """Return the entire ``team_fixture`` table as a Polars frame.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. When None, a connection to ``DATABASE_PATH`` is
+        opened and closed inside this call.
+
+    Returns
+    -------
+    pl.DataFrame
+        All team-fixture rows, columns in ``TEAM_FIXTURE_COLUMNS`` order,
+        sorted by ``(season, gw, team)``.
+    """
+    owns_connection = connection is None
+    conn = connection or get_connection()
+    try:
+        return conn.execute(
+            "SELECT season, gw, team, is_home, opposition, kickoff_time "
+            "FROM team_fixture ORDER BY season, gw, team"
+        ).pl()
+    finally:
+        if owns_connection:
+            conn.close()
 
 
 def seasons_present(connection: duckdb.DuckDBPyConnection) -> set[str]:
@@ -241,8 +327,102 @@ def load_player_week(
             conn.close()
 
 
+def fixture_seasons_present(connection: duckdb.DuckDBPyConnection) -> set[str]:
+    """Return the set of seasons already stored in ``team_fixture``.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+
+    Returns
+    -------
+    set[str]
+        Distinct ``season`` values currently in the table.
+    """
+    rows = connection.execute(
+        "SELECT DISTINCT season FROM team_fixture"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def write_immutable_fixtures(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Insert a completed season's fixtures, but only if not already stored.
+
+    Completed seasons' fixtures never change, so an existing season is left
+    untouched and the frame is discarded.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        Rows for a single season, carrying every ``TEAM_FIXTURE_COLUMNS`` name.
+    season : str
+        The season these rows belong to.
+    """
+    if season in fixture_seasons_present(connection):
+        logger.info(
+            "Fixtures for season %s already present; skipping.", season
+        )
+        return
+    shaped = coerce_team_fixture(frame)
+    connection.register("incoming_team_fixture", shaped.to_arrow())
+    try:
+        connection.execute(
+            "INSERT INTO team_fixture SELECT * FROM incoming_team_fixture"
+        )
+    finally:
+        connection.unregister("incoming_team_fixture")
+    logger.info(
+        "Inserted %d fixture rows for immutable season %s",
+        shaped.height,
+        season,
+    )
+
+
+def upsert_current_fixtures(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Replace all stored fixtures for ``season`` with a freshly fetched frame.
+
+    The current season's fixtures are re-fetched each run (kickoff times and
+    new gameweeks can change). Deleting then re-inserting the season keeps the
+    table consistent with the upstream schedule. Other seasons are untouched.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        The season's fixtures, carrying every ``TEAM_FIXTURE_COLUMNS`` name.
+    season : str
+        The current season being refreshed.
+    """
+    shaped = coerce_team_fixture(frame)
+    connection.register("incoming_team_fixture", shaped.to_arrow())
+    try:
+        connection.execute(
+            "DELETE FROM team_fixture WHERE season = ?", [season]
+        )
+        connection.execute(
+            "INSERT INTO team_fixture SELECT * FROM incoming_team_fixture"
+        )
+    finally:
+        connection.unregister("incoming_team_fixture")
+    logger.info(
+        "Upserted %d fixture rows for current season %s", shaped.height, season
+    )
+
+
 def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
-    """Drop and recreate the ``player_week`` table (full-rebuild escape hatch).
+    """Drop and recreate the ``player_week`` and ``team_fixture`` tables (full-rebuild escape hatch).
 
     Parameters
     ----------
@@ -251,3 +431,5 @@ def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
     """
     connection.execute("DROP TABLE IF EXISTS player_week")
     connection.execute(_CREATE_TABLE)
+    connection.execute("DROP TABLE IF EXISTS team_fixture")
+    connection.execute(_CREATE_TEAM_FIXTURE_TABLE)

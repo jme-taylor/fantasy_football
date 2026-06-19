@@ -90,3 +90,36 @@ def build_fixtures_enriched(season: str) -> pl.DataFrame:
     df.write_csv(TRANSFORMED_DATA_FOLDER.joinpath("fixtures_enriched.csv"))
     logger.info("Wrote %d enriched fixture rows for %s", df.height, season)
     return df
+
+
+def count_fixtures_in_gw(team_fixtures: pl.DataFrame) -> pl.DataFrame:
+    """Count how many fixtures each team has in each gameweek.
+
+    Groups ``team_fixture`` rows by ``(season, gw, team)`` and counts them.
+    Because ``team_fixture`` is keyed on ``(season, gw, team, opposition)``,
+    each row is a distinct fixture: a normal week counts 1, a double gameweek
+    counts 2. Blank gameweeks have no rows and are absent from the output, so a
+    missing team-gw should be read as 0 fixtures by the caller.
+
+    ``season`` is part of the grouping because ``gw`` repeats across seasons;
+    omitting it would pool different seasons' gameweeks together.
+
+    Parameters
+    ----------
+    team_fixtures : pl.DataFrame
+        The ``team_fixture`` table, with at least ``season``, ``gw`` and
+        ``team`` columns.
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns ``season``, ``gw``, ``team`` and ``fixtures_in_gw`` (Int64),
+        sorted by ``(season, gw, team)``.
+
+    """
+    return (
+        team_fixtures.group_by(["season", "gw", "team"])
+        .agg(pl.len().alias("fixtures_in_gw"))
+        .with_columns(pl.col("fixtures_in_gw").cast(pl.Int64))
+        .sort(["season", "gw", "team"])
+    )

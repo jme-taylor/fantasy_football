@@ -1,9 +1,18 @@
+from datetime import datetime
 from pathlib import Path
 
+import duckdb
 import polars as pl  # noqa: F401  # used by later tasks appended to this file
 import pytest  # noqa: F401  # used by later tasks appended to this file
 
-from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.database import (
+    PLAYER_WEEK_COLUMNS,
+    TEAM_FIXTURE_COLUMNS,
+    coerce_player_week,
+    coerce_team_fixture,
+    get_connection,
+    load_team_fixture,
+)
 
 
 def test_get_connection_creates_player_week_table(tmp_path: Path) -> None:
@@ -47,12 +56,6 @@ def test_get_connection_is_idempotent(tmp_path: Path) -> None:
     finally:
         second.close()
     assert count == 0
-
-
-from fantasy_football.storage.database import (  # noqa: E402
-    PLAYER_WEEK_COLUMNS,
-    coerce_player_week,
-)
 
 
 def test_coerce_player_week_normalises_gkp_and_selects_columns() -> None:
@@ -271,3 +274,136 @@ def test_reset_database_empties_the_table(tmp_path: Path) -> None:
         assert seasons_present(connection) == set()
     finally:
         connection.close()
+
+
+# ---------------------------------------------------------------------------
+# team_fixture tests
+# ---------------------------------------------------------------------------
+
+
+def _conn(tmp_path) -> duckdb.DuckDBPyConnection:
+    return get_connection(tmp_path / "test.duckdb")
+
+
+def _fixture_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 1],
+            "team": ["Arsenal", "Chelsea"],
+            "is_home": [True, False],
+            "opposition": ["Chelsea", "Arsenal"],
+            "kickoff_time": [
+                datetime(2023, 8, 11, 19, 0),
+                datetime(2023, 8, 11, 19, 0),
+            ],
+        }
+    )
+
+
+def test_get_connection_creates_team_fixture_table(tmp_path) -> None:
+    """get_connection creates the team_fixture table."""
+    conn = _conn(tmp_path)
+    try:
+        columns = [
+            row[0] for row in conn.execute("DESCRIBE team_fixture").fetchall()
+        ]
+    finally:
+        conn.close()
+
+    assert columns == TEAM_FIXTURE_COLUMNS
+
+
+def test_coerce_team_fixture_selects_and_orders_columns() -> None:
+    """coerce_team_fixture reduces a frame to the canonical columns/order."""
+    frame = _fixture_frame().with_columns(pl.lit("extra").alias("junk"))
+    shaped = coerce_team_fixture(frame)
+    assert shaped.columns == TEAM_FIXTURE_COLUMNS
+
+
+def test_load_team_fixture_round_trips(tmp_path) -> None:
+    """A frame inserted directly is read back via load_team_fixture."""
+    conn = _conn(tmp_path)
+    try:
+        conn.register(
+            "incoming", coerce_team_fixture(_fixture_frame()).to_arrow()
+        )
+        conn.execute("INSERT INTO team_fixture SELECT * FROM incoming")
+        conn.unregister("incoming")
+        out = load_team_fixture(conn)
+        assert out.columns == TEAM_FIXTURE_COLUMNS
+        assert out.height == 2
+        assert set(out["team"].to_list()) == {"Arsenal", "Chelsea"}
+    finally:
+        conn.close()
+
+
+def test_reset_database_drops_team_fixture_rows(tmp_path) -> None:
+    """reset_database recreates an empty team_fixture table."""
+    conn = _conn(tmp_path)
+    try:
+        conn.register(
+            "incoming", coerce_team_fixture(_fixture_frame()).to_arrow()
+        )
+        conn.execute("INSERT INTO team_fixture SELECT * FROM incoming")
+        conn.unregister("incoming")
+        reset_database(conn)
+        assert load_team_fixture(conn).height == 0
+    finally:
+        conn.close()
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    fixture_seasons_present,
+    upsert_current_fixtures,
+    write_immutable_fixtures,
+)
+
+
+def test_write_immutable_fixtures_inserts_once(tmp_path) -> None:
+    """write_immutable_fixtures inserts a new season but skips a present one."""
+    conn = _conn(tmp_path)
+    try:
+        write_immutable_fixtures(conn, _fixture_frame(), "2023-24")
+        assert load_team_fixture(conn).height == 2
+        # Second call with different data is ignored — season already present.
+        changed = _fixture_frame().with_columns(pl.lit("Spurs").alias("team"))
+        write_immutable_fixtures(conn, changed, "2023-24")
+        teams = set(load_team_fixture(conn)["team"].to_list())
+        assert teams == {"Arsenal", "Chelsea"}
+    finally:
+        conn.close()
+
+
+def test_upsert_current_fixtures_replaces_season(tmp_path) -> None:
+    """upsert_current_fixtures deletes then reinserts the season's rows."""
+    conn = _conn(tmp_path)
+    try:
+        upsert_current_fixtures(conn, _fixture_frame(), "2023-24")
+        replacement = pl.DataFrame(
+            {
+                "season": ["2023-24"],
+                "gw": [2],
+                "team": ["Arsenal"],
+                "is_home": [True],
+                "opposition": ["Spurs"],
+                "kickoff_time": [datetime(2023, 8, 19, 15, 0)],
+            }
+        )
+        upsert_current_fixtures(conn, replacement, "2023-24")
+        out = load_team_fixture(conn)
+        assert out.height == 1
+        assert out.row(0, named=True)["opposition"] == "Spurs"
+    finally:
+        conn.close()
+
+
+def test_fixture_seasons_present(tmp_path) -> None:
+    """fixture_seasons_present returns distinct stored seasons."""
+    conn = _conn(tmp_path)
+    try:
+        assert fixture_seasons_present(conn) == set()
+        write_immutable_fixtures(conn, _fixture_frame(), "2023-24")
+        assert fixture_seasons_present(conn) == {"2023-24"}
+    finally:
+        conn.close()
