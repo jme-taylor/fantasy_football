@@ -7,6 +7,9 @@ from fantasy_football.constants import CURRENT_SEASON, TRANSFORMED_DATA_FOLDER
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fci import FciExtractor
 from fantasy_football.extraction.fixtures import load_fixtures
+from fantasy_football.extraction.player_match import (
+    load_current_season_player_match,
+)
 from fantasy_football.extraction.seasons import DataSource, source_for_season
 from fantasy_football.features.elo import build_team_elo
 from fantasy_football.features.fixtures import build_fixtures_enriched
@@ -49,6 +52,32 @@ def update_current_season(
         )
 
 
+def load_player_match_data(
+    season: str,
+    connection: "DuckDBPyConnection",
+    extractor: DataExtractor | None = None,
+    current_loader=load_current_season_player_match,
+) -> None:
+    """Populate the player_match table: historic from Vaastav, current from FPL.
+
+    Parameters
+    ----------
+    season : str
+        Short-form current season, e.g. ``"2025-26"``.
+    connection : duckdb.DuckDBPyConnection
+        Open connection to the database.
+    extractor : DataExtractor | None, optional
+        Vaastav extractor. Defaults to a new ``DataExtractor``.
+    current_loader : callable, optional
+        Current-season loader. Defaults to
+        ``load_current_season_player_match``.
+    """
+    (extractor or DataExtractor()).load_immutable_player_match_seasons(
+        connection, season
+    )
+    current_loader(season, connection)
+
+
 def main(
     *,
     rebuild: bool = False,
@@ -80,6 +109,7 @@ def main(
         DataExtractor().load_immutable_seasons(connection, CURRENT_SEASON)
         update_current_season(CURRENT_SEASON, connection)
         load_fixtures(connection, CURRENT_SEASON)
+        load_player_match_data(CURRENT_SEASON, connection)
     finally:
         connection.close()
 
