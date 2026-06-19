@@ -470,8 +470,13 @@ def test_build_player_match_keeps_both_fixtures_of_a_dgw() -> None:
     )
     result = _build_player_match(frame)
     assert result.columns == [
-        "season", "gw", "element", "opponent", "is_home",
-        "minutes", "total_points",
+        "season",
+        "gw",
+        "element",
+        "opponent",
+        "is_home",
+        "minutes",
+        "total_points",
     ]
     assert result.height == 2
     assert sorted(result["opponent"].to_list()) == [7, 12]

@@ -1,5 +1,5 @@
-import requests
 import polars as pl
+import requests
 from pydantic import BaseModel
 
 from fantasy_football.fpl_types import (
@@ -14,7 +14,6 @@ from fantasy_football.fpl_types import (
     TeamFixture,
     TeamFixtures,
 )
-
 
 PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
     "element",

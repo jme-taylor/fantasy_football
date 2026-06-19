@@ -38,9 +38,7 @@ def load_current_season_player_match(
     """
     api = fpl_api or FplAPI()
     players = api.get_players()
-    histories = [
-        api.get_player_match_history(player.id) for player in players
-    ]
+    histories = [api.get_player_match_history(player.id) for player in players]
     non_empty = [frame for frame in histories if frame.height > 0]
     if not non_empty:
         logger.warning("No player-match history returned for %s.", season)

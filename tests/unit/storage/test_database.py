@@ -465,10 +465,24 @@ def test_player_match_pk_disambiguates_double_gameweek(tmp_path: Path) -> None:
     try:
         frame = _player_match_frame(
             [
-                {"season": "2024-25", "gw": 1, "element": 5, "opponent": 12,
-                 "is_home": True, "minutes": 90, "total_points": 6},
-                {"season": "2024-25", "gw": 1, "element": 5, "opponent": 7,
-                 "is_home": False, "minutes": 70, "total_points": 2},
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 12,
+                    "is_home": True,
+                    "minutes": 90,
+                    "total_points": 6,
+                },
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 7,
+                    "is_home": False,
+                    "minutes": 70,
+                    "total_points": 2,
+                },
             ]
         )
         upsert_current_player_match(connection, frame, "2024-25")
@@ -480,13 +494,24 @@ def test_player_match_pk_disambiguates_double_gameweek(tmp_path: Path) -> None:
     assert count == 2
 
 
-def test_write_immutable_player_match_is_noop_when_present(tmp_path: Path) -> None:
+def test_write_immutable_player_match_is_noop_when_present(
+    tmp_path: Path,
+) -> None:
     """A second immutable write for an existing season is discarded."""
     connection = get_connection(tmp_path / "test.duckdb")
     try:
         frame = _player_match_frame(
-            [{"season": "2023-24", "gw": 1, "element": 1, "opponent": 2,
-              "is_home": True, "minutes": 90, "total_points": 3}]
+            [
+                {
+                    "season": "2023-24",
+                    "gw": 1,
+                    "element": 1,
+                    "opponent": 2,
+                    "is_home": True,
+                    "minutes": 90,
+                    "total_points": 3,
+                }
+            ]
         )
         write_immutable_player_match(connection, frame, "2023-24")
         assert player_match_seasons_present(connection) == {"2023-24"}
@@ -505,10 +530,24 @@ def test_load_player_match_round_trips_ordered(tmp_path: Path) -> None:
     try:
         frame = _player_match_frame(
             [
-                {"season": "2024-25", "gw": 2, "element": 9, "opponent": 3,
-                 "is_home": True, "minutes": 45, "total_points": 1},
-                {"season": "2024-25", "gw": 1, "element": 9, "opponent": 4,
-                 "is_home": False, "minutes": 90, "total_points": 5},
+                {
+                    "season": "2024-25",
+                    "gw": 2,
+                    "element": 9,
+                    "opponent": 3,
+                    "is_home": True,
+                    "minutes": 45,
+                    "total_points": 1,
+                },
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 9,
+                    "opponent": 4,
+                    "is_home": False,
+                    "minutes": 90,
+                    "total_points": 5,
+                },
             ]
         )
         upsert_current_player_match(connection, frame, "2024-25")
