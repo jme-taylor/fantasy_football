@@ -733,3 +733,47 @@ class TestFplAPI:
         assert result.fixtures.fixtures[0].is_home is False
         assert result.fixtures.fixtures[1].round == 3
         assert result.fixtures.fixtures[1].is_home is True
+
+    def test_get_player_match_history_parses_per_fixture_rows(
+        self,
+        fpl_api: FplAPI,
+        mocker: MockerFixture,
+    ) -> None:
+        """element-summary history maps to one player-match row per fixture."""
+        payload = {
+            "history": [
+                {"element": 5, "round": 1, "opponent_team": 12,
+                 "was_home": True, "minutes": 90, "total_points": 6},
+                {"element": 5, "round": 1, "opponent_team": 7,
+                 "was_home": False, "minutes": 70, "total_points": 2},
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+        mocker.patch("requests.get", return_value=mock_response)
+
+        result = fpl_api.get_player_match_history(5)
+
+        assert result.columns == [
+            "element", "gw", "opponent", "is_home", "minutes", "total_points",
+        ]
+        assert result.height == 2
+        assert result["gw"].to_list() == [1, 1]
+        assert sorted(result["opponent"].to_list()) == [7, 12]
+
+    def test_get_player_match_history_empty_history(
+        self,
+        fpl_api: FplAPI,
+        mocker: MockerFixture,
+    ) -> None:
+        """A player with no fixtures yields an empty, correctly-typed frame."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"history": []}
+        mocker.patch("requests.get", return_value=mock_response)
+
+        result = fpl_api.get_player_match_history(99)
+
+        assert result.height == 0
+        assert result.columns == [
+            "element", "gw", "opponent", "is_home", "minutes", "total_points",
+        ]

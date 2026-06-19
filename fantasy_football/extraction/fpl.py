@@ -1,4 +1,5 @@
 import requests
+import polars as pl
 from pydantic import BaseModel
 
 from fantasy_football.fpl_types import (
@@ -13,6 +14,16 @@ from fantasy_football.fpl_types import (
     TeamFixture,
     TeamFixtures,
 )
+
+
+PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
+    "element",
+    "gw",
+    "opponent",
+    "is_home",
+    "minutes",
+    "total_points",
+]
 
 
 class FixtureResponse(BaseModel):
@@ -371,4 +382,45 @@ class FplAPI:
         )
         return FplPlayerFixtures(
             player_id=player, fixtures=player_team_fixtures
+        )
+
+    def get_player_match_history(self, element_id: int) -> pl.DataFrame:
+        """Return a player's current-season per-fixture history.
+
+        Hits ``element-summary/{element_id}/`` and reshapes its ``history``
+        array (one entry per fixture) into canonical player-match columns. The
+        endpoint only holds the current season — past seasons collapse to
+        season aggregates upstream and are not returned here.
+
+        Parameters
+        ----------
+        element_id : int
+            The FPL element id.
+
+        Returns
+        -------
+        pl.DataFrame
+            Columns ``element, gw, opponent, is_home, minutes, total_points``;
+            empty (with that schema) when the player has no fixtures.
+        """
+        url = f"{self.BASE_URL}element-summary/{element_id}/"
+        history = requests.get(url).json()["history"]
+        if not history:
+            return pl.DataFrame(
+                schema={
+                    "element": pl.Int64,
+                    "gw": pl.Int64,
+                    "opponent": pl.Int64,
+                    "is_home": pl.Boolean,
+                    "minutes": pl.Int64,
+                    "total_points": pl.Int64,
+                }
+            )
+        return pl.DataFrame(history).select(
+            pl.col("element"),
+            pl.col("round").alias("gw"),
+            pl.col("opponent_team").alias("opponent"),
+            pl.col("was_home").alias("is_home"),
+            pl.col("minutes"),
+            pl.col("total_points"),
         )
