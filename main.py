@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -56,7 +57,9 @@ def load_player_match_data(
     season: str,
     connection: "DuckDBPyConnection",
     extractor: DataExtractor | None = None,
-    current_loader=load_current_season_player_match,
+    current_loader: Callable[[str, "DuckDBPyConnection"], None] = (
+        load_current_season_player_match
+    ),
 ) -> None:
     """Populate the player_match table: historic from Vaastav, current from FPL.
 

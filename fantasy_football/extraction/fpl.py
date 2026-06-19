@@ -405,18 +405,15 @@ class FplAPI:
         """
         url = f"{self.BASE_URL}element-summary/{element_id}/"
         history = requests.get(url).json()["history"]
-        if not history:
-            return pl.DataFrame(
-                schema={
-                    "element": pl.Int64,
-                    "gw": pl.Int64,
-                    "opponent": pl.Int64,
-                    "is_home": pl.Boolean,
-                    "minutes": pl.Int64,
-                    "total_points": pl.Int64,
-                }
+        empty_schema = dict(
+            zip(
+                PLAYER_MATCH_HISTORY_COLUMNS,
+                [pl.Int64, pl.Int64, pl.Int64, pl.Boolean, pl.Int64, pl.Int64],
             )
-        return pl.DataFrame(history).select(
+        )
+        if not history:
+            return pl.DataFrame(schema=empty_schema)
+        frame = pl.DataFrame(history).select(
             pl.col("element").cast(pl.Int64),
             pl.col("round").cast(pl.Int64).alias("gw"),
             pl.col("opponent_team").cast(pl.Int64).alias("opponent"),
@@ -424,3 +421,5 @@ class FplAPI:
             pl.col("minutes").cast(pl.Int64),
             pl.col("total_points").cast(pl.Int64),
         )
+        assert frame.columns == PLAYER_MATCH_HISTORY_COLUMNS
+        return frame
