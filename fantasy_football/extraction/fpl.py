@@ -417,10 +417,10 @@ class FplAPI:
                 }
             )
         return pl.DataFrame(history).select(
-            pl.col("element"),
-            pl.col("round").alias("gw"),
-            pl.col("opponent_team").alias("opponent"),
+            pl.col("element").cast(pl.Int64),
+            pl.col("round").cast(pl.Int64).alias("gw"),
+            pl.col("opponent_team").cast(pl.Int64).alias("opponent"),
             pl.col("was_home").alias("is_home"),
-            pl.col("minutes"),
-            pl.col("total_points"),
+            pl.col("minutes").cast(pl.Int64),
+            pl.col("total_points").cast(pl.Int64),
         )

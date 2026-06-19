@@ -1,6 +1,7 @@
 from typing import Any
 from unittest.mock import MagicMock
 
+import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
@@ -760,6 +761,9 @@ class TestFplAPI:
         assert result.height == 2
         assert result["gw"].to_list() == [1, 1]
         assert sorted(result["opponent"].to_list()) == [7, 12]
+        assert result.dtypes == [
+            pl.Int64, pl.Int64, pl.Int64, pl.Boolean, pl.Int64, pl.Int64,
+        ]
 
     def test_get_player_match_history_empty_history(
         self,
@@ -776,4 +780,7 @@ class TestFplAPI:
         assert result.height == 0
         assert result.columns == [
             "element", "gw", "opponent", "is_home", "minutes", "total_points",
+        ]
+        assert result.dtypes == [
+            pl.Int64, pl.Int64, pl.Int64, pl.Boolean, pl.Int64, pl.Int64,
         ]
