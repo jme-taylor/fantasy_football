@@ -1,11 +1,31 @@
 """Unit tests for fixture extraction adapters and transform."""
 
 from datetime import datetime
+from unittest.mock import MagicMock
 
 import polars as pl
 import pytest
+import requests
 
-from fantasy_football.extraction.fixtures import fixtures_to_team_rows
+from fantasy_football.extraction.fixtures import (
+    build_current_fixtures,
+    fixtures_to_team_rows,
+    load_fixtures,
+)
+from fantasy_football.extraction.seasons import (
+    DataSource,
+    source_for_season,
+)
+from fantasy_football.fpl_types import (
+    FplFixture,
+    FplFixtures,
+    FplTeamInfo,
+)
+from fantasy_football.storage.database import (
+    fixture_seasons_present,
+    get_connection,
+    load_team_fixture,
+)
 
 
 def test_transform_emits_two_rows_per_fixture() -> None:
@@ -68,18 +88,6 @@ def test_transform_unknown_team_id_raises() -> None:
     fixtures = [(1, "2023-08-11T19:00:00Z", 1, 2)]
     with pytest.raises(KeyError):
         fixtures_to_team_rows(fixtures, teams, season="2023-24")
-
-
-from unittest.mock import MagicMock  # noqa: E402
-
-from fantasy_football.extraction.fixtures import (
-    build_current_fixtures,  # noqa: E402
-)
-from fantasy_football.fpl_types import (  # noqa: E402
-    FplFixture,
-    FplFixtures,
-    FplTeamInfo,
-)
 
 
 def _team(id: int, name: str) -> FplTeamInfo:
@@ -186,20 +194,6 @@ def test_build_vaastav_fixtures_drops_unscheduled_rows() -> None:
     result = build_vaastav_fixtures("2023-24", extractor)
     assert result.height == 2  # only the one scheduled fixture, exploded
     assert result["gw"].unique().to_list() == [1]
-
-
-import requests  # noqa: E402,F401  (used to raise HTTPError in a test)
-
-from fantasy_football.extraction.fixtures import load_fixtures  # noqa: E402
-from fantasy_football.extraction.seasons import (  # noqa: E402
-    DataSource,
-    source_for_season,
-)
-from fantasy_football.storage.database import (  # noqa: E402
-    fixture_seasons_present,
-    get_connection,
-    load_team_fixture,
-)
 
 
 def _seed_player_week(conn, seasons) -> None:

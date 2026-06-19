@@ -1,12 +1,3 @@
-"""Build the ``team_fixture`` table from true fixture lists.
-
-Historic seasons come from Vaastav's per-season ``fixtures.csv``; the current
-live season comes from the FPL ``/api/fixtures/`` endpoint. Both sources are
-FPL-shaped (gameweek, ISO kickoff string, home/away team ids), so a single
-transform explodes each fixture into two team-perspective rows. See
-``docs/superpowers/specs/2026-06-17-team-fixture-table-design.md``.
-"""
-
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING

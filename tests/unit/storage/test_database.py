@@ -1,10 +1,18 @@
+from datetime import datetime
 from pathlib import Path
 
 import duckdb
 import polars as pl  # noqa: F401  # used by later tasks appended to this file
 import pytest  # noqa: F401  # used by later tasks appended to this file
 
-from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.database import (
+    PLAYER_WEEK_COLUMNS,
+    TEAM_FIXTURE_COLUMNS,
+    coerce_player_week,
+    coerce_team_fixture,
+    get_connection,
+    load_team_fixture,
+)
 
 
 def test_get_connection_creates_player_week_table(tmp_path: Path) -> None:
@@ -48,12 +56,6 @@ def test_get_connection_is_idempotent(tmp_path: Path) -> None:
     finally:
         second.close()
     assert count == 0
-
-
-from fantasy_football.storage.database import (  # noqa: E402
-    PLAYER_WEEK_COLUMNS,
-    coerce_player_week,
-)
 
 
 def test_coerce_player_week_normalises_gkp_and_selects_columns() -> None:
@@ -277,14 +279,6 @@ def test_reset_database_empties_the_table(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # team_fixture tests
 # ---------------------------------------------------------------------------
-
-from datetime import datetime  # noqa: E402
-
-from fantasy_football.storage.database import (  # noqa: E402
-    TEAM_FIXTURE_COLUMNS,
-    coerce_team_fixture,
-    load_team_fixture,
-)
 
 
 def _conn(tmp_path) -> duckdb.DuckDBPyConnection:
