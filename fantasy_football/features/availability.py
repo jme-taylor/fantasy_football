@@ -76,6 +76,7 @@ def add_chance_of_playing(
         ),
         on=["season", "gw", "element"],
         how="left",
+        coalesce=True,
     )
     return joined.with_columns(
         pl.col("chance_of_playing_this_round").fill_null(100)

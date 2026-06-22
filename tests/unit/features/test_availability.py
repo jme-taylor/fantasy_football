@@ -130,3 +130,38 @@ def test_add_chance_of_playing_defaults_uncovered_to_100() -> None:
     result = add_chance_of_playing(data, availability)
     assert result["chance_of_playing_this_round"].to_list() == [100]
     assert result.height == 1
+
+
+def test_add_chance_of_playing_mixed_rows_no_fan_out_or_key_leak() -> None:
+    """Two rows — one matched, one unmatched — produce exactly two output rows.
+
+    Asserts:
+    - The matched row keeps its availability value (25).
+    - The unmatched row defaults to 100.
+    - No rows are dropped or duplicated (height == 2).
+    - No duplicate key columns (season_right, gw_right, element_right) appear.
+    """
+    data = pl.DataFrame(
+        {
+            "season": ["2022-23", "2022-23"],
+            "gw": [1, 2],
+            "element": [10, 99],
+            "minutes": [90, 0],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "element": [10],
+            "chance_of_playing_this_round": [25],
+        }
+    )
+
+    result = add_chance_of_playing(data, availability)
+
+    assert result.height == 2
+    assert result["chance_of_playing_this_round"].to_list() == [25, 100]
+    assert "season_right" not in result.columns
+    assert "gw_right" not in result.columns
+    assert "element_right" not in result.columns
