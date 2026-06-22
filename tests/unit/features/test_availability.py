@@ -3,6 +3,7 @@ import pytest
 
 from fantasy_football.features.availability import (
     add_chance_of_playing,
+    add_positional_availability,
     add_rolling_minutes,
 )
 
@@ -165,3 +166,108 @@ def test_add_chance_of_playing_mixed_rows_no_fan_out_or_key_leak() -> None:
     assert "season_right" not in result.columns
     assert "gw_right" not in result.columns
     assert "element_right" not in result.columns
+
+
+@pytest.fixture
+def sample_positional_data() -> pl.DataFrame:
+    """One club+position group at a single gameweek, with mixed fitness.
+
+    Arsenal DEF: element 1 (value 60, fit), element 2 (value 55, doubtful),
+    element 3 (value 50, fit), element 4 (value 50, fit). Element 5 is an
+    Arsenal MID and must never be counted as a DEF rival.
+    """
+    return pl.DataFrame(
+        {
+            "season": ["2024-25"] * 5,
+            "gw": [1] * 5,
+            "team": ["ARS"] * 5,
+            "position": ["DEF", "DEF", "DEF", "DEF", "MID"],
+            "element": [1, 2, 3, 4, 5],
+            "value": [60, 55, 50, 50, 80],
+            "chance_of_playing_this_round": [100, 50, 100, 100, 100],
+        }
+    )
+
+
+def test_positional_availability_counts_fit_rivals_excluding_self(
+    sample_positional_data: pl.DataFrame,
+) -> None:
+    """fit_rivals_same_pos counts fit same-position teammates, never self."""
+    result = add_positional_availability(
+        sample_positional_data, fit_threshold=75
+    )
+    by_element = {
+        row["element"]: row["fit_rivals_same_pos"]
+        for row in result.iter_rows(named=True)
+    }
+    # DEF group fit members: 1, 3, 4 (element 2 is doubtful at 50).
+    # Element 1 is fit; its fit DEF rivals are 3 and 4 -> 2.
+    assert by_element[1] == 2
+    # Element 2 is doubtful; fit DEF rivals are 1, 3, 4 -> 3.
+    assert by_element[2] == 3
+    # Element 3 is fit; fit DEF rivals are 1 and 4 -> 2.
+    assert by_element[3] == 2
+    # Element 5 is the lone MID -> no same-position rivals.
+    assert by_element[5] == 0
+
+
+def test_positional_availability_ahead_uses_strict_value_and_fitness(
+    sample_positional_data: pl.DataFrame,
+) -> None:
+    """fit_rivals_ahead counts only fit teammates with strictly higher value."""
+    result = add_positional_availability(
+        sample_positional_data, fit_threshold=75
+    )
+    by_element = {
+        row["element"]: row["fit_rivals_ahead"]
+        for row in result.iter_rows(named=True)
+    }
+    # Element 1 (value 60) is the most expensive DEF -> nobody ahead -> 0.
+    assert by_element[1] == 0
+    # Element 2 (value 55): only element 1 (60) is higher AND fit -> 1.
+    assert by_element[2] == 1
+    # Element 3 (value 50): higher-valued are 1 (fit) and 2 (doubtful) -> 1.
+    assert by_element[3] == 1
+    # Element 4 (value 50): equal-valued element 3 does NOT block (strict >);
+    # higher-valued fit is only element 1 -> 1.
+    assert by_element[4] == 1
+
+
+def test_positional_availability_respects_threshold(
+    sample_positional_data: pl.DataFrame,
+) -> None:
+    """Raising the threshold above a rival's chance drops them from the counts."""
+    # At threshold 100, element 2 (chance 50) is already excluded; nothing changes
+    # for the 100-chance players. Lower threshold to 50 to make element 2 count.
+    result = add_positional_availability(
+        sample_positional_data, fit_threshold=50
+    )
+    by_element = {
+        row["element"]: row["fit_rivals_ahead"]
+        for row in result.iter_rows(named=True)
+    }
+    # With element 2 (value 55) now fit, element 3 (value 50) has 1 (60) and
+    # 2 (55) ahead -> 2.
+    assert by_element[3] == 2
+
+
+def test_positional_availability_null_chance_counts_as_fit() -> None:
+    """A null chance (upstream fills to 100) is treated as fit."""
+    data = pl.DataFrame(
+        {
+            "season": ["2024-25", "2024-25"],
+            "gw": [1, 1],
+            "team": ["ARS", "ARS"],
+            "position": ["DEF", "DEF"],
+            "element": [1, 2],
+            "value": [60, 50],
+            "chance_of_playing_this_round": [None, 100],
+        }
+    )
+    result = add_positional_availability(data, fit_threshold=75)
+    by_element = {
+        row["element"]: row["fit_rivals_same_pos"]
+        for row in result.iter_rows(named=True)
+    }
+    # Element 2 sees element 1 as a fit rival because null is treated as fit.
+    assert by_element[2] == 1

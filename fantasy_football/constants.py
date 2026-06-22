@@ -26,6 +26,10 @@ VASTAAV_BRIDGE_SEASONS: list[str] = ["2024-25"]
 
 # Prediction model tunables
 ROLLING_WINDOW: int = 5
+# A player counts as "fit" for positional-availability features when their
+# chance_of_playing_this_round is at or above this percentage. FPL reports
+# chance on a 0/25/50/75/100 scale, so 75 means "likely to play".
+FIT_THRESHOLD: int = 75
 OPPONENT_FACTOR_EXPONENT: float = 1.0
 HOME_FACTOR: float = 1.10
 AWAY_FACTOR: float = 0.90
