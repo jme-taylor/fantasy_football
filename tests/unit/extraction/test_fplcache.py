@@ -177,6 +177,7 @@ def test_season_event_deadlines_falls_back_to_latest_snapshot(
 
     deadlines = extractor.season_event_deadlines("2025-26")
     assert deadlines[1] == datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc)
+    assert deadlines[1].year == 2025
     latest.assert_called_once()
 
 
