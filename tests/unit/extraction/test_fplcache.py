@@ -124,6 +124,174 @@ def test_snapshot_path_for_rolls_to_next_day(mocker: MockerFixture) -> None:
     )
 
 
+def test_season_probe_datetime_uses_october_of_start_year() -> None:
+    """The probe lands inside the season so its snapshot has all deadlines."""
+    extractor = _make_extractor()
+    assert extractor._season_probe_datetime("2022-23") == datetime(
+        2022, 10, 1, tzinfo=timezone.utc
+    )
+
+
+def test_season_event_deadlines_reads_in_season_snapshot(
+    mocker: MockerFixture,
+) -> None:
+    """Deadlines come from a snapshot within the requested season."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "_snapshot_path_for", return_value="cache/in-season.json.xz"
+    )
+    mocker.patch.object(
+        extractor,
+        "_read_snapshot",
+        return_value={
+            "events": [
+                {"id": 1, "deadline_time": "2022-08-05T17:30:00Z"},
+                {"id": 2, "deadline_time": "2022-08-13T10:00:00Z"},
+            ]
+        },
+    )
+
+    deadlines = extractor.season_event_deadlines("2022-23")
+    assert deadlines[1] == datetime(2022, 8, 5, 17, 30, tzinfo=timezone.utc)
+    assert deadlines[2] == datetime(2022, 8, 13, 10, 0, tzinfo=timezone.utc)
+
+
+def test_season_event_deadlines_falls_back_to_latest_snapshot(
+    mocker: MockerFixture,
+) -> None:
+    """If no in-season probe snapshot exists, use the latest snapshot."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "_snapshot_path_for", side_effect=ValueError("none")
+    )
+    latest = mocker.patch.object(
+        extractor, "_latest_snapshot_path", return_value="cache/latest.json.xz"
+    )
+    mocker.patch.object(
+        extractor,
+        "_read_snapshot",
+        return_value={
+            "events": [{"id": 1, "deadline_time": "2025-08-15T17:30:00Z"}]
+        },
+    )
+
+    deadlines = extractor.season_event_deadlines("2025-26")
+    assert deadlines[1] == datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc)
+    latest.assert_called_once()
+
+
+def test_build_player_chance_of_playing_coalesces_null_to_100(
+    mocker: MockerFixture,
+) -> None:
+    """A null chance means no injury doubt and is stored as 100."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor,
+        "season_event_deadlines",
+        return_value={
+            1: datetime(2022, 8, 5, 17, 30, tzinfo=timezone.utc),
+            2: datetime(2022, 8, 13, 10, 0, tzinfo=timezone.utc),
+        },
+    )
+    mocker.patch.object(
+        extractor,
+        "_snapshot_path_for",
+        side_effect=lambda d: f"cache/{d.day}.json.xz",
+    )
+    snapshots = {
+        "cache/5.json.xz": {
+            "elements": [
+                {"id": 10, "chance_of_playing_this_round": None},
+                {"id": 11, "chance_of_playing_this_round": 25},
+            ]
+        },
+        "cache/13.json.xz": {
+            "elements": [
+                {"id": 10, "chance_of_playing_this_round": 100},
+                {"id": 11, "chance_of_playing_this_round": None},
+            ]
+        },
+    }
+    mocker.patch.object(
+        extractor, "_read_snapshot", side_effect=lambda p: snapshots[p]
+    )
+
+    result = extractor.build_player_chance_of_playing("2022-23").sort(
+        ["gw", "element"]
+    )
+    assert result.columns == [
+        "season",
+        "gw",
+        "element",
+        "chance_of_playing_this_round",
+    ]
+    assert result.to_dicts() == [
+        {
+            "season": "2022-23",
+            "gw": 1,
+            "element": 10,
+            "chance_of_playing_this_round": 100,
+        },
+        {
+            "season": "2022-23",
+            "gw": 1,
+            "element": 11,
+            "chance_of_playing_this_round": 25,
+        },
+        {
+            "season": "2022-23",
+            "gw": 2,
+            "element": 10,
+            "chance_of_playing_this_round": 100,
+        },
+        {
+            "season": "2022-23",
+            "gw": 2,
+            "element": 11,
+            "chance_of_playing_this_round": 100,
+        },
+    ]
+
+
+def test_build_player_chance_of_playing_skips_missing_snapshot(
+    mocker: MockerFixture,
+) -> None:
+    """A gameweek with no snapshot yet is skipped, not fatal."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor,
+        "season_event_deadlines",
+        return_value={
+            1: datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc),
+            2: datetime(2025, 8, 22, 17, 30, tzinfo=timezone.utc),
+        },
+    )
+
+    def fake_path(deadline: datetime) -> str:
+        if deadline.day == 22:
+            raise ValueError("no snapshot yet")
+        return "cache/15.json.xz"
+
+    mocker.patch.object(extractor, "_snapshot_path_for", side_effect=fake_path)
+    mocker.patch.object(
+        extractor,
+        "_read_snapshot",
+        return_value={
+            "elements": [{"id": 10, "chance_of_playing_this_round": 75}]
+        },
+    )
+
+    result = extractor.build_player_chance_of_playing("2025-26")
+    assert result.to_dicts() == [
+        {
+            "season": "2025-26",
+            "gw": 1,
+            "element": 10,
+            "chance_of_playing_this_round": 75,
+        }
+    ]
+
+
 def test_build_player_gw_team_emits_per_gw_team_code(
     mocker: MockerFixture,
 ) -> None:
