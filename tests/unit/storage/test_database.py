@@ -556,3 +556,58 @@ def test_load_player_match_round_trips_ordered(tmp_path: Path) -> None:
         connection.close()
     assert out.columns == PLAYER_MATCH_COLUMNS
     assert out["gw"].to_list() == [1, 2]
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    load_player_availability,
+    upsert_current_player_availability,
+    write_immutable_player_availability,
+)
+
+
+def _availability_frame(season: str, chance: int) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": [season],
+            "gw": [1],
+            "element": [10],
+            "chance_of_playing_this_round": [chance],
+        }
+    )
+
+
+def test_write_immutable_player_availability_inserts_once(tmp_path) -> None:
+    """A completed season is inserted once and not duplicated on re-write."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        write_immutable_player_availability(
+            connection, _availability_frame("2022-23", 75), "2022-23"
+        )
+        # Second write with a different value must be ignored (already present).
+        write_immutable_player_availability(
+            connection, _availability_frame("2022-23", 0), "2022-23"
+        )
+        out = load_player_availability(connection)
+    finally:
+        connection.close()
+
+    assert out.height == 1
+    assert out["chance_of_playing_this_round"].to_list() == [75]
+
+
+def test_upsert_current_player_availability_replaces_season(tmp_path) -> None:
+    """Upsert replaces all rows for the season with the fresh frame."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        upsert_current_player_availability(
+            connection, _availability_frame("2025-26", 50), "2025-26"
+        )
+        upsert_current_player_availability(
+            connection, _availability_frame("2025-26", 100), "2025-26"
+        )
+        out = load_player_availability(connection)
+    finally:
+        connection.close()
+
+    assert out.height == 1
+    assert out["chance_of_playing_this_round"].to_list() == [100]
