@@ -1,7 +1,10 @@
 import polars as pl
 import pytest
 
-from fantasy_football.features.availability import add_rolling_minutes
+from fantasy_football.features.availability import (
+    add_chance_of_playing,
+    add_rolling_minutes,
+)
 
 
 @pytest.fixture
@@ -90,3 +93,40 @@ def test_add_rolling_minutes_does_not_bleed_across_seasons() -> None:
     assert by_key[("2021-22", 1)] is None
     # 2021-22 GW2 averages only 2021-22 GW1 (0), not last season's 90s.
     assert by_key[("2021-22", 2)] == pytest.approx(0.0)
+
+
+def test_add_chance_of_playing_joins_known_value() -> None:
+    """A covered (season, gw, element) keeps its availability percentage."""
+    data = pl.DataFrame(
+        {"season": ["2022-23"], "gw": [1], "element": [10], "minutes": [90]}
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "element": [10],
+            "chance_of_playing_this_round": [25],
+        }
+    )
+
+    result = add_chance_of_playing(data, availability)
+    assert result["chance_of_playing_this_round"].to_list() == [25]
+
+
+def test_add_chance_of_playing_defaults_uncovered_to_100() -> None:
+    """An (season, gw, element) absent from availability defaults to 100."""
+    data = pl.DataFrame(
+        {"season": ["2022-23"], "gw": [2], "element": [99], "minutes": [0]}
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "element": [10],
+            "chance_of_playing_this_round": [25],
+        }
+    )
+
+    result = add_chance_of_playing(data, availability)
+    assert result["chance_of_playing_this_round"].to_list() == [100]
+    assert result.height == 1
