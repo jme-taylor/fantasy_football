@@ -68,6 +68,17 @@ native per-fixture minutes and points.
 > `player_match` backfill before the rollover; historic Vaastav data has no
 > such deadline.
 
+A `player_availability` table holds **one row per `(season, gw, element)`**,
+capturing FPL's point-in-time availability percentage for each player at the
+deadline of each gameweek. The key column is `chance_of_playing_this_round` —
+FPL's 0/25/50/75 percentage signal; `null` (no injury doubt) is stored as
+`100`. The source is the [Randdalf/fplcache](https://github.com/Randdalf/fplcache)
+bootstrap snapshot at each gameweek's deadline, the same source already used to
+derive per-gameweek `team_code`. Coverage starts from `2022-23` (fplcache's
+earliest snapshots); completed seasons are backfilled once and the current
+season is upserted each run. The feature is exposed to the minutes model via
+`features.availability.add_chance_of_playing`.
+
 ## Roadmap
 
 The high-level milestones are:
