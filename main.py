@@ -5,6 +5,9 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from fantasy_football.constants import CURRENT_SEASON, TRANSFORMED_DATA_FOLDER
+from fantasy_football.extraction.availability import (
+    load_player_availability_data,
+)
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fci import FciExtractor
 from fantasy_football.extraction.fixtures import load_fixtures
@@ -113,6 +116,7 @@ def main(
         update_current_season(CURRENT_SEASON, connection)
         load_fixtures(connection, CURRENT_SEASON)
         load_player_match_data(CURRENT_SEASON, connection)
+        load_player_availability_data(connection, CURRENT_SEASON)
     finally:
         connection.close()
 
@@ -152,4 +156,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(rebuild=True, team_file="data/dummy_team.json")
+    main(rebuild=False, team_file="data/dummy_team.json")
