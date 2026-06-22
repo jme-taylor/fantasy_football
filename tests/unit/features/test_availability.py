@@ -251,6 +251,38 @@ def test_positional_availability_respects_threshold(
     assert by_element[3] == 2
 
 
+def test_positional_availability_fit_threshold_boundary() -> None:
+    """chance_of_playing exactly equal to fit_threshold (75) counts as fit.
+
+    Boundary conditions under the default threshold of 75:
+    - A rival at exactly 75 IS counted (>= is inclusive).
+    - A rival at 74 is NOT counted (strictly below threshold).
+    """
+    data = pl.DataFrame(
+        {
+            "season": ["2024-25", "2024-25", "2024-25"],
+            "gw": [1, 1, 1],
+            "team": ["ARS", "ARS", "ARS"],
+            "position": ["MID", "MID", "MID"],
+            "element": [1, 2, 3],
+            "value": [70, 65, 60],
+            "chance_of_playing_this_round": [100, 75, 74],
+        }
+    )
+    result = add_positional_availability(data)
+    by_element = {
+        row["element"]: row["fit_rivals_same_pos"]
+        for row in result.iter_rows(named=True)
+    }
+    # Elements 1 (100) and 2 (75) are fit; element 3 (74) is not.
+    # Element 1: fit rivals are element 2 only -> 1.
+    assert by_element[1] == 1
+    # Element 2 (exactly 75, the boundary): fit rivals are element 1 only -> 1.
+    assert by_element[2] == 1
+    # Element 3 (74, just below threshold): fit rivals are elements 1 and 2 -> 2.
+    assert by_element[3] == 2
+
+
 def test_positional_availability_null_chance_counts_as_fit() -> None:
     """A null chance (upstream fills to 100) is treated as fit."""
     data = pl.DataFrame(
