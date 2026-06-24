@@ -20,6 +20,7 @@ from fantasy_football.features.fixtures import build_fixtures_enriched
 from fantasy_football.features.transformation import create_rolling_points_data
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.modelling.evaluation import run_evaluation
+from fantasy_football.modelling.minutes import run_minutes_model
 from fantasy_football.modelling.prediction import predict_points
 from fantasy_football.optimisation.optimiser import optimise_plan
 from fantasy_football.optimisation.team_input import (
@@ -33,6 +34,21 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
+
+
+def _train_minutes_model() -> None:
+    """Train and score the minutes model, never letting it block the plan.
+
+    The minutes model runs on every data refresh, but a modelling failure must
+    not abort prediction and optimisation, so any exception is logged and
+    swallowed.
+    """
+    try:
+        run_minutes_model()
+    except Exception:  # noqa: BLE001 - modelling must never block the plan
+        logger.exception(
+            "Minutes model training/scoring failed; continuing without it."
+        )
 
 
 def update_current_season(
@@ -123,6 +139,7 @@ def main(
     create_rolling_points_data(CURRENT_SEASON)
     build_fixtures_enriched(CURRENT_SEASON)
     build_team_elo()
+    _train_minutes_model()
     if evaluate:
         run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None
