@@ -1,5 +1,6 @@
 import numpy as np
 import polars as pl
+from sklearn.pipeline import Pipeline
 
 from fantasy_football.modelling.minutes import (
     BUCKET_PARTIAL,
@@ -11,8 +12,10 @@ from fantasy_football.modelling.minutes import (
     build_feature_frame,
     build_model_frame,
     create_minutes_bucket,
+    cross_validate,
     make_pipeline,
     season_folds,
+    train_final,
 )
 
 
@@ -173,3 +176,64 @@ def test_make_pipeline_fits_and_predicts_proba() -> None:
     proba = pipe.predict_proba(df.select(FEATURES).to_pandas())
 
     assert proba.shape == (n, len(set(df["minutes_bucket"].to_list())))
+
+
+def _synthetic_model_df(seasons: list[str], per_season: int = 60) -> pl.DataFrame:
+    """A model frame with a learnable signal across several seasons."""
+    rng = np.random.default_rng(1)
+    rows = []
+    for season in seasons:
+        for _ in range(per_season):
+            rank = int(rng.integers(1, 6))
+            # Higher-ranked (lower number) players play more.
+            if rank <= 2:
+                bucket = BUCKET_SIXTY_PLUS
+                minutes = 90
+            elif rank == 3:
+                bucket = BUCKET_PARTIAL
+                minutes = 30
+            else:
+                bucket = BUCKET_ZERO
+                minutes = 0
+            rows.append(
+                {
+                    "season": season,
+                    "value": int(rng.integers(40, 120)),
+                    "value_share_of_team": float(rng.random()),
+                    "pos_value_rank": rank,
+                    "players_same_pos": 5,
+                    "chance_of_playing_this_round": 100,
+                    "fit_rivals_same_pos": rank - 1,
+                    "fit_rivals_ahead": rank - 1,
+                    "position": rng.choice(["DEF", "MID", "FWD"]),
+                    "minutes": minutes,
+                    "minutes_bucket": bucket,
+                }
+            )
+    return pl.DataFrame(rows)
+
+
+def test_cross_validate_returns_per_fold_and_aggregate() -> None:
+    """One metric dict per fold, plus mean/std aggregates over shared keys."""
+    seasons = ["2022-23", "2023-24", "2024-25"]
+    df = _synthetic_model_df(seasons)
+    folds = season_folds(seasons)
+
+    per_fold, agg = cross_validate(df, folds)
+
+    assert len(per_fold) == len(folds)
+    assert "logloss_60_mean" in agg
+    assert "logloss_60_std" in agg
+    # Learnable signal -> better-than-chance appearance separation.
+    assert agg["logloss_appear_mean"] < 0.69
+
+
+def test_train_final_fits_on_all_rows() -> None:
+    """train_final returns a fitted pipeline that predicts probabilities."""
+    df = _synthetic_model_df(["2022-23", "2023-24"])
+
+    model = train_final(df)
+
+    assert isinstance(model, Pipeline)
+    proba = model.predict_proba(df.select(FEATURES).to_pandas())
+    assert proba.shape[0] == df.height

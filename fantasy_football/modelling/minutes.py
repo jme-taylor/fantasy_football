@@ -312,3 +312,80 @@ def boundary_metrics(
     out["e_app_mae"] = float(np.mean(np.abs(expected_app - true_app)))
 
     return out
+
+
+def _fit_predict_fold(
+    train_df: pl.DataFrame, test_df: pl.DataFrame
+) -> dict[str, float]:
+    """Fit a fresh pipeline on the train split and score the test split."""
+    pipe = make_pipeline()
+    pipe.fit(
+        train_df.select(FEATURES).to_pandas(),
+        train_df["minutes_bucket"].to_list(),
+    )
+    proba = pipe.predict_proba(test_df.select(FEATURES).to_pandas())
+    return boundary_metrics(
+        test_df["minutes_bucket"].to_list(),
+        proba,
+        list(pipe.classes_),
+        test_df["minutes"].to_list(),
+    )
+
+
+def cross_validate(
+    model_df: pl.DataFrame, folds: list[tuple[list[str], str]]
+) -> tuple[list[dict[str, float]], dict[str, float]]:
+    """Score the model over expanding-window folds.
+
+    Parameters
+    ----------
+    model_df : pl.DataFrame
+        Output of :func:`assemble_model_frame` (or an equivalent frame).
+    folds : list[tuple[list[str], str]]
+        ``(train_seasons, test_season)`` pairs from :func:`season_folds`.
+
+    Returns
+    -------
+    tuple[list[dict], dict]
+        Per-fold metric dicts, and an aggregate dict with ``{metric}_mean`` and
+        ``{metric}_std`` for every metric present in all folds.
+    """
+    per_fold: list[dict[str, float]] = []
+    for train_seasons, test_season in folds:
+        train_df = model_df.filter(pl.col("season").is_in(train_seasons))
+        test_df = model_df.filter(pl.col("season") == test_season)
+        if train_df.is_empty() or test_df.is_empty():
+            continue
+        per_fold.append(_fit_predict_fold(train_df, test_df))
+
+    agg: dict[str, float] = {}
+    if per_fold:
+        shared = set(per_fold[0])
+        for metrics in per_fold[1:]:
+            shared &= set(metrics)
+        for key in sorted(shared):
+            values = [metrics[key] for metrics in per_fold]
+            agg[f"{key}_mean"] = float(np.mean(values))
+            agg[f"{key}_std"] = float(np.std(values))
+    return per_fold, agg
+
+
+def train_final(model_df: pl.DataFrame) -> Pipeline:
+    """Fit the pipeline on every row in ``model_df``.
+
+    Parameters
+    ----------
+    model_df : pl.DataFrame
+        The full model frame (all seasons).
+
+    Returns
+    -------
+    sklearn.pipeline.Pipeline
+        The fitted pipeline.
+    """
+    pipe = make_pipeline()
+    pipe.fit(
+        model_df.select(FEATURES).to_pandas(),
+        model_df["minutes_bucket"].to_list(),
+    )
+    return pipe
