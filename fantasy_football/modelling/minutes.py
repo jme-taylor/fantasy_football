@@ -10,7 +10,18 @@ then refit on all seasons and logged to MLflow.
 
 import logging
 
+import numpy as np
 import polars as pl
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    brier_score_loss,
+    log_loss,
+    roc_auc_score,
+)
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from fantasy_football.features.availability import (
     add_chance_of_playing,
@@ -171,3 +182,133 @@ def assemble_model_frame() -> pl.DataFrame:
         load_player_week(), load_player_availability()
     )
     return build_model_frame(load_player_match(), feature_frame)
+
+
+def make_pipeline() -> Pipeline:
+    """Build the logistic-regression pipeline.
+
+    Numeric features are median-imputed then standardised; the categorical
+    ``position`` is one-hot encoded. All preprocessing lives inside the pipeline
+    so it is refit per CV fold on train data only.
+
+    Returns
+    -------
+    sklearn.pipeline.Pipeline
+        Unfitted pipeline ending in ``LogisticRegression(max_iter=1000)``.
+    """
+    preprocessor = ColumnTransformer(
+        [
+            (
+                "num",
+                Pipeline(
+                    [
+                        ("impute", SimpleImputer(strategy="median")),
+                        ("scale", StandardScaler()),
+                    ]
+                ),
+                NUM_FEATURES,
+            ),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), CAT_FEATURES),
+        ]
+    )
+    return Pipeline(
+        [
+            ("prep", preprocessor),
+            ("clf", LogisticRegression(max_iter=1000)),
+        ]
+    )
+
+
+def season_folds(seasons: list[str]) -> list[tuple[list[str], str]]:
+    """Build expanding-window CV folds over sorted seasons.
+
+    Each fold trains on every prior season and tests on the next unseen one,
+    mirroring deployment. Requires at least two seasons.
+
+    Parameters
+    ----------
+    seasons : list[str]
+        Season strings; sorted ascending internally.
+
+    Returns
+    -------
+    list[tuple[list[str], str]]
+        ``(train_seasons, test_season)`` pairs.
+    """
+    ordered = sorted(seasons)
+    return [(ordered[:i], ordered[i]) for i in range(1, len(ordered))]
+
+
+def _boundary_column(
+    proba: np.ndarray, classes: list[str], label: str
+) -> np.ndarray:
+    """Return the probability column for ``label`` (zeros if absent)."""
+    classes = list(classes)
+    if label in classes:
+        return proba[:, classes.index(label)]
+    return np.zeros(proba.shape[0])
+
+
+def boundary_metrics(
+    y_true_bucket: list[str],
+    proba: np.ndarray,
+    classes: list[str],
+    true_minutes: list[float],
+) -> dict[str, float]:
+    """Score the appearance and 60-minute decision boundaries.
+
+    Parameters
+    ----------
+    y_true_bucket : list[str]
+        True minutes-bucket labels.
+    proba : np.ndarray
+        ``predict_proba`` output, columns aligned to ``classes``.
+    classes : list[str]
+        The classifier's ``classes_`` (column order of ``proba``).
+    true_minutes : list[float]
+        Actual minutes, for the expected-minutes leverage metric.
+
+    Returns
+    -------
+    dict[str, float]
+        ``logloss_appear``, ``brier_appear``, ``logloss_60``, ``brier_60``,
+        ``e_min_mae``, ``e_app_mae`` always; ``auc_appear`` / ``auc_60`` only
+        when that boundary's test rows contain both classes.
+    """
+    y_true = np.asarray(y_true_bucket)
+    minutes = np.asarray(true_minutes, dtype=float)
+
+    p_60 = _boundary_column(proba, classes, BUCKET_SIXTY_PLUS)
+    p_partial = _boundary_column(proba, classes, BUCKET_PARTIAL)
+    p_appear = p_partial + p_60
+
+    y_appear = (y_true != BUCKET_ZERO).astype(int)
+    y_60 = (y_true == BUCKET_SIXTY_PLUS).astype(int)
+
+    out: dict[str, float] = {
+        "logloss_appear": float(
+            log_loss(y_appear, p_appear, labels=[0, 1])
+        ),
+        "brier_appear": float(brier_score_loss(y_appear, p_appear)),
+        "logloss_60": float(log_loss(y_60, p_60, labels=[0, 1])),
+        "brier_60": float(brier_score_loss(y_60, p_60)),
+    }
+    if len(np.unique(y_appear)) == 2:
+        out["auc_appear"] = float(roc_auc_score(y_appear, p_appear))
+    if len(np.unique(y_60)) == 2:
+        out["auc_60"] = float(roc_auc_score(y_60, p_60))
+
+    expected_minutes = (
+        p_partial * MINUTE_MIDPOINTS[BUCKET_PARTIAL]
+        + p_60 * MINUTE_MIDPOINTS[BUCKET_SIXTY_PLUS]
+    )
+    out["e_min_mae"] = float(np.mean(np.abs(expected_minutes - minutes)))
+
+    expected_app = (
+        p_partial * APPEARANCE_POINTS[BUCKET_PARTIAL]
+        + p_60 * APPEARANCE_POINTS[BUCKET_SIXTY_PLUS]
+    )
+    true_app = np.where(minutes >= 60, 2.0, np.where(minutes > 0, 1.0, 0.0))
+    out["e_app_mae"] = float(np.mean(np.abs(expected_app - true_app)))
+
+    return out

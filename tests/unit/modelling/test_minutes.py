@@ -1,3 +1,4 @@
+import numpy as np
 import polars as pl
 
 from fantasy_football.modelling.minutes import (
@@ -5,9 +6,13 @@ from fantasy_football.modelling.minutes import (
     BUCKET_SIXTY_PLUS,
     BUCKET_ZERO,
     FEATURES,
+    MINUTES_BUCKETS,
+    boundary_metrics,
     build_feature_frame,
     build_model_frame,
     create_minutes_bucket,
+    make_pipeline,
+    season_folds,
 )
 
 
@@ -99,3 +104,72 @@ def test_build_model_frame_joins_features_onto_matches() -> None:
     assert buckets[3] == BUCKET_PARTIAL
     for column in ["minutes", "minutes_bucket", *FEATURES]:
         assert column in model_frame.columns
+
+
+def test_season_folds_expanding_window() -> None:
+    """Each fold trains on all prior seasons and tests on the next one."""
+    seasons = ["2022-23", "2023-24", "2024-25", "2025-26"]
+
+    folds = season_folds(seasons)
+
+    assert folds == [
+        (["2022-23"], "2023-24"),
+        (["2022-23", "2023-24"], "2024-25"),
+        (["2022-23", "2023-24", "2024-25"], "2025-26"),
+    ]
+
+
+def test_boundary_metrics_perfect_predictions() -> None:
+    """Confident, correct probabilities give ~0 loss and AUC 1.0."""
+    classes = MINUTES_BUCKETS  # ["0_minutes", "1_to_59_minutes", "60_minutes_plus"]
+    y_true = [BUCKET_ZERO, BUCKET_SIXTY_PLUS]
+    true_minutes = [0, 90]
+    # rows: benched (col 0), full shift (col 2).
+    proba = np.array([[0.99, 0.005, 0.005], [0.005, 0.005, 0.99]])
+
+    m = boundary_metrics(y_true, proba, classes, true_minutes)
+
+    assert m["logloss_appear"] < 0.05
+    assert m["logloss_60"] < 0.05
+    assert m["auc_appear"] == 1.0
+    assert m["auc_60"] == 1.0
+    assert m["e_min_mae"] < 20.0
+
+
+def test_boundary_metrics_skips_auc_when_single_class() -> None:
+    """AUC is omitted for a boundary whose test rows are all one class."""
+    classes = MINUTES_BUCKETS
+    y_true = [BUCKET_SIXTY_PLUS, BUCKET_SIXTY_PLUS]  # all appear, all 60+
+    true_minutes = [90, 75]
+    proba = np.array([[0.01, 0.04, 0.95], [0.02, 0.03, 0.95]])
+
+    m = boundary_metrics(y_true, proba, classes, true_minutes)
+
+    assert "auc_appear" not in m
+    assert "auc_60" not in m
+    assert "logloss_60" in m
+
+
+def test_make_pipeline_fits_and_predicts_proba() -> None:
+    """The pipeline trains on a tiny frame and yields 3-class probabilities."""
+    rng = np.random.default_rng(0)
+    n = 30
+    df = pl.DataFrame(
+        {
+            "value": rng.integers(40, 120, n),
+            "value_share_of_team": rng.random(n),
+            "pos_value_rank": rng.integers(1, 6, n),
+            "players_same_pos": rng.integers(1, 6, n),
+            "chance_of_playing_this_round": rng.choice([0, 75, 100], n),
+            "fit_rivals_same_pos": rng.integers(0, 4, n),
+            "fit_rivals_ahead": rng.integers(0, 4, n),
+            "position": rng.choice(["GK", "DEF", "MID", "FWD"], n),
+            "minutes_bucket": rng.choice(MINUTES_BUCKETS, n),
+        }
+    )
+
+    pipe = make_pipeline()
+    pipe.fit(df.select(FEATURES).to_pandas(), df["minutes_bucket"].to_list())
+    proba = pipe.predict_proba(df.select(FEATURES).to_pandas())
+
+    assert proba.shape == (n, len(set(df["minutes_bucket"].to_list())))
