@@ -26,7 +26,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from fantasy_football.constants import MINUTES_EXPERIMENT, MLFLOW_TRACKING_URI
-
 from fantasy_football.features.availability import (
     add_chance_of_playing,
     add_positional_availability,
@@ -440,7 +439,7 @@ def run_minutes_model() -> dict[str, float]:
             for key, value in fold_metrics.items():
                 mlflow.log_metric(key, value, step=step)
         mlflow.log_metrics(agg)
-        mlflow.sklearn.log_model(final_model, artifact_path="model")
+        mlflow.sklearn.log_model(final_model, name="model")
 
     logger.info("Minutes model logged to MLflow: %s", agg)
     return agg

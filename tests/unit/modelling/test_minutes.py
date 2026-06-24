@@ -1,8 +1,10 @@
+from unittest import mock
+
 import numpy as np
 import polars as pl
 from sklearn.pipeline import Pipeline
-from unittest import mock
 
+from fantasy_football.constants import MLFLOW_TRACKING_URI
 from fantasy_football.modelling.minutes import (
     BUCKET_PARTIAL,
     BUCKET_SIXTY_PLUS,
@@ -138,7 +140,7 @@ def test_boundary_metrics_perfect_predictions() -> None:
     assert m["logloss_60"] < 0.05
     assert m["auc_appear"] == 1.0
     assert m["auc_60"] == 1.0
-    assert m["e_min_mae"] < 20.0
+    assert m["e_min_mae"] < 9.0
 
 
 def test_boundary_metrics_skips_auc_when_single_class() -> None:
@@ -177,11 +179,11 @@ def test_make_pipeline_fits_and_predicts_proba() -> None:
     pipe.fit(df.select(FEATURES).to_pandas(), df["minutes_bucket"].to_list())
     proba = pipe.predict_proba(df.select(FEATURES).to_pandas())
 
-    assert proba.shape == (n, len(set(df["minutes_bucket"].to_list())))
+    assert proba.shape == (n, len(MINUTES_BUCKETS))
 
 
 def _synthetic_model_df(seasons: list[str], per_season: int = 60) -> pl.DataFrame:
-    """A model frame with a learnable signal across several seasons."""
+    """Return a model frame with a learnable signal across several seasons."""
     rng = np.random.default_rng(1)
     rows = []
     for season in seasons:
@@ -260,6 +262,7 @@ def test_run_minutes_model_logs_to_mlflow() -> None:
         agg = run_minutes_model()
 
     assert "logloss_60_mean" in agg
+    mlflow_mock.set_tracking_uri.assert_called_once_with(MLFLOW_TRACKING_URI)
     mlflow_mock.set_experiment.assert_called_once()
     mlflow_mock.log_params.assert_called_once()
     assert mlflow_mock.log_metric.called  # per-fold metrics
@@ -282,3 +285,33 @@ def test_run_minutes_model_returns_empty_when_one_season() -> None:
 
     assert agg == {}
     mlflow_mock.start_run.assert_not_called()
+
+
+def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
+    """A DGW (two opponents same gw/element) produces two model-frame rows."""
+    feature_frame = build_feature_frame(_player_week(), _availability())
+
+    # Element 1 plays twice in GW1 (opponents 10 and 20 — a double gameweek).
+    player_match = pl.DataFrame(
+        {
+            "season": ["2022-23", "2022-23"],
+            "gw": [1, 1],
+            "element": [1, 1],
+            "opponent": [10, 20],
+            "is_home": [True, False],
+            "minutes": [90, 90],
+            "total_points": [6, 6],
+        }
+    )
+
+    model_frame = build_model_frame(player_match, feature_frame)
+
+    element_1_rows = model_frame.filter(pl.col("element") == 1)
+    assert element_1_rows.height == 2
+    assert element_1_rows["minutes_bucket"].to_list() == [
+        BUCKET_SIXTY_PLUS,
+        BUCKET_SIXTY_PLUS,
+    ]
+    # Both rows share the same player-week features.
+    ranks = element_1_rows["pos_value_rank"].to_list()
+    assert ranks[0] == ranks[1]
