@@ -1,6 +1,7 @@
 import numpy as np
 import polars as pl
 from sklearn.pipeline import Pipeline
+from unittest import mock
 
 from fantasy_football.modelling.minutes import (
     BUCKET_PARTIAL,
@@ -14,6 +15,7 @@ from fantasy_football.modelling.minutes import (
     create_minutes_bucket,
     cross_validate,
     make_pipeline,
+    run_minutes_model,
     season_folds,
     train_final,
 )
@@ -237,3 +239,46 @@ def test_train_final_fits_on_all_rows() -> None:
     assert isinstance(model, Pipeline)
     proba = model.predict_proba(df.select(FEATURES).to_pandas())
     assert proba.shape[0] == df.height
+
+
+def test_run_minutes_model_logs_to_mlflow() -> None:
+    """run_minutes_model logs params, metrics and the model, returns aggregates."""
+    df = _synthetic_model_df(["2022-23", "2023-24", "2024-25"])
+
+    with (
+        mock.patch(
+            "fantasy_football.modelling.minutes.assemble_model_frame",
+            return_value=df,
+        ),
+        mock.patch("fantasy_football.modelling.minutes.mlflow") as mlflow_mock,
+    ):
+        mlflow_mock.start_run.return_value.__enter__ = mock.Mock()
+        mlflow_mock.start_run.return_value.__exit__ = mock.Mock(
+            return_value=False
+        )
+
+        agg = run_minutes_model()
+
+    assert "logloss_60_mean" in agg
+    mlflow_mock.set_experiment.assert_called_once()
+    mlflow_mock.log_params.assert_called_once()
+    assert mlflow_mock.log_metric.called  # per-fold metrics
+    mlflow_mock.log_metrics.assert_called_once_with(agg)
+    mlflow_mock.sklearn.log_model.assert_called_once()
+
+
+def test_run_minutes_model_returns_empty_when_one_season() -> None:
+    """With a single season there are no folds; returns {} without MLflow."""
+    df = _synthetic_model_df(["2022-23"])
+
+    with (
+        mock.patch(
+            "fantasy_football.modelling.minutes.assemble_model_frame",
+            return_value=df,
+        ),
+        mock.patch("fantasy_football.modelling.minutes.mlflow") as mlflow_mock,
+    ):
+        agg = run_minutes_model()
+
+    assert agg == {}
+    mlflow_mock.start_run.assert_not_called()

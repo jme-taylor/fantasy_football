@@ -10,6 +10,8 @@ then refit on all seasons and logged to MLflow.
 
 import logging
 
+import mlflow
+import mlflow.sklearn
 import numpy as np
 import polars as pl
 from sklearn.compose import ColumnTransformer
@@ -22,6 +24,8 @@ from sklearn.metrics import (
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+from fantasy_football.constants import MINUTES_EXPERIMENT, MLFLOW_TRACKING_URI
 
 from fantasy_football.features.availability import (
     add_chance_of_playing,
@@ -389,3 +393,54 @@ def train_final(model_df: pl.DataFrame) -> Pipeline:
         model_df["minutes_bucket"].to_list(),
     )
     return pipe
+
+
+def run_minutes_model() -> dict[str, float]:
+    """Train, cross-validate and log the minutes model to MLflow.
+
+    Assembles the model frame, scores it with expanding-window CV, fits the
+    final pipeline on all seasons, and logs run params, per-fold metrics
+    (stepped), aggregate mean/std metrics and the fitted model to the
+    ``MINUTES_EXPERIMENT`` experiment. With fewer than two seasons there are no
+    folds, so the function logs a warning and returns an empty dict.
+
+    Returns
+    -------
+    dict[str, float]
+        The aggregate metrics (``{metric}_mean`` / ``{metric}_std``), or an
+        empty dict when there is too little data to evaluate.
+    """
+    model_df = assemble_model_frame()
+    seasons = model_df["season"].unique().to_list()
+    folds = season_folds(seasons)
+    if not folds:
+        logger.warning(
+            "Need at least two seasons to evaluate the minutes model; "
+            "found %d. Skipping.",
+            len(seasons),
+        )
+        return {}
+
+    per_fold, agg = cross_validate(model_df, folds)
+    final_model = train_final(model_df)
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(MINUTES_EXPERIMENT)
+    with mlflow.start_run():
+        mlflow.log_params(
+            {
+                "model": "logistic_regression",
+                "max_iter": 1000,
+                "cv": "expanding_window_by_season",
+                "n_folds": len(folds),
+                "n_samples": model_df.height,
+            }
+        )
+        for step, fold_metrics in enumerate(per_fold):
+            for key, value in fold_metrics.items():
+                mlflow.log_metric(key, value, step=step)
+        mlflow.log_metrics(agg)
+        mlflow.sklearn.log_model(final_model, artifact_path="model")
+
+    logger.info("Minutes model logged to MLflow: %s", agg)
+    return agg
