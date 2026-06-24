@@ -50,6 +50,10 @@ EXPERIMENT_BY_POSITION: dict[str, str] = {
     "FWD": "fwd-points-model",
 }
 
+# MLflow experiment for the minutes-played classifier (single experiment;
+# the model is one classifier across all positions, not per-position).
+MINUTES_EXPERIMENT: str = "minutes_played_classification"
+
 # Number of top players per position used for precision@k, sized to the
 # number of squad slots FPL gives each position.
 PRECISION_K_BY_POSITION: dict[str, int] = {
