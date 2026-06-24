@@ -12,6 +12,20 @@ import logging
 
 import polars as pl
 
+from fantasy_football.features.availability import (
+    add_chance_of_playing,
+    add_positional_availability,
+)
+from fantasy_football.features.valuation import (
+    add_positional_value_rank,
+    add_team_value,
+)
+from fantasy_football.storage.database import (
+    load_player_availability,
+    load_player_match,
+    load_player_week,
+)
+
 logger = logging.getLogger(__name__)
 
 # Minutes-bucket target labels.
@@ -76,3 +90,84 @@ def create_minutes_bucket(
         .otherwise(pl.lit(BUCKET_SIXTY_PLUS))
         .alias("minutes_bucket")
     )
+
+
+def build_feature_frame(
+    player_week: pl.DataFrame, availability: pl.DataFrame
+) -> pl.DataFrame:
+    """Build the model feature frame at the player-week grain.
+
+    Value features (``value_share_of_team``, ``pos_value_rank``,
+    ``players_same_pos``) and availability features
+    (``chance_of_playing_this_round``, ``fit_rivals_same_pos``,
+    ``fit_rivals_ahead``) are computed once per ``(season, gw, element)`` so the
+    per-gameweek counts are correct, then narrowed to the columns the model
+    consumes plus the join keys and ``position``.
+
+    Parameters
+    ----------
+    player_week : pl.DataFrame
+        Player-week rows from :func:`load_player_week` (``season``, ``gw``,
+        ``element``, ``position``, ``team``, ``value`` and more).
+    availability : pl.DataFrame
+        Availability rows from :func:`load_player_availability`.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per ``(season, gw, element)`` with ``position`` and every
+        column in ``NUM_FEATURES``.
+    """
+    frame = add_team_value(player_week)
+    frame = add_positional_value_rank(frame)
+    frame = add_chance_of_playing(frame, availability)
+    frame = add_positional_availability(frame)
+    return frame.select(
+        ["season", "gw", "element", "position", *NUM_FEATURES]
+    )
+
+
+def build_model_frame(
+    player_match: pl.DataFrame, feature_frame: pl.DataFrame
+) -> pl.DataFrame:
+    """Join features onto match rows and derive the bucket target.
+
+    Match-level minutes from ``player_match`` define the target (so double
+    gameweeks contribute one row per match). Features are inner-joined on
+    ``(season, gw, element)`` — match rows with no feature row are dropped.
+
+    Parameters
+    ----------
+    player_match : pl.DataFrame
+        Match rows from :func:`load_player_match` (``season``, ``gw``,
+        ``element``, ``minutes`` and more).
+    feature_frame : pl.DataFrame
+        Output of :func:`build_feature_frame`.
+
+    Returns
+    -------
+    pl.DataFrame
+        Columns ``season``, ``gw``, ``element``, ``minutes``,
+        ``minutes_bucket`` and every column in ``FEATURES``.
+    """
+    joined = player_match.select(
+        ["season", "gw", "element", "minutes"]
+    ).join(feature_frame, on=["season", "gw", "element"], how="inner")
+    joined = create_minutes_bucket(joined)
+    return joined.select(
+        ["season", "gw", "element", "minutes", "minutes_bucket", *FEATURES]
+    )
+
+
+def assemble_model_frame() -> pl.DataFrame:
+    """Load player data from the database and build the model frame.
+
+    Returns
+    -------
+    pl.DataFrame
+        The match-level model frame from :func:`build_model_frame`.
+    """
+    feature_frame = build_feature_frame(
+        load_player_week(), load_player_availability()
+    )
+    return build_model_frame(load_player_match(), feature_frame)
