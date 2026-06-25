@@ -20,6 +20,15 @@ from fantasy_football.extraction.extractor import GitHubAPIClient
 
 logger = logging.getLogger(__name__)
 
+# Schema of the per-(season, gw, element) availability frame emitted by
+# build_player_chance_of_playing.
+_CHANCE_OF_PLAYING_SCHEMA: dict[str, pl.DataType] = {
+    "season": pl.Utf8,
+    "gw": pl.Int64,
+    "element": pl.Int64,
+    "chance_of_playing_this_round": pl.Int64,
+}
+
 
 class FplCacheExtractor:
     """Resolve each gameweek's player->team_code map from fplcache snapshots."""
@@ -182,4 +191,110 @@ class FplCacheExtractor:
                     },
                 )
             )
+        return pl.concat(frames, how="vertical")
+
+    def _season_probe_datetime(self, season: str) -> datetime:
+        """Return a datetime reliably inside a season (1 October of its start year).
+
+        Snapshots exist continuously, so the snapshot at or after this instant
+        belongs to ``season`` and carries that season's full deadline list.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2022-23"``.
+
+        Returns
+        -------
+        datetime
+            ``1 October`` of the season's start year, in UTC.
+        """
+        return datetime(int(season[:4]), 10, 1, tzinfo=timezone.utc)
+
+    def season_event_deadlines(self, season: str) -> dict[int, datetime]:
+        """Map gameweek id to deadline for a specific season.
+
+        Reads the ``events`` array from a snapshot taken inside ``season``.
+        Falls back to the latest snapshot when no in-season snapshot exists yet
+        (a freshly started current season before the October probe date).
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2022-23"``.
+
+        Returns
+        -------
+        dict[int, datetime]
+            ``{event_id: deadline_time}`` for the season.
+        """
+        try:
+            path = self._snapshot_path_for(self._season_probe_datetime(season))
+        except ValueError:
+            path = self._latest_snapshot_path()
+        snapshot = self._read_snapshot(path)
+        return {
+            event["id"]: datetime.fromisoformat(
+                event["deadline_time"].replace("Z", "+00:00")
+            )
+            for event in snapshot["events"]
+        }
+
+    def build_player_chance_of_playing(
+        self, season: str, gameweeks: list[int] | None = None
+    ) -> pl.DataFrame:
+        """Build the per-gameweek ``chance_of_playing_this_round`` table.
+
+        For each gameweek, the snapshot at or after that gameweek's deadline
+        gives FPL's point-in-time availability percentage for the upcoming
+        round. ``null`` (no injury doubt) is coalesced to ``100``. Gameweeks
+        with no snapshot yet (future rounds of a live season) are skipped.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2022-23"``.
+        gameweeks : list[int] | None, optional
+            Gameweeks to resolve. Defaults to every gameweek in the season's
+            deadline list.
+
+        Returns
+        -------
+        pl.DataFrame
+            One row per ``(gw, element)`` with columns ``season, gw, element,
+            chance_of_playing_this_round``.
+        """
+        deadlines = self.season_event_deadlines(season)
+        if gameweeks is None:
+            gameweeks = sorted(deadlines)
+        frames: list[pl.DataFrame] = []
+        for gw in gameweeks:
+            try:
+                path = self._snapshot_path_for(deadlines[gw])
+            except ValueError:
+                logger.warning(
+                    "No fplcache snapshot for %s GW%d yet; skipping.",
+                    season,
+                    gw,
+                )
+                continue
+            snapshot = self._read_snapshot(path)
+            frames.append(
+                pl.DataFrame(
+                    {
+                        "season": season,
+                        "gw": gw,
+                        "element": [e["id"] for e in snapshot["elements"]],
+                        "chance_of_playing_this_round": [
+                            100
+                            if e.get("chance_of_playing_this_round") is None
+                            else e["chance_of_playing_this_round"]
+                            for e in snapshot["elements"]
+                        ],
+                    },
+                    schema=_CHANCE_OF_PLAYING_SCHEMA,
+                )
+            )
+        if not frames:
+            return pl.DataFrame(schema=_CHANCE_OF_PLAYING_SCHEMA)
         return pl.concat(frames, how="vertical")

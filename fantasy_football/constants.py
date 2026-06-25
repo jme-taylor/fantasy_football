@@ -17,12 +17,19 @@ CURRENT_SEASON = "2025-26"
 # Data ingestion stop date
 VASTAAV_LAST_SEASON = "2024-2025"
 FPL_CORE_INSIGHTS_FIRST_SEASON = "2025-2026"
+# Earliest season with Randdalf/fplcache bootstrap snapshots (Aug 2022),
+# the source of point-in-time chance_of_playing_this_round.
+FPLCACHE_FIRST_SEASON = "2022-23"
 
 # Special season that isn't in the cleaned_merged_seasons.csv file, but is still needed for the data pipeline.
 VASTAAV_BRIDGE_SEASONS: list[str] = ["2024-25"]
 
 # Prediction model tunables
 ROLLING_WINDOW: int = 5
+# A player counts as "fit" for positional-availability features when their
+# chance_of_playing_this_round is at or above this percentage. FPL reports
+# chance on a 0/25/50/75/100 scale, so 75 means "likely to play".
+FIT_THRESHOLD: int = 75
 OPPONENT_FACTOR_EXPONENT: float = 1.0
 HOME_FACTOR: float = 1.10
 AWAY_FACTOR: float = 0.90
@@ -42,6 +49,10 @@ EXPERIMENT_BY_POSITION: dict[str, str] = {
     "MID": "mid-points-model",
     "FWD": "fwd-points-model",
 }
+
+# MLflow experiment for the minutes-played classifier (single experiment;
+# the model is one classifier across all positions, not per-position).
+MINUTES_EXPERIMENT: str = "minutes_played_classification"
 
 # Number of top players per position used for precision@k, sized to the
 # number of squad slots FPL gives each position.

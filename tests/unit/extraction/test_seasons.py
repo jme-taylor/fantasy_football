@@ -4,6 +4,7 @@ from fantasy_football.extraction.seasons import (
     DataSource,
     season_long_to_short,
     season_short_to_long,
+    seasons_in_range,
     source_for_season,
 )
 
@@ -40,3 +41,23 @@ def test_source_for_season_fci_for_current() -> None:
 def test_source_for_season_fci_for_future() -> None:
     """Verify future seasons beyond 2025-26 also route to FCI."""
     assert source_for_season("2026-27") == DataSource.FCI
+
+
+def test_seasons_in_range_is_inclusive() -> None:
+    """Verify seasons_in_range returns all seasons inclusive of first and last."""
+    assert seasons_in_range("2022-23", "2025-26") == [
+        "2022-23",
+        "2023-24",
+        "2024-25",
+        "2025-26",
+    ]
+
+
+def test_seasons_in_range_single_season() -> None:
+    """Verify seasons_in_range returns a single-element list when first==last."""
+    assert seasons_in_range("2025-26", "2025-26") == ["2025-26"]
+
+
+def test_seasons_in_range_handles_century_rollover() -> None:
+    """Verify seasons_in_range handles the 1999-00 to 2000-01 century rollover."""
+    assert seasons_in_range("1999-00", "2000-01") == ["1999-00", "2000-01"]

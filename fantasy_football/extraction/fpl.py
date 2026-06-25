@@ -1,3 +1,4 @@
+import polars as pl
 import requests
 from pydantic import BaseModel
 
@@ -13,6 +14,15 @@ from fantasy_football.fpl_types import (
     TeamFixture,
     TeamFixtures,
 )
+
+PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
+    "element",
+    "gw",
+    "opponent",
+    "is_home",
+    "minutes",
+    "total_points",
+]
 
 
 class FixtureResponse(BaseModel):
@@ -372,3 +382,43 @@ class FplAPI:
         return FplPlayerFixtures(
             player_id=player, fixtures=player_team_fixtures
         )
+
+    def get_player_match_history(self, element_id: int) -> pl.DataFrame:
+        """Return a player's current-season per-fixture history.
+
+        Hits ``element-summary/{element_id}/`` and reshapes its ``history``
+        array (one entry per fixture) into canonical player-match columns. The
+        endpoint only holds the current season — past seasons collapse to
+        season aggregates upstream and are not returned here.
+
+        Parameters
+        ----------
+        element_id : int
+            The FPL element id.
+
+        Returns
+        -------
+        pl.DataFrame
+            Columns ``element, gw, opponent, is_home, minutes, total_points``;
+            empty (with that schema) when the player has no fixtures.
+        """
+        url = f"{self.BASE_URL}element-summary/{element_id}/"
+        history = requests.get(url).json()["history"]
+        empty_schema = dict(
+            zip(
+                PLAYER_MATCH_HISTORY_COLUMNS,
+                [pl.Int64, pl.Int64, pl.Int64, pl.Boolean, pl.Int64, pl.Int64],
+            )
+        )
+        if not history:
+            return pl.DataFrame(schema=empty_schema)
+        frame = pl.DataFrame(history).select(
+            pl.col("element").cast(pl.Int64),
+            pl.col("round").cast(pl.Int64).alias("gw"),
+            pl.col("opponent_team").cast(pl.Int64).alias("opponent"),
+            pl.col("was_home").alias("is_home"),
+            pl.col("minutes").cast(pl.Int64),
+            pl.col("total_points").cast(pl.Int64),
+        )
+        assert frame.columns == PLAYER_MATCH_HISTORY_COLUMNS
+        return frame

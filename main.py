@@ -1,18 +1,26 @@
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import polars as pl
 
 from fantasy_football.constants import CURRENT_SEASON, TRANSFORMED_DATA_FOLDER
+from fantasy_football.extraction.availability import (
+    load_player_availability_data,
+)
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fci import FciExtractor
 from fantasy_football.extraction.fixtures import load_fixtures
+from fantasy_football.extraction.player_match import (
+    load_current_season_player_match,
+)
 from fantasy_football.extraction.seasons import DataSource, source_for_season
 from fantasy_football.features.elo import build_team_elo
 from fantasy_football.features.fixtures import build_fixtures_enriched
 from fantasy_football.features.transformation import create_rolling_points_data
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.modelling.evaluation import run_evaluation
+from fantasy_football.modelling.minutes import run_minutes_model
 from fantasy_football.modelling.prediction import predict_points
 from fantasy_football.optimisation.optimiser import optimise_plan
 from fantasy_football.optimisation.team_input import (
@@ -26,6 +34,21 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
+
+
+def _train_minutes_model() -> None:
+    """Train and score the minutes model, never letting it block the plan.
+
+    The minutes model runs on every data refresh, but a modelling failure must
+    not abort prediction and optimisation, so any exception is logged and
+    swallowed.
+    """
+    try:
+        run_minutes_model()
+    except Exception:  # noqa: BLE001 - modelling must never block the plan
+        logger.exception(
+            "Minutes model training/scoring failed; continuing without it."
+        )
 
 
 def update_current_season(
@@ -47,6 +70,34 @@ def update_current_season(
             f"Current-season ingestion for the Vaastav-sourced season "
             f"{season} is not supported; current seasons come from FCI."
         )
+
+
+def load_player_match_data(
+    season: str,
+    connection: "DuckDBPyConnection",
+    extractor: DataExtractor | None = None,
+    current_loader: Callable[[str, "DuckDBPyConnection"], None] = (
+        load_current_season_player_match
+    ),
+) -> None:
+    """Populate the player_match table: historic from Vaastav, current from FPL.
+
+    Parameters
+    ----------
+    season : str
+        Short-form current season, e.g. ``"2025-26"``.
+    connection : duckdb.DuckDBPyConnection
+        Open connection to the database.
+    extractor : DataExtractor | None, optional
+        Vaastav extractor. Defaults to a new ``DataExtractor``.
+    current_loader : callable, optional
+        Current-season loader. Defaults to
+        ``load_current_season_player_match``.
+    """
+    (extractor or DataExtractor()).load_immutable_player_match_seasons(
+        connection, season
+    )
+    current_loader(season, connection)
 
 
 def main(
@@ -80,12 +131,15 @@ def main(
         DataExtractor().load_immutable_seasons(connection, CURRENT_SEASON)
         update_current_season(CURRENT_SEASON, connection)
         load_fixtures(connection, CURRENT_SEASON)
+        load_player_match_data(CURRENT_SEASON, connection)
+        load_player_availability_data(connection, CURRENT_SEASON)
     finally:
         connection.close()
 
     create_rolling_points_data(CURRENT_SEASON)
     build_fixtures_enriched(CURRENT_SEASON)
     build_team_elo()
+    _train_minutes_model()
     if evaluate:
         run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None
@@ -119,4 +173,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(rebuild=True, team_file="data/dummy_team.json")
+    main(rebuild=False, team_file="data/dummy_team.json")

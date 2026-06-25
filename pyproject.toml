@@ -40,6 +40,7 @@ packages = ["fantasy_football"]
 
 [tool.ruff]
 line-length=79
+include = ["*.py"]
 
 [tool.ruff.lint]
 select = ["F", "I", "D"]

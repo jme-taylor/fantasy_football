@@ -1,7 +1,10 @@
 import polars as pl
 import pytest
 
-from fantasy_football.features.valuation import add_team_value
+from fantasy_football.features.valuation import (
+    add_positional_value_rank,
+    add_team_value,
+)
 
 
 @pytest.fixture
@@ -91,3 +94,56 @@ def test_add_team_value_null_share_for_null_value() -> None:
     shares = result.get_column("value_share_of_team").to_list()
     assert shares[0] == pytest.approx(1.0)
     assert shares[1] is None
+
+
+def test_add_positional_value_rank_ranks_within_team_position() -> None:
+    """Higher value gets rank 1 within (season, gw, team, position)."""
+    data = pl.DataFrame(
+        {
+            "season": ["2022-23"] * 4,
+            "gw": [1, 1, 1, 1],
+            "team": ["Arsenal", "Arsenal", "Arsenal", "Chelsea"],
+            "position": ["MID", "MID", "DEF", "MID"],
+            "element": [1, 2, 3, 4],
+            "value": [70, 50, 40, 90],
+        }
+    )
+
+    result = add_positional_value_rank(data)
+    by_element = {
+        row["element"]: (row["pos_value_rank"], row["players_same_pos"])
+        for row in result.iter_rows(named=True)
+    }
+
+    # Arsenal MID: 70 -> rank 1, 50 -> rank 2; two players in the group.
+    assert by_element[1] == (1, 2)
+    assert by_element[2] == (2, 2)
+    # Arsenal DEF: only player -> rank 1, group size 1.
+    assert by_element[3] == (1, 1)
+    # Chelsea MID: only player -> rank 1, group size 1.
+    assert by_element[4] == (1, 1)
+
+
+def test_add_positional_value_rank_ties_share_lower_rank() -> None:
+    """Equal values share the same (minimum) rank, SQL RANK() style."""
+    data = pl.DataFrame(
+        {
+            "season": ["2022-23"] * 3,
+            "gw": [1, 1, 1],
+            "team": ["Arsenal", "Arsenal", "Arsenal"],
+            "position": ["MID", "MID", "MID"],
+            "element": [1, 2, 3],
+            "value": [50, 50, 40],
+        }
+    )
+
+    result = add_positional_value_rank(data)
+    by_element = {
+        row["element"]: row["pos_value_rank"]
+        for row in result.iter_rows(named=True)
+    }
+
+    # Two players tied at 50 both get rank 1; the 40 player gets rank 3.
+    assert by_element[1] == 1
+    assert by_element[2] == 1
+    assert by_element[3] == 3

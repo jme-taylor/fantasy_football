@@ -18,9 +18,10 @@ fantasy_football/
 ├── logging_config.py   — logging setup
 ├── fpl_types.py        — Pydantic types describing FPL API responses
 ├── extraction/         — ingest raw data
-│   ├── fpl.py          — wrappers around the live FPL API (players, teams, fixtures)
+│   ├── fpl.py          — wrappers around the live FPL API (players, teams, fixtures, per-fixture history)
+│   ├── player_match.py — build the current season's per-fixture player_match table from the FPL API
+│   ├── extractor.py    — download the frozen Vaastav historic dataset (player_week + player_match)
 │   ├── fci.py          — download current-season data from FPL Core Insights and reshape to merged_gw.csv
-│   ├── extractor.py    — download the frozen Vaastav historic dataset
 │   └── seasons.py      — season-string conversions and data-source routing
 ├── features/           — derive model-ready features
 │   ├── transformation.py — transform raw data into rolling/feature datasets
@@ -51,6 +52,32 @@ The cutoff is controlled by `VASTAAV_LAST_SEASON` and
 `FPL_CORE_INSIGHTS_FIRST_SEASON` in `constants.py`. FCI stores per-gameweek
 snapshots in a different shape, so it is reconstructed into Vaastav's
 `merged_gw.csv` layout — keeping the rest of the pipeline unchanged.
+
+A separate `player_match` table holds **one row per player per fixture**
+(minutes and points only) — the training substrate for the minutes-played
+model. Unlike `player_week` it is not collapsed across double gameweeks: each
+fixture is its own row, keyed by `(season, gw, element, opponent)`. Historic
+rows (≤2024-25) come from the same Vaastav per-fixture files; current-season
+rows (2025-26) come from the FPL API `element-summary` endpoint, which reports
+native per-fixture minutes and points.
+
+> **⚠️ Time-sensitive backfill:** the live FPL API only exposes the **current**
+> season's per-fixture history via `element-summary`. Once the API rolls over
+> to the next season (typically late July/August), the previous season's
+> per-fixture data is no longer retrievable there. Run the current-season
+> `player_match` backfill before the rollover; historic Vaastav data has no
+> such deadline.
+
+A `player_availability` table holds **one row per `(season, gw, element)`**,
+capturing FPL's point-in-time availability percentage for each player at the
+deadline of each gameweek. The key column is `chance_of_playing_this_round` —
+FPL's 0/25/50/75 percentage signal; `null` (no injury doubt) is stored as
+`100`. The source is the [Randdalf/fplcache](https://github.com/Randdalf/fplcache)
+bootstrap snapshot at each gameweek's deadline, the same source already used to
+derive per-gameweek `team_code`. Coverage starts from `2022-23` (fplcache's
+earliest snapshots); completed seasons are backfilled once and the current
+season is upserted each run. The feature is exposed to the minutes model via
+`features.availability.add_chance_of_playing`.
 
 ## Roadmap
 

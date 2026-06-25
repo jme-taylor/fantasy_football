@@ -407,3 +407,207 @@ def test_fixture_seasons_present(tmp_path) -> None:
         assert fixture_seasons_present(conn) == {"2023-24"}
     finally:
         conn.close()
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    PLAYER_MATCH_COLUMNS,
+    coerce_player_match,
+    load_player_match,
+    player_match_seasons_present,
+    upsert_current_player_match,
+    write_immutable_player_match,
+)
+
+
+def _player_match_frame(rows: list[dict]) -> pl.DataFrame:
+    return pl.DataFrame(rows, schema_overrides={"is_home": pl.Boolean})
+
+
+def test_get_connection_creates_player_match_table(tmp_path: Path) -> None:
+    """get_connection creates an empty player_match table with the right columns."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        columns = [
+            row[0]
+            for row in connection.execute("DESCRIBE player_match").fetchall()
+        ]
+    finally:
+        connection.close()
+    assert columns == PLAYER_MATCH_COLUMNS
+
+
+def test_coerce_player_match_selects_and_pins_dtypes() -> None:
+    """coerce_player_match drops extra columns and pins the canonical dtypes."""
+    frame = _player_match_frame(
+        [
+            {
+                "season": "2024-25",
+                "gw": 1,
+                "element": 5,
+                "opponent": 12,
+                "is_home": True,
+                "minutes": 90,
+                "total_points": 6,
+                "extra": "ignored",
+            }
+        ]
+    )
+    result = coerce_player_match(frame)
+    assert result.columns == PLAYER_MATCH_COLUMNS
+    assert result["gw"].dtype == pl.Int64
+    assert result["opponent"].dtype == pl.Int64
+    assert result["is_home"].dtype == pl.Boolean
+
+
+def test_player_match_pk_disambiguates_double_gameweek(tmp_path: Path) -> None:
+    """Two fixtures for one (season, gw, element) coexist via distinct opponent."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        frame = _player_match_frame(
+            [
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 12,
+                    "is_home": True,
+                    "minutes": 90,
+                    "total_points": 6,
+                },
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 7,
+                    "is_home": False,
+                    "minutes": 70,
+                    "total_points": 2,
+                },
+            ]
+        )
+        upsert_current_player_match(connection, frame, "2024-25")
+        count = connection.execute(
+            "SELECT COUNT(*) FROM player_match"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 2
+
+
+def test_write_immutable_player_match_is_noop_when_present(
+    tmp_path: Path,
+) -> None:
+    """A second immutable write for an existing season is discarded."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        frame = _player_match_frame(
+            [
+                {
+                    "season": "2023-24",
+                    "gw": 1,
+                    "element": 1,
+                    "opponent": 2,
+                    "is_home": True,
+                    "minutes": 90,
+                    "total_points": 3,
+                }
+            ]
+        )
+        write_immutable_player_match(connection, frame, "2023-24")
+        assert player_match_seasons_present(connection) == {"2023-24"}
+        write_immutable_player_match(connection, frame, "2023-24")
+        count = connection.execute(
+            "SELECT COUNT(*) FROM player_match"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 1
+
+
+def test_load_player_match_round_trips_ordered(tmp_path: Path) -> None:
+    """load_player_match returns every row ordered by the key."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        frame = _player_match_frame(
+            [
+                {
+                    "season": "2024-25",
+                    "gw": 2,
+                    "element": 9,
+                    "opponent": 3,
+                    "is_home": True,
+                    "minutes": 45,
+                    "total_points": 1,
+                },
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 9,
+                    "opponent": 4,
+                    "is_home": False,
+                    "minutes": 90,
+                    "total_points": 5,
+                },
+            ]
+        )
+        upsert_current_player_match(connection, frame, "2024-25")
+        out = load_player_match(connection)
+    finally:
+        connection.close()
+    assert out.columns == PLAYER_MATCH_COLUMNS
+    assert out["gw"].to_list() == [1, 2]
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    load_player_availability,
+    upsert_current_player_availability,
+    write_immutable_player_availability,
+)
+
+
+def _availability_frame(season: str, chance: int) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": [season],
+            "gw": [1],
+            "element": [10],
+            "chance_of_playing_this_round": [chance],
+        }
+    )
+
+
+def test_write_immutable_player_availability_inserts_once(tmp_path) -> None:
+    """A completed season is inserted once and not duplicated on re-write."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        write_immutable_player_availability(
+            connection, _availability_frame("2022-23", 75), "2022-23"
+        )
+        # Second write with a different value must be ignored (already present).
+        write_immutable_player_availability(
+            connection, _availability_frame("2022-23", 0), "2022-23"
+        )
+        out = load_player_availability(connection)
+    finally:
+        connection.close()
+
+    assert out.height == 1
+    assert out["chance_of_playing_this_round"].to_list() == [75]
+
+
+def test_upsert_current_player_availability_replaces_season(tmp_path) -> None:
+    """Upsert replaces all rows for the season with the fresh frame."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        upsert_current_player_availability(
+            connection, _availability_frame("2025-26", 50), "2025-26"
+        )
+        upsert_current_player_availability(
+            connection, _availability_frame("2025-26", 100), "2025-26"
+        )
+        out = load_player_availability(connection)
+    finally:
+        connection.close()
+
+    assert out.height == 1
+    assert out["chance_of_playing_this_round"].to_list() == [100]

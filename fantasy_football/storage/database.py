@@ -122,6 +122,8 @@ def get_connection(
     connection = duckdb.connect(str(path))
     connection.execute(_CREATE_TABLE)
     connection.execute(_CREATE_TEAM_FIXTURE_TABLE)
+    connection.execute(_CREATE_PLAYER_MATCH_TABLE)
+    connection.execute(_CREATE_PLAYER_AVAILABILITY_TABLE)
     return connection
 
 
@@ -421,6 +423,252 @@ def upsert_current_fixtures(
     )
 
 
+# Canonical player-match column order. One row per (player, fixture); the table
+# and every frame written to or read from it use exactly these columns in this
+# order.
+PLAYER_MATCH_COLUMNS: list[str] = [
+    "season",
+    "gw",
+    "element",
+    "opponent",
+    "is_home",
+    "minutes",
+    "total_points",
+]
+
+# Polars dtypes incoming player-match frames are pinned to before insertion.
+PLAYER_MATCH_SCHEMA: dict[str, pl.DataType] = {
+    "season": pl.Utf8,
+    "gw": pl.Int64,
+    "element": pl.Int64,
+    "opponent": pl.Int64,
+    "is_home": pl.Boolean,
+    "minutes": pl.Int64,
+    "total_points": pl.Int64,
+}
+
+_CREATE_PLAYER_MATCH_TABLE = """
+CREATE TABLE IF NOT EXISTS player_match (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
+    opponent BIGINT NOT NULL,
+    is_home BOOLEAN,
+    minutes BIGINT,
+    total_points BIGINT,
+    PRIMARY KEY (season, gw, element, opponent)
+)
+"""
+
+
+def coerce_player_match(frame: pl.DataFrame) -> pl.DataFrame:
+    """Reduce a frame to the canonical player-match columns, order, and dtypes.
+
+    Selects exactly ``PLAYER_MATCH_COLUMNS`` (ignoring any extra source
+    columns) and pins the dtypes to ``PLAYER_MATCH_SCHEMA``.
+    """
+    return frame.select(PLAYER_MATCH_COLUMNS).cast(
+        PLAYER_MATCH_SCHEMA, strict=False
+    )
+
+
+def player_match_seasons_present(
+    connection: duckdb.DuckDBPyConnection,
+) -> set[str]:
+    """Return the set of seasons already stored in ``player_match``."""
+    rows = connection.execute(
+        "SELECT DISTINCT season FROM player_match"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def write_immutable_player_match(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Insert a completed season's player-match rows, only if not already stored."""
+    if season in player_match_seasons_present(connection):
+        logger.info(
+            "Player-match season %s already present; skipping.", season
+        )
+        return
+    shaped = coerce_player_match(frame)
+    connection.register("incoming_player_match", shaped.to_arrow())
+    try:
+        connection.execute(
+            "INSERT INTO player_match SELECT * FROM incoming_player_match"
+        )
+    finally:
+        connection.unregister("incoming_player_match")
+    logger.info(
+        "Inserted %d player-match rows for immutable season %s",
+        shaped.height,
+        season,
+    )
+
+
+def upsert_current_player_match(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Replace all stored player-match rows for ``season`` with a fresh frame."""
+    shaped = coerce_player_match(frame)
+    connection.register("incoming_player_match", shaped.to_arrow())
+    try:
+        connection.execute(
+            "DELETE FROM player_match WHERE season = ?", [season]
+        )
+        connection.execute(
+            "INSERT INTO player_match SELECT * FROM incoming_player_match"
+        )
+    finally:
+        connection.unregister("incoming_player_match")
+    logger.info(
+        "Upserted %d player-match rows for current season %s",
+        shaped.height,
+        season,
+    )
+
+
+def load_player_match(
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> pl.DataFrame:
+    """Return the entire ``player_match`` table as a Polars frame.
+
+    Rows are ordered by ``(season, gw, element, opponent)``.
+    """
+    owns_connection = connection is None
+    conn = connection or get_connection()
+    try:
+        return conn.execute(
+            "SELECT season, gw, element, opponent, is_home, minutes, "
+            "total_points FROM player_match "
+            "ORDER BY season, gw, element, opponent"
+        ).pl()
+    finally:
+        if owns_connection:
+            conn.close()
+
+
+# Canonical player-availability column order. One row per (season, gw, element);
+# chance_of_playing_this_round is FPL's point-in-time availability percentage
+# for that gameweek (null coalesced to 100 at extraction time).
+PLAYER_AVAILABILITY_COLUMNS: list[str] = [
+    "season",
+    "gw",
+    "element",
+    "chance_of_playing_this_round",
+]
+
+# Polars dtypes incoming player-availability frames are pinned to before insert.
+PLAYER_AVAILABILITY_SCHEMA: dict[str, pl.DataType] = {
+    "season": pl.Utf8,
+    "gw": pl.Int64,
+    "element": pl.Int64,
+    "chance_of_playing_this_round": pl.Int64,
+}
+
+_CREATE_PLAYER_AVAILABILITY_TABLE = """
+CREATE TABLE IF NOT EXISTS player_availability (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
+    chance_of_playing_this_round BIGINT,
+    PRIMARY KEY (season, gw, element)
+)
+"""
+
+
+def coerce_player_availability(frame: pl.DataFrame) -> pl.DataFrame:
+    """Reduce a frame to the canonical player-availability columns and dtypes."""
+    return frame.select(PLAYER_AVAILABILITY_COLUMNS).cast(
+        PLAYER_AVAILABILITY_SCHEMA, strict=False
+    )
+
+
+def player_availability_seasons_present(
+    connection: duckdb.DuckDBPyConnection,
+) -> set[str]:
+    """Return the set of seasons already stored in ``player_availability``."""
+    rows = connection.execute(
+        "SELECT DISTINCT season FROM player_availability"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def write_immutable_player_availability(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Insert a completed season's availability rows, only if not already stored."""
+    if season in player_availability_seasons_present(connection):
+        logger.info(
+            "Player-availability season %s already present; skipping.", season
+        )
+        return
+    shaped = coerce_player_availability(frame)
+    connection.register("incoming_player_availability", shaped.to_arrow())
+    try:
+        connection.execute(
+            "INSERT INTO player_availability "
+            "SELECT * FROM incoming_player_availability"
+        )
+    finally:
+        connection.unregister("incoming_player_availability")
+    logger.info(
+        "Inserted %d player-availability rows for immutable season %s",
+        shaped.height,
+        season,
+    )
+
+
+def upsert_current_player_availability(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Replace all stored availability rows for ``season`` with a fresh frame."""
+    shaped = coerce_player_availability(frame)
+    connection.register("incoming_player_availability", shaped.to_arrow())
+    try:
+        connection.execute(
+            "DELETE FROM player_availability WHERE season = ?", [season]
+        )
+        connection.execute(
+            "INSERT INTO player_availability "
+            "SELECT * FROM incoming_player_availability"
+        )
+    finally:
+        connection.unregister("incoming_player_availability")
+    logger.info(
+        "Upserted %d player-availability rows for current season %s",
+        shaped.height,
+        season,
+    )
+
+
+def load_player_availability(
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> pl.DataFrame:
+    """Return the entire ``player_availability`` table as a Polars frame.
+
+    Rows are ordered by ``(season, gw, element)``.
+    """
+    owns_connection = connection is None
+    conn = connection or get_connection()
+    try:
+        return conn.execute(
+            "SELECT season, gw, element, chance_of_playing_this_round "
+            "FROM player_availability ORDER BY season, gw, element"
+        ).pl()
+    finally:
+        if owns_connection:
+            conn.close()
+
+
 def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
     """Drop and recreate the ``player_week`` and ``team_fixture`` tables (full-rebuild escape hatch).
 
@@ -433,3 +681,7 @@ def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
     connection.execute(_CREATE_TABLE)
     connection.execute("DROP TABLE IF EXISTS team_fixture")
     connection.execute(_CREATE_TEAM_FIXTURE_TABLE)
+    connection.execute("DROP TABLE IF EXISTS player_match")
+    connection.execute(_CREATE_PLAYER_MATCH_TABLE)
+    connection.execute("DROP TABLE IF EXISTS player_availability")
+    connection.execute(_CREATE_PLAYER_AVAILABILITY_TABLE)

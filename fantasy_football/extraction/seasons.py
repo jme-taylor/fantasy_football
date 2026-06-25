@@ -67,6 +67,29 @@ def season_long_to_short(season: str) -> str:
     return f"{start}-{end[2:]}"
 
 
+def seasons_in_range(first: str, last: str) -> list[str]:
+    """Return the inclusive list of short-form seasons from ``first`` to ``last``.
+
+    Parameters
+    ----------
+    first : str
+        Short-form season string of the earliest season, e.g. ``"2022-23"``.
+    last : str
+        Short-form season string of the latest season, e.g. ``"2025-26"``.
+
+    Returns
+    -------
+    list[str]
+        Short-form season strings, one per year, ascending.
+    """
+    first_start = int(first[:4])
+    last_start = int(last[:4])
+    return [
+        f"{year}-{str(year + 1)[2:]}"
+        for year in range(first_start, last_start + 1)
+    ]
+
+
 def source_for_season(season: str) -> DataSource:
     """Return the data source for a short-form season string.
 

@@ -8,6 +8,7 @@ from pytest_mock import MockerFixture
 from fantasy_football.extraction.extractor import (
     DataExtractor,
     GitHubAPIClient,
+    _build_player_match,
 )
 
 
@@ -451,3 +452,32 @@ def test_load_immutable_seasons_collapses_double_gameweeks(
     assert row["minutes"] == 165  # 90 + 75
     assert row["bonus"] == 3  # 1 + 2
     assert row["name"] == "DGW Player"
+
+
+def test_build_player_match_keeps_both_fixtures_of_a_dgw() -> None:
+    """A double-gameweek player yields two rows, one per opponent, uncollapsed."""
+    frame = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 1],
+            "element": [5, 5],
+            "opponent_team": [12, 7],
+            "was_home": [True, False],
+            "minutes": [90, 70],
+            "total_points": [6, 2],
+            "name": ["A", "A"],
+        }
+    )
+    result = _build_player_match(frame)
+    assert result.columns == [
+        "season",
+        "gw",
+        "element",
+        "opponent",
+        "is_home",
+        "minutes",
+        "total_points",
+    ]
+    assert result.height == 2
+    assert sorted(result["opponent"].to_list()) == [7, 12]
+    assert sorted(result["minutes"].to_list()) == [70, 90]
