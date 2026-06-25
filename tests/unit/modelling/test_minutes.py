@@ -128,7 +128,9 @@ def test_season_folds_expanding_window() -> None:
 
 def test_boundary_metrics_perfect_predictions() -> None:
     """Confident, correct probabilities give ~0 loss and AUC 1.0."""
-    classes = MINUTES_BUCKETS  # ["0_minutes", "1_to_59_minutes", "60_minutes_plus"]
+    classes = (
+        MINUTES_BUCKETS  # ["0_minutes", "1_to_59_minutes", "60_minutes_plus"]
+    )
     y_true = [BUCKET_ZERO, BUCKET_SIXTY_PLUS]
     true_minutes = [0, 90]
     # rows: benched (col 0), full shift (col 2).
@@ -182,7 +184,9 @@ def test_make_pipeline_fits_and_predicts_proba() -> None:
     assert proba.shape == (n, len(MINUTES_BUCKETS))
 
 
-def _synthetic_model_df(seasons: list[str], per_season: int = 60) -> pl.DataFrame:
+def _synthetic_model_df(
+    seasons: list[str], per_season: int = 60
+) -> pl.DataFrame:
     """Return a model frame with a learnable signal across several seasons."""
     rng = np.random.default_rng(1)
     rows = []

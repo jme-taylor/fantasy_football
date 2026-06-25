@@ -136,9 +136,7 @@ def build_feature_frame(
     frame = add_positional_value_rank(frame)
     frame = add_chance_of_playing(frame, availability)
     frame = add_positional_availability(frame)
-    return frame.select(
-        ["season", "gw", "element", "position", *NUM_FEATURES]
-    )
+    return frame.select(["season", "gw", "element", "position", *NUM_FEATURES])
 
 
 def build_model_frame(
@@ -164,9 +162,9 @@ def build_model_frame(
         Columns ``season``, ``gw``, ``element``, ``minutes``,
         ``minutes_bucket`` and every column in ``FEATURES``.
     """
-    joined = player_match.select(
-        ["season", "gw", "element", "minutes"]
-    ).join(feature_frame, on=["season", "gw", "element"], how="inner")
+    joined = player_match.select(["season", "gw", "element", "minutes"]).join(
+        feature_frame, on=["season", "gw", "element"], how="inner"
+    )
     joined = create_minutes_bucket(joined)
     return joined.select(
         ["season", "gw", "element", "minutes", "minutes_bucket", *FEATURES]
@@ -289,9 +287,7 @@ def boundary_metrics(
     y_60 = (y_true == BUCKET_SIXTY_PLUS).astype(int)
 
     out: dict[str, float] = {
-        "logloss_appear": float(
-            log_loss(y_appear, p_appear, labels=[0, 1])
-        ),
+        "logloss_appear": float(log_loss(y_appear, p_appear, labels=[0, 1])),
         "brier_appear": float(brier_score_loss(y_appear, p_appear)),
         "logloss_60": float(log_loss(y_60, p_60, labels=[0, 1])),
         "brier_60": float(brier_score_loss(y_60, p_60)),
