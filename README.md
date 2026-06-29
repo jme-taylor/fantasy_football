@@ -158,11 +158,27 @@ average — its value is in *ranking* players (Spearman ≈ 0.6–0.8 by positio
 rather than predicting exact point totals. Improving on that baseline is the
 focus of the next milestones.
 
+### Looking further ahead
+
+Shortened from `notepad.md`, the longer-term plan once the minutes model is
+integrated:
+
+* **Minutes model** — add a random and an informed baseline, then evaluate the
+  full model's scoring impact before wiring its appearance probabilities into
+  the per-position points models.
+* **Points models** — research where the per-position models are weakest, find
+  features that address it, and measure the lift.
+* **Operations** — retrain every model weekly on historic data and test for
+  drift; richer dummy-data fixtures in `conftest.py`; code-coverage metrics and
+  CI checks.
+* **Application** — a Streamlit frontend (pick a team from the bootstrap or
+  load one by FPL ID) and API endpoints; possibly a reinforcement-learning
+  agent as an alternative to the pure optimiser.
+
 Open questions still being worked through include how to handle double
 gameweeks, chips (wildcard, triple captain, etc.), promoted teams and new
-players, managerial changes, and disciplinary suspensions. On the application
-side I'm considering exploring reinforcement learning as an alternative to a
-pure optimiser, and adding code-coverage checks.
+players, managerial changes, disciplinary suspensions, mid-season transfers,
+and backtesting how good the optimiser actually is.
 
 ## Installation
 
