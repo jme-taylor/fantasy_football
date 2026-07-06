@@ -670,11 +670,7 @@ def load_player_availability(
             conn.close()
 
 
-# Canonical minutes-prediction column order. One row per match
-# (season, gw, element, opponent) mirroring player_match, so double-gameweeks
-# get one row per fixture. Holds the production minutes model's 3-class
-# probabilities, the derived expected minutes, and the model version that
-# produced them (which powers the version-gated backfill).
+# Canonical minutes-prediction column order. One row per match (season, gw, element, opponent).
 MINUTES_PREDICTION_COLUMNS: list[str] = [
     "season",
     "gw",
@@ -717,7 +713,21 @@ CREATE TABLE IF NOT EXISTS minutes_prediction (
 
 
 def coerce_minutes_prediction(frame: pl.DataFrame) -> pl.DataFrame:
-    """Reduce a frame to the canonical minutes-prediction columns and dtypes."""
+    """Reduce a frame to the canonical minutes-prediction columns and dtypes.
+    
+    Selects exactly ``MINUTES_PREDICTION_COLUMNS`` (ignoring any extra source
+    columns) and pins the dtypes to ``MINUTES_PREDICTION_SCHEMA``.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        A frame to coerce.
+    
+    Returns
+    -------
+    pl.DataFrame
+        The coerced frame.
+    """
     return frame.select(MINUTES_PREDICTION_COLUMNS).cast(
         MINUTES_PREDICTION_SCHEMA, strict=False
     )
@@ -728,7 +738,17 @@ def upsert_minutes_prediction(
     frame: pl.DataFrame,
     season: str,
 ) -> None:
-    """Replace all stored minutes-prediction rows for ``season`` with a frame."""
+    """Replace all stored minutes-prediction rows for ``season`` with a frame.
+    
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        A frame to upsert.
+    season : str
+        The season to upsert.
+    """
     shaped = coerce_minutes_prediction(frame)
     connection.register("incoming_minutes_prediction", shaped.to_arrow())
     try:
@@ -754,6 +774,16 @@ def load_minutes_prediction(
     """Return the entire ``minutes_prediction`` table as a Polars frame.
 
     Rows are ordered by ``(season, gw, element, opponent)``.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. Defaults to ``get_connection()``.
+
+    Returns
+    -------
+    pl.DataFrame
+        The entire ``minutes_prediction`` table as a Polars frame.
     """
     owns_connection = connection is None
     conn = connection or get_connection()
@@ -771,7 +801,18 @@ def load_minutes_prediction(
 def minutes_prediction_seasons_present(
     connection: duckdb.DuckDBPyConnection,
 ) -> set[str]:
-    """Return the set of seasons already stored in ``minutes_prediction``."""
+    """Return the set of seasons already stored in ``minutes_prediction``.
+    
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+
+    Returns
+    -------
+    set[str]
+        The set of seasons already stored in ``minutes_prediction``.
+    """
     rows = connection.execute(
         "SELECT DISTINCT season FROM minutes_prediction"
     ).fetchall()
