@@ -54,6 +54,13 @@ EXPERIMENT_BY_POSITION: dict[str, str] = {
 # the model is one classifier across all positions, not per-position).
 MINUTES_EXPERIMENT: str = "minutes_played_classification"
 
+# MLflow Model Registry name and alias for the minutes classifier. Every
+# training run registers a new version under MINUTES_REGISTERED_MODEL; the
+# backfill loads whichever version carries the MINUTES_PRODUCTION_ALIAS alias.
+# Promotion (moving the alias onto a version) is manual via the MLflow UI.
+MINUTES_REGISTERED_MODEL: str = "minutes_played_classifier"
+MINUTES_PRODUCTION_ALIAS: str = "production"
+
 # Number of top players per position used for precision@k, sized to the
 # number of squad slots FPL gives each position.
 PRECISION_K_BY_POSITION: dict[str, int] = {

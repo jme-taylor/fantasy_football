@@ -20,7 +20,10 @@ from fantasy_football.features.fixtures import build_fixtures_enriched
 from fantasy_football.features.transformation import create_rolling_points_data
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.modelling.evaluation import run_evaluation
-from fantasy_football.modelling.minutes import run_minutes_model
+from fantasy_football.modelling.minutes import (
+    backfill_minutes,
+    run_minutes_model,
+)
 from fantasy_football.modelling.prediction import predict_points
 from fantasy_football.optimisation.optimiser import optimise_plan
 from fantasy_football.optimisation.team_input import (
@@ -36,7 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _train_minutes_model() -> None:
+def train_minutes_model() -> None:
     """Train and score the minutes model, never letting it block the plan.
 
     The minutes model runs on every data refresh, but a modelling failure must
@@ -49,6 +52,20 @@ def _train_minutes_model() -> None:
         logger.exception(
             "Minutes model training/scoring failed; continuing without it."
         )
+
+
+def run_minutes_backfill() -> None:
+    """Backfill minutes predictions from the production model, non-fatally.
+
+    Loads the ``production``-aliased model and persists per-match predictions
+    (version-gated: historic seasons only re-scored on a version change). A
+    missing alias or any failure is logged and swallowed so it never blocks
+    prediction and optimisation.
+    """
+    try:
+        backfill_minutes()
+    except Exception:  # noqa: BLE001 - modelling must never block the plan
+        logger.exception("Minutes backfill failed; continuing without it.")
 
 
 def update_current_season(
@@ -139,7 +156,8 @@ def main(
     create_rolling_points_data(CURRENT_SEASON)
     build_fixtures_enriched(CURRENT_SEASON)
     build_team_elo()
-    _train_minutes_model()
+    train_minutes_model()
+    run_minutes_backfill()
     if evaluate:
         run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None
