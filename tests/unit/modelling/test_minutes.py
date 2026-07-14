@@ -409,7 +409,7 @@ def test_score_minutes_missing_class_gives_zero_column() -> None:
     model = _StubModel([BUCKET_ZERO, BUCKET_SIXTY_PLUS], proba)
     frame = _scoring_frame().head(1)
 
-    out = score_minutes(frame, model)
+    out = score_minutes(frame, model) # type: ignore
 
     assert out["p_partial"].to_list() == [0.0]
     assert out["p_zero"].to_list() == [0.3]
@@ -463,7 +463,7 @@ class _ConstantModel:
         )
 
     def predict_proba(self, x: object) -> np.ndarray:
-        return np.tile([0.1, 0.2, 0.7], (len(x), 1))
+        return np.tile([0.1, 0.2, 0.7], (len(x), 1)) # type: ignore
 
 
 def _backfill_model_frame() -> pl.DataFrame:

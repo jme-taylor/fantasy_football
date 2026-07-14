@@ -714,7 +714,7 @@ CREATE TABLE IF NOT EXISTS minutes_prediction (
 
 def coerce_minutes_prediction(frame: pl.DataFrame) -> pl.DataFrame:
     """Reduce a frame to the canonical minutes-prediction columns and dtypes.
-    
+
     Selects exactly ``MINUTES_PREDICTION_COLUMNS`` (ignoring any extra source
     columns) and pins the dtypes to ``MINUTES_PREDICTION_SCHEMA``.
 
@@ -722,7 +722,7 @@ def coerce_minutes_prediction(frame: pl.DataFrame) -> pl.DataFrame:
     ----------
     frame : pl.DataFrame
         A frame to coerce.
-    
+
     Returns
     -------
     pl.DataFrame
@@ -739,7 +739,7 @@ def upsert_minutes_prediction(
     season: str,
 ) -> None:
     """Replace all stored minutes-prediction rows for ``season`` with a frame.
-    
+
     Parameters
     ----------
     connection : duckdb.DuckDBPyConnection
@@ -802,7 +802,7 @@ def minutes_prediction_seasons_present(
     connection: duckdb.DuckDBPyConnection,
 ) -> set[str]:
     """Return the set of seasons already stored in ``minutes_prediction``.
-    
+
     Parameters
     ----------
     connection : duckdb.DuckDBPyConnection
