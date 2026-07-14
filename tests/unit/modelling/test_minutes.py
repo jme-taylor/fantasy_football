@@ -388,7 +388,7 @@ def test_score_minutes_full_three_classes() -> None:
     proba = np.array([[0.1, 0.2, 0.7], [0.5, 0.3, 0.2]])
     model = _StubModel([BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS], proba)
 
-    out = score_minutes(_scoring_frame(), model)
+    out = score_minutes(_scoring_frame(), model)  # type: ignore
 
     assert out["p_zero"].to_list() == [0.1, 0.5]
     assert out["p_partial"].to_list() == [0.2, 0.3]
