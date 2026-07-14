@@ -4,7 +4,10 @@ import numpy as np
 import polars as pl
 from sklearn.pipeline import Pipeline
 
-from fantasy_football.constants import MLFLOW_TRACKING_URI
+from fantasy_football.constants import (
+    MINUTES_REGISTERED_MODEL,
+    MLFLOW_TRACKING_URI,
+)
 from fantasy_football.modelling.minutes import (
     BUCKET_PARTIAL,
     BUCKET_SIXTY_PLUS,
@@ -272,6 +275,10 @@ def test_run_minutes_model_logs_to_mlflow() -> None:
     assert mlflow_mock.log_metric.called  # per-fold metrics
     mlflow_mock.log_metrics.assert_called_once_with(agg)
     mlflow_mock.sklearn.log_model.assert_called_once()
+    _, log_model_kwargs = mlflow_mock.sklearn.log_model.call_args
+    assert (
+        log_model_kwargs["registered_model_name"] == MINUTES_REGISTERED_MODEL
+    )
 
 
 def test_run_minutes_model_returns_empty_when_one_season() -> None:
@@ -319,3 +326,303 @@ def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
     # Both rows share the same player-week features.
     ranks = element_1_rows["pos_value_rank"].to_list()
     assert ranks[0] == ranks[1]
+
+
+def test_build_model_frame_carries_opponent_for_match_grain() -> None:
+    """Opponent survives the join so predictions key by match on a DGW."""
+    feature_frame = build_feature_frame(_player_week(), _availability())
+    player_match = pl.DataFrame(
+        {
+            "season": ["2022-23", "2022-23"],
+            "gw": [1, 1],
+            "element": [1, 1],
+            "opponent": [10, 20],
+            "is_home": [True, False],
+            "minutes": [90, 45],
+            "total_points": [6, 2],
+        }
+    )
+
+    model_frame = build_model_frame(player_match, feature_frame)
+
+    assert "opponent" in model_frame.columns
+    element_1 = model_frame.filter(pl.col("element") == 1).sort("opponent")
+    assert element_1["opponent"].to_list() == [10, 20]
+
+
+from types import SimpleNamespace  # noqa: E402
+
+from mlflow.exceptions import MlflowException  # noqa: E402
+
+from fantasy_football.modelling.minutes import (  # noqa: E402
+    production_model_version,
+    score_minutes,
+)
+
+
+class _StubModel:
+    """Minimal stand-in for a fitted pipeline: fixed classes and proba."""
+
+    def __init__(self, classes: list[str], proba: np.ndarray) -> None:
+        self.classes_ = np.asarray(classes)
+        self._proba = proba
+
+    def predict_proba(self, _x: object) -> np.ndarray:
+        return self._proba
+
+
+def _scoring_frame() -> pl.DataFrame:
+    rows = {
+        "season": ["2024-25", "2024-25"],
+        "gw": [1, 1],
+        "element": [5, 6],
+        "opponent": [12, 12],
+    }
+    for feature in FEATURES:
+        rows[feature] = [1.0, 2.0] if feature != "position" else ["MID", "FWD"]
+    return pl.DataFrame(rows)
+
+
+def test_score_minutes_full_three_classes() -> None:
+    """All three classes present: probs preserved, expected minutes derived."""
+    proba = np.array([[0.1, 0.2, 0.7], [0.5, 0.3, 0.2]])
+    model = _StubModel([BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS], proba)
+
+    out = score_minutes(_scoring_frame(), model)  # type: ignore
+
+    assert out["p_zero"].to_list() == [0.1, 0.5]
+    assert out["p_partial"].to_list() == [0.2, 0.3]
+    assert out["p_sixty_plus"].to_list() == [0.7, 0.2]
+    # expected_minutes = p_partial*30 + p_sixty_plus*75
+    assert out["expected_minutes"].to_list() == [
+        0.2 * 30 + 0.7 * 75,
+        0.3 * 30 + 0.2 * 75,
+    ]
+    for key in ["season", "gw", "element", "opponent"]:
+        assert key in out.columns
+
+
+def test_score_minutes_missing_class_gives_zero_column() -> None:
+    """A class absent from classes_ yields a zero probability column."""
+    # classes_ omits BUCKET_PARTIAL — proba has two columns.
+    proba = np.array([[0.3, 0.7]])
+    model = _StubModel([BUCKET_ZERO, BUCKET_SIXTY_PLUS], proba)
+    frame = _scoring_frame().head(1)
+
+    out = score_minutes(frame, model)  # type: ignore
+
+    assert out["p_partial"].to_list() == [0.0]
+    assert out["p_zero"].to_list() == [0.3]
+    assert out["p_sixty_plus"].to_list() == [0.7]
+    assert out["expected_minutes"].to_list() == [0.7 * 75]
+
+
+def test_production_model_version_returns_version() -> None:
+    """production_model_version returns the aliased version string."""
+    with mock.patch(
+        "fantasy_football.modelling.minutes.mlflow"
+    ) as mlflow_mock:
+        client = mlflow_mock.tracking.MlflowClient.return_value
+        client.get_model_version_by_alias.return_value = SimpleNamespace(
+            version="7"
+        )
+        version = production_model_version()
+
+    assert version == "7"
+
+
+def test_production_model_version_none_when_missing() -> None:
+    """A missing alias/registered model yields None, not an error."""
+    with mock.patch(
+        "fantasy_football.modelling.minutes.mlflow"
+    ) as mlflow_mock:
+        client = mlflow_mock.tracking.MlflowClient.return_value
+        client.get_model_version_by_alias.side_effect = MlflowException(
+            "no such alias"
+        )
+        version = production_model_version()
+
+    assert version is None
+
+
+from fantasy_football.constants import CURRENT_SEASON  # noqa: E402
+from fantasy_football.modelling.minutes import backfill_minutes  # noqa: E402
+from fantasy_football.storage.database import (  # noqa: E402
+    get_connection,
+    load_minutes_prediction,
+    upsert_minutes_prediction,
+)
+
+
+class _ConstantModel:
+    """Returns the same 3-class probabilities for every input row."""
+
+    def __init__(self) -> None:
+        self.classes_ = np.asarray(
+            [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
+        )
+
+    def predict_proba(self, x: object) -> np.ndarray:
+        return np.tile([0.1, 0.2, 0.7], (len(x), 1))  # type: ignore
+
+
+def _backfill_model_frame() -> pl.DataFrame:
+    """Return a frame spanning one historic season and the current season."""
+    seasons = ["2024-25", CURRENT_SEASON]
+    rows = []
+    for season in seasons:
+        row = {
+            "season": season,
+            "gw": 1,
+            "element": 5,
+            "opponent": 12,
+            "minutes": 90,
+            "minutes_bucket": BUCKET_SIXTY_PLUS,
+        }
+        for feature in FEATURES:
+            row[feature] = 1.0 if feature != "position" else "MID"
+        rows.append(row)
+    return pl.DataFrame(rows)
+
+
+def _patched_backfill(tmp_path, prod_version, db_name="bf.duckdb"):
+    """Context helpers: patched deps around a real temp DuckDB."""
+    db_path = tmp_path / db_name
+    return (
+        db_path,
+        mock.patch(
+            "fantasy_football.modelling.minutes.production_model_version",
+            return_value=prod_version,
+        ),
+        mock.patch(
+            "fantasy_football.modelling.minutes.assemble_model_frame",
+            return_value=_backfill_model_frame(),
+        ),
+        mock.patch(
+            "fantasy_football.modelling.minutes.get_connection",
+            side_effect=lambda: get_connection(db_path),
+        ),
+        mock.patch(
+            "fantasy_football.modelling.minutes.mlflow.sklearn.load_model",
+            return_value=_ConstantModel(),
+        ),
+    )
+
+
+def test_backfill_minutes_noop_without_production_alias(tmp_path) -> None:
+    """With no production alias the backfill writes nothing and never loads."""
+    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+        tmp_path, prod_version=None
+    )
+    with p_ver, p_frame, p_conn, p_load as load_mock:
+        backfill_minutes()
+
+    load_mock.assert_not_called()
+    conn = get_connection(db_path)
+    try:
+        assert load_minutes_prediction(conn).height == 0
+    finally:
+        conn.close()
+
+
+def test_backfill_minutes_populates_all_seasons_when_empty(tmp_path) -> None:
+    """First backfill scores every season and stamps the production version."""
+    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+        tmp_path, prod_version="2"
+    )
+    with p_ver, p_frame, p_conn, p_load:
+        backfill_minutes()
+
+    conn = get_connection(db_path)
+    try:
+        out = load_minutes_prediction(conn)
+    finally:
+        conn.close()
+    assert set(out["season"].to_list()) == {"2024-25", CURRENT_SEASON}
+    assert set(out["model_version"].to_list()) == {"2"}
+
+
+def test_backfill_minutes_skips_historic_when_version_matches(
+    tmp_path,
+) -> None:
+    """Matching version leaves historic rows untouched, refreshes current."""
+    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+        tmp_path, prod_version="2"
+    )
+    # Pre-seed historic season with a sentinel expected_minutes at version 2.
+    seed_conn = get_connection(db_path)
+    try:
+        seeded = pl.DataFrame(
+            [
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 12,
+                    "p_zero": 0.0,
+                    "p_partial": 0.0,
+                    "p_sixty_plus": 1.0,
+                    "expected_minutes": 999.0,
+                    "model_version": "2",
+                }
+            ]
+        )
+        upsert_minutes_prediction(seed_conn, seeded, "2024-25")
+    finally:
+        seed_conn.close()
+
+    with p_ver, p_frame, p_conn, p_load:
+        backfill_minutes()
+
+    conn = get_connection(db_path)
+    try:
+        out = load_minutes_prediction(conn)
+    finally:
+        conn.close()
+    historic = out.filter(pl.col("season") == "2024-25")
+    # Untouched sentinel proves historic was not rewritten.
+    assert historic["expected_minutes"].to_list() == [999.0]
+    # Current season still scored.
+    assert out.filter(pl.col("season") == CURRENT_SEASON).height == 1
+
+
+def test_backfill_minutes_rebuilds_historic_on_version_change(
+    tmp_path,
+) -> None:
+    """A new production version triggers a full historic rewrite."""
+    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+        tmp_path, prod_version="3"
+    )
+    seed_conn = get_connection(db_path)
+    try:
+        seeded = pl.DataFrame(
+            [
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 12,
+                    "p_zero": 0.0,
+                    "p_partial": 0.0,
+                    "p_sixty_plus": 1.0,
+                    "expected_minutes": 999.0,
+                    "model_version": "2",
+                }
+            ]
+        )
+        upsert_minutes_prediction(seed_conn, seeded, "2024-25")
+    finally:
+        seed_conn.close()
+
+    with p_ver, p_frame, p_conn, p_load:
+        backfill_minutes()
+
+    conn = get_connection(db_path)
+    try:
+        out = load_minutes_prediction(conn)
+    finally:
+        conn.close()
+    assert set(out["model_version"].to_list()) == {"3"}
+    historic = out.filter(pl.col("season") == "2024-25")
+    # Sentinel overwritten by a fresh score.
+    assert historic["expected_minutes"].to_list() != [999.0]

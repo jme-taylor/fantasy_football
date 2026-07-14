@@ -20,8 +20,9 @@ fantasy_football/
 ├── fpl_types.py        — Pydantic types describing FPL API responses
 ├── storage/            — persistence
 │   └── database.py     — DuckDB store; the single source of truth for the
-│                          player_week, team_fixture, player_match and
-│                          player_availability tables (create/coerce/upsert/load)
+│                          player_week, team_fixture, player_match,
+│                          player_availability and minutes_prediction tables
+│                          (create/coerce/upsert/load)
 ├── extraction/         — ingest raw data into the DuckDB store
 │   ├── fpl.py          — wrappers around the live FPL API (players, teams, fixtures, per-fixture history)
 │   ├── player_match.py — build the current season's per-fixture player_match rows from the FPL API
@@ -39,7 +40,8 @@ fantasy_football/
 │   └── availability.py — rolling minutes, chance-of-playing and positional-availability features
 ├── modelling/          — train, predict, evaluate
 │   ├── models.py       — per-position points models behind a shared interface
-│   ├── minutes.py      — end-to-end minutes-played classifier (features, CV, MLflow)
+│   ├── minutes.py      — end-to-end minutes-played classifier (features, CV,
+│                          MLflow registry) + production-model backfill to DB
 │   ├── prediction.py   — apply the models to produce per-(player, gameweek) predictions
 │   ├── metrics.py      — regression metrics (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
 │   └── evaluation.py   — replay historical gameweeks one step ahead and log to MLflow
@@ -58,7 +60,7 @@ marked `@pytest.mark.integration` and deselected by default.
 The source of truth is a single-file DuckDB database at
 `data/fantasy_football.duckdb` (gitignored). `storage/database.py` is the only
 module that touches DuckDB: extractors hand it Polars frames, downstream code
-reads frames back. It owns four tables:
+reads frames back. It owns five tables:
 
 * **`player_week`** — one row per `(season, gw, element)`, collapsed across
   double gameweeks. The substrate for the rolling-points features and the
@@ -70,6 +72,11 @@ reads frames back. It owns four tables:
   substrate for the minutes-played model.
 * **`player_availability`** — one row per `(season, gw, element)` capturing
   FPL's point-in-time `chance_of_playing_this_round`.
+* **`minutes_prediction`** — one row per `(season, gw, element, opponent)`
+  holding the production minutes model's 3-class probabilities (`p_zero`,
+  `p_partial`, `p_sixty_plus`), the derived `expected_minutes`, and the
+  `model_version` that produced them. Populated by the version-gated backfill
+  (see [Minutes-played model](#minutes-played-model)).
 
 Completed (immutable) seasons are inserted once and skipped thereafter; the
 current season is upserted (delete-then-insert) every run so late corrections,
@@ -127,6 +134,35 @@ and positional value rank. The model runs on every data refresh from `main`,
 but a modelling failure is logged and swallowed so it can never block
 prediction and optimisation.
 
+### Registry, promotion and backfill
+
+Every training run **registers** a new version of the model in the MLflow Model
+Registry under `minutes_played_classifier`. It does **not** move any alias.
+Promotion is manual: assign the `production` alias to a chosen version in the
+MLflow UI (open the *Models* tab, pick a version, add the alias `production`).
+
+On each `main` run, `run_minutes_backfill()` loads
+`models:/minutes_played_classifier@production` and writes per-match predictions
+to the `minutes_prediction` table. The backfill is **version-gated**: the
+current season is re-scored every run (new gameweeks arrive continuously), while
+historic seasons are re-scored **only** when the production version changes (or
+rows/seasons are missing). Each stored row records the `model_version` that
+produced it, which is what the gate compares against. Before the first manual
+promotion — i.e. with no `production` alias set — the backfill is a logged
+no-op.
+
+> **Known leakage.** The single production ("champion") model scores its own
+> training seasons, so the historic predictions are **in-sample**. This is fine
+> for evaluation and the optimiser, but a points model that trains on these
+> predictions as a feature learns from a mildly over-optimistic signal it won't
+> have at real prediction time. Accepted for now; the leak-free fix is to store
+> out-of-fold expanding-window predictions for historic seasons instead.
+
+> **Planned: gated auto-promotion.** Manual promotion will eventually be
+> replaced by automatically promoting a freshly trained version to `production`
+> only when it beats the current champion on a CV metric (e.g.
+> `logloss_appear`), removing the manual UI step.
+
 ## Roadmap
 
 The high-level milestones are:
@@ -148,6 +184,9 @@ The high-level milestones are:
   * [X] Per-fixture `player_match` table and point-in-time `player_availability` table
   * [X] Availability / valuation features
   * [X] 3-class classifier with expanding-window CV, scored on appearance and 60+ boundaries, logged to MLflow
+  * [X] Register each trained model in the MLflow Model Registry (manual `production` promotion via the UI)
+  * [X] Version-gated backfill of production predictions to the `minutes_prediction` table
+  * [ ] Gated auto-promotion (promote a new version only when it beats the champion)
   * [ ] Feed its appearance probabilities into the per-position points models
 * [ ] Dig into the worst-performing position and investigate its scoring errors
 * [ ] Identify and incorporate additional features to improve the model

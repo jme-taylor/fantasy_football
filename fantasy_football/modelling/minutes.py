@@ -1,19 +1,12 @@
-"""End-to-end minutes-played classifier: features, CV scoring, MLflow.
-
-A single 3-class model predicts each player's minutes bucket for a match:
-benched (``0_minutes``), partial (``1_to_59_minutes``) or a full-ish shift
-(``60_minutes_plus``). It is scored on the two decision boundaries downstream
-points models care about — probability of any appearance and probability of a
-60+ minute appearance — cross-validated with an expanding window over seasons,
-then refit on all seasons and logged to MLflow.
-"""
-
 import logging
+from typing import TYPE_CHECKING
 
 import mlflow
 import mlflow.sklearn
+import mlflow.tracking
 import numpy as np
 import polars as pl
+from mlflow.exceptions import MlflowException
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -25,7 +18,13 @@ from sklearn.metrics import (
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from fantasy_football.constants import MINUTES_EXPERIMENT, MLFLOW_TRACKING_URI
+from fantasy_football.constants import (
+    CURRENT_SEASON,
+    MINUTES_EXPERIMENT,
+    MINUTES_PRODUCTION_ALIAS,
+    MINUTES_REGISTERED_MODEL,
+    MLFLOW_TRACKING_URI,
+)
 from fantasy_football.features.availability import (
     add_chance_of_playing,
     add_positional_availability,
@@ -35,10 +34,17 @@ from fantasy_football.features.valuation import (
     add_team_value,
 )
 from fantasy_football.storage.database import (
+    get_connection,
     load_player_availability,
     load_player_match,
     load_player_week,
+    minutes_prediction_seasons_present,
+    minutes_prediction_versions,
+    upsert_minutes_prediction,
 )
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
 
@@ -159,15 +165,25 @@ def build_model_frame(
     Returns
     -------
     pl.DataFrame
-        Columns ``season``, ``gw``, ``element``, ``minutes``,
-        ``minutes_bucket`` and every column in ``FEATURES``.
+        Columns ``season``, ``gw``, ``element``, ``opponent``, ``minutes``,
+        ``minutes_bucket`` and every column in ``FEATURES``. ``opponent`` is
+        carried through so downstream scoring keys predictions at match grain
+        (one row per fixture, disambiguating double gameweeks).
     """
-    joined = player_match.select(["season", "gw", "element", "minutes"]).join(
-        feature_frame, on=["season", "gw", "element"], how="inner"
-    )
+    joined = player_match.select(
+        ["season", "gw", "element", "opponent", "minutes"]
+    ).join(feature_frame, on=["season", "gw", "element"], how="inner")
     joined = create_minutes_bucket(joined)
     return joined.select(
-        ["season", "gw", "element", "minutes", "minutes_bucket", *FEATURES]
+        [
+            "season",
+            "gw",
+            "element",
+            "opponent",
+            "minutes",
+            "minutes_bucket",
+            *FEATURES,
+        ]
     )
 
 
@@ -410,9 +426,7 @@ def run_minutes_model() -> dict[str, float]:
     folds = season_folds(seasons)
     if not folds:
         logger.warning(
-            "Need at least two seasons to evaluate the minutes model; "
-            "found %d. Skipping.",
-            len(seasons),
+            f"Need at least two seasons to evaluate the minutes model; found {len(seasons)}. Skipping."
         )
         return {}
 
@@ -435,7 +449,153 @@ def run_minutes_model() -> dict[str, float]:
             for key, value in fold_metrics.items():
                 mlflow.log_metric(key, value, step=step)
         mlflow.log_metrics(agg)
-        mlflow.sklearn.log_model(final_model, name="model")
+        mlflow.sklearn.log_model(
+            final_model,
+            name="model",
+            registered_model_name=MINUTES_REGISTERED_MODEL,
+        )
 
     logger.info("Minutes model logged to MLflow: %s", agg)
     return agg
+
+
+def production_model_version() -> str | None:
+    """Return the version string carrying the production alias, or None.
+
+    Looks up ``MINUTES_REGISTERED_MODEL@MINUTES_PRODUCTION_ALIAS`` in the MLflow
+    Model Registry. Returns ``None`` (without raising) when the registered model
+    or the alias does not exist yet — which is the normal state until the first
+    manual promotion in the MLflow UI.
+
+    Returns
+    -------
+    str | None
+        The aliased model version, or ``None`` if no production alias is set.
+    """
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    client = mlflow.tracking.MlflowClient()
+    try:
+        version = client.get_model_version_by_alias(
+            MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
+        )
+    except MlflowException:
+        return None
+    return version.version
+
+
+def score_minutes(frame: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
+    """Score a fitted minutes model over ``frame`` and return predictions.
+
+    Applies ``predict_proba`` and aligns the probability columns to the model's
+    ``classes_`` (a class absent from ``classes_`` yields a zero column), then
+    derives ``expected_minutes`` from the bucket midpoints.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        Rows with the match keys (``season``, ``gw``, ``element``,
+        ``opponent``) and every column in ``FEATURES``.
+    model : sklearn.pipeline.Pipeline
+        A fitted pipeline exposing ``predict_proba`` and ``classes_``.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per input row with ``season``, ``gw``, ``element``,
+        ``opponent``, ``p_zero``, ``p_partial``, ``p_sixty_plus`` and
+        ``expected_minutes``.
+    """
+    proba = model.predict_proba(frame.select(FEATURES).to_pandas())
+    classes = list(model.classes_)
+    p_zero = _boundary_column(proba, classes, BUCKET_ZERO)
+    p_partial = _boundary_column(proba, classes, BUCKET_PARTIAL)
+    p_sixty_plus = _boundary_column(proba, classes, BUCKET_SIXTY_PLUS)
+    expected_minutes = (
+        p_partial * MINUTE_MIDPOINTS[BUCKET_PARTIAL]
+        + p_sixty_plus * MINUTE_MIDPOINTS[BUCKET_SIXTY_PLUS]
+    )
+    return frame.select(["season", "gw", "element", "opponent"]).with_columns(
+        p_zero=pl.Series(p_zero),
+        p_partial=pl.Series(p_partial),
+        p_sixty_plus=pl.Series(p_sixty_plus),
+        expected_minutes=pl.Series(expected_minutes),
+    )
+
+
+def _score_and_store(
+    connection: "DuckDBPyConnection",
+    model_frame: pl.DataFrame,
+    season: str,
+    model: Pipeline,
+    version: str,
+) -> None:
+    """Score one season's rows and upsert them, stamped with ``version``."""
+    sub = model_frame.filter(pl.col("season") == season)
+    if sub.is_empty():
+        return
+    scored = score_minutes(sub, model).with_columns(
+        model_version=pl.lit(version)
+    )
+    upsert_minutes_prediction(connection, scored, season)
+
+
+def backfill_minutes() -> None:
+    """Score the production minutes model over all seasons and persist rows.
+
+    Loads the ``production``-aliased model, always re-scores the current season
+    (new gameweeks arrive each run), and re-scores the historic seasons only
+    when the stored predictions are missing or were produced by a different
+    model version — the version-gated backfill. Every stored row is stamped
+    with the production model version that produced it.
+
+    Does nothing (logs a warning) when no ``production`` alias is set, which is
+    the normal state until the first manual promotion in the MLflow UI.
+    """
+    prod_version = production_model_version()
+    if prod_version is None:
+        logger.warning(
+            f"No '{MINUTES_PRODUCTION_ALIAS}' alias on registered model {MINUTES_REGISTERED_MODEL}; skipping minutes backfill. "
+            "Promote a version in the MLflow UI to enable it.",
+        )
+        return
+
+    model = mlflow.sklearn.load_model(
+        f"models:/{MINUTES_REGISTERED_MODEL}@{MINUTES_PRODUCTION_ALIAS}"
+    )
+    model_frame = assemble_model_frame()
+    all_seasons = set(model_frame["season"].unique().to_list())
+    historic_seasons = sorted(all_seasons - {CURRENT_SEASON})
+
+    connection = get_connection()
+    try:
+        # The current season is always refreshed — new gameweeks each run.
+        _score_and_store(
+            connection, model_frame, CURRENT_SEASON, model, prod_version
+        )
+
+        # Gate the historic backfill on the versions/seasons already stored.
+        stored_versions = minutes_prediction_versions(
+            connection, seasons=historic_seasons
+        )
+        stored_seasons = minutes_prediction_seasons_present(connection) & set(
+            historic_seasons
+        )
+        historic_needs_rebuild = bool(historic_seasons) and (
+            stored_versions != {prod_version}
+            or stored_seasons != set(historic_seasons)
+        )
+
+        if historic_needs_rebuild:
+            for season in historic_seasons:
+                _score_and_store(
+                    connection, model_frame, season, model, prod_version
+                )
+            logger.info(
+                f"Backfilled historic minutes predictions for {historic_seasons} at version {prod_version}",
+            )
+        else:
+            logger.info(
+                f"Historic minutes predictions already at version {prod_version}; skipping.",
+            )
+    finally:
+        connection.close()

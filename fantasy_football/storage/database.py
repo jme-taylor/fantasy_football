@@ -124,6 +124,7 @@ def get_connection(
     connection.execute(_CREATE_TEAM_FIXTURE_TABLE)
     connection.execute(_CREATE_PLAYER_MATCH_TABLE)
     connection.execute(_CREATE_PLAYER_AVAILABILITY_TABLE)
+    connection.execute(_CREATE_MINUTES_PREDICTION_TABLE)
     return connection
 
 
@@ -669,6 +670,183 @@ def load_player_availability(
             conn.close()
 
 
+# Canonical minutes-prediction column order. One row per match (season, gw, element, opponent).
+MINUTES_PREDICTION_COLUMNS: list[str] = [
+    "season",
+    "gw",
+    "element",
+    "opponent",
+    "p_zero",
+    "p_partial",
+    "p_sixty_plus",
+    "expected_minutes",
+    "model_version",
+]
+
+# Polars dtypes incoming minutes-prediction frames are pinned to before insert.
+MINUTES_PREDICTION_SCHEMA: dict[str, pl.DataType] = {
+    "season": pl.Utf8,
+    "gw": pl.Int64,
+    "element": pl.Int64,
+    "opponent": pl.Int64,
+    "p_zero": pl.Float64,
+    "p_partial": pl.Float64,
+    "p_sixty_plus": pl.Float64,
+    "expected_minutes": pl.Float64,
+    "model_version": pl.Utf8,
+}
+
+_CREATE_MINUTES_PREDICTION_TABLE = """
+CREATE TABLE IF NOT EXISTS minutes_prediction (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
+    opponent BIGINT NOT NULL,
+    p_zero DOUBLE,
+    p_partial DOUBLE,
+    p_sixty_plus DOUBLE,
+    expected_minutes DOUBLE,
+    model_version VARCHAR,
+    PRIMARY KEY (season, gw, element, opponent)
+)
+"""
+
+
+def coerce_minutes_prediction(frame: pl.DataFrame) -> pl.DataFrame:
+    """Reduce a frame to the canonical minutes-prediction columns and dtypes.
+
+    Selects exactly ``MINUTES_PREDICTION_COLUMNS`` (ignoring any extra source
+    columns) and pins the dtypes to ``MINUTES_PREDICTION_SCHEMA``.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        A frame to coerce.
+
+    Returns
+    -------
+    pl.DataFrame
+        The coerced frame.
+    """
+    return frame.select(MINUTES_PREDICTION_COLUMNS).cast(
+        MINUTES_PREDICTION_SCHEMA, strict=False
+    )
+
+
+def upsert_minutes_prediction(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Replace all stored minutes-prediction rows for ``season`` with a frame.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        A frame to upsert.
+    season : str
+        The season to upsert.
+    """
+    shaped = coerce_minutes_prediction(frame)
+    connection.register("incoming_minutes_prediction", shaped.to_arrow())
+    try:
+        connection.execute(
+            "DELETE FROM minutes_prediction WHERE season = ?", [season]
+        )
+        connection.execute(
+            "INSERT INTO minutes_prediction "
+            "SELECT * FROM incoming_minutes_prediction"
+        )
+    finally:
+        connection.unregister("incoming_minutes_prediction")
+    logger.info(
+        "Upserted %d minutes-prediction rows for season %s",
+        shaped.height,
+        season,
+    )
+
+
+def load_minutes_prediction(
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> pl.DataFrame:
+    """Return the entire ``minutes_prediction`` table as a Polars frame.
+
+    Rows are ordered by ``(season, gw, element, opponent)``.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. Defaults to ``get_connection()``.
+
+    Returns
+    -------
+    pl.DataFrame
+        The entire ``minutes_prediction`` table as a Polars frame.
+    """
+    owns_connection = connection is None
+    conn = connection or get_connection()
+    try:
+        return conn.execute(
+            "SELECT " + ", ".join(MINUTES_PREDICTION_COLUMNS) + " "
+            "FROM minutes_prediction "
+            "ORDER BY season, gw, element, opponent"
+        ).pl()
+    finally:
+        if owns_connection:
+            conn.close()
+
+
+def minutes_prediction_seasons_present(
+    connection: duckdb.DuckDBPyConnection,
+) -> set[str]:
+    """Return the set of seasons already stored in ``minutes_prediction``.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+
+    Returns
+    -------
+    set[str]
+        The set of seasons already stored in ``minutes_prediction``.
+    """
+    rows = connection.execute(
+        "SELECT DISTINCT season FROM minutes_prediction"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def minutes_prediction_versions(
+    connection: duckdb.DuckDBPyConnection,
+    seasons: list[str] | None = None,
+) -> set[str]:
+    """Return the distinct ``model_version`` values stored in the table.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    seasons : list[str] | None, optional
+        When given, restrict to these seasons (used to gate the historic
+        backfill on the versions already stored for historic seasons).
+    """
+    if seasons is None:
+        rows = connection.execute(
+            "SELECT DISTINCT model_version FROM minutes_prediction"
+        ).fetchall()
+    else:
+        placeholders = ", ".join("?" for _ in seasons)
+        rows = connection.execute(
+            "SELECT DISTINCT model_version FROM minutes_prediction "
+            f"WHERE season IN ({placeholders})",
+            seasons,
+        ).fetchall()
+    return {row[0] for row in rows if row[0] is not None}
+
+
 def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
     """Drop and recreate the ``player_week`` and ``team_fixture`` tables (full-rebuild escape hatch).
 
@@ -685,3 +863,5 @@ def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
     connection.execute(_CREATE_PLAYER_MATCH_TABLE)
     connection.execute("DROP TABLE IF EXISTS player_availability")
     connection.execute(_CREATE_PLAYER_AVAILABILITY_TABLE)
+    connection.execute("DROP TABLE IF EXISTS minutes_prediction")
+    connection.execute(_CREATE_MINUTES_PREDICTION_TABLE)

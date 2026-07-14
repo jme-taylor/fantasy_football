@@ -611,3 +611,192 @@ def test_upsert_current_player_availability_replaces_season(tmp_path) -> None:
 
     assert out.height == 1
     assert out["chance_of_playing_this_round"].to_list() == [100]
+
+
+from fantasy_football.storage.database import (  # noqa: E402
+    MINUTES_PREDICTION_COLUMNS,
+    coerce_minutes_prediction,
+    load_minutes_prediction,
+    minutes_prediction_versions,
+    upsert_minutes_prediction,
+)
+
+
+def _minutes_prediction_frame(rows: list[dict]) -> pl.DataFrame:
+    return pl.DataFrame(rows)
+
+
+def test_get_connection_creates_minutes_prediction_table(
+    tmp_path: Path,
+) -> None:
+    """get_connection creates an empty minutes_prediction table."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        columns = [
+            row[0]
+            for row in connection.execute(
+                "DESCRIBE minutes_prediction"
+            ).fetchall()
+        ]
+    finally:
+        connection.close()
+    assert columns == MINUTES_PREDICTION_COLUMNS
+
+
+def test_coerce_minutes_prediction_selects_and_pins_dtypes() -> None:
+    """Coerce drops extra columns and pins the canonical dtypes."""
+    frame = _minutes_prediction_frame(
+        [
+            {
+                "season": "2024-25",
+                "gw": 1,
+                "element": 5,
+                "opponent": 12,
+                "p_zero": 0.1,
+                "p_partial": 0.2,
+                "p_sixty_plus": 0.7,
+                "expected_minutes": 58.5,
+                "model_version": "3",
+                "extra": "ignored",
+            }
+        ]
+    )
+    result = coerce_minutes_prediction(frame)
+    assert result.columns == MINUTES_PREDICTION_COLUMNS
+    assert result["gw"].dtype == pl.Int64
+    assert result["opponent"].dtype == pl.Int64
+    assert result["p_sixty_plus"].dtype == pl.Float64
+    assert result["model_version"].dtype == pl.Utf8
+
+
+def test_minutes_prediction_pk_disambiguates_double_gameweek(
+    tmp_path: Path,
+) -> None:
+    """Two fixtures for one (season, gw, element) coexist via distinct opponent."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        frame = _minutes_prediction_frame(
+            [
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 12,
+                    "p_zero": 0.1,
+                    "p_partial": 0.2,
+                    "p_sixty_plus": 0.7,
+                    "expected_minutes": 58.5,
+                    "model_version": "3",
+                },
+                {
+                    "season": "2024-25",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 7,
+                    "p_zero": 0.3,
+                    "p_partial": 0.3,
+                    "p_sixty_plus": 0.4,
+                    "expected_minutes": 39.0,
+                    "model_version": "3",
+                },
+            ]
+        )
+        upsert_minutes_prediction(connection, frame, "2024-25")
+        out = load_minutes_prediction(connection)
+    finally:
+        connection.close()
+    assert out.height == 2
+
+
+def test_upsert_minutes_prediction_replaces_season(tmp_path: Path) -> None:
+    """Upsert replaces all rows for the season with the fresh frame."""
+    connection = get_connection(tmp_path / "test.duckdb")
+
+    def one_row(version: str, exp: float) -> pl.DataFrame:
+        return _minutes_prediction_frame(
+            [
+                {
+                    "season": "2025-26",
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 12,
+                    "p_zero": 0.1,
+                    "p_partial": 0.2,
+                    "p_sixty_plus": 0.7,
+                    "expected_minutes": exp,
+                    "model_version": version,
+                }
+            ]
+        )
+
+    try:
+        upsert_minutes_prediction(connection, one_row("1", 58.5), "2025-26")
+        upsert_minutes_prediction(connection, one_row("2", 60.0), "2025-26")
+        out = load_minutes_prediction(connection)
+    finally:
+        connection.close()
+    assert out.height == 1
+    assert out["model_version"].to_list() == ["2"]
+    assert out["expected_minutes"].to_list() == [60.0]
+
+
+def test_minutes_prediction_versions_returns_distinct(tmp_path: Path) -> None:
+    """Distinct model versions are returned, optionally filtered by season."""
+    connection = get_connection(tmp_path / "test.duckdb")
+
+    def row(season: str, version: str) -> pl.DataFrame:
+        return _minutes_prediction_frame(
+            [
+                {
+                    "season": season,
+                    "gw": 1,
+                    "element": 5,
+                    "opponent": 12,
+                    "p_zero": 0.1,
+                    "p_partial": 0.2,
+                    "p_sixty_plus": 0.7,
+                    "expected_minutes": 58.5,
+                    "model_version": version,
+                }
+            ]
+        )
+
+    try:
+        upsert_minutes_prediction(connection, row("2024-25", "1"), "2024-25")
+        upsert_minutes_prediction(connection, row("2025-26", "2"), "2025-26")
+        all_versions = minutes_prediction_versions(connection)
+        historic = minutes_prediction_versions(connection, seasons=["2024-25"])
+    finally:
+        connection.close()
+    assert all_versions == {"1", "2"}
+    assert historic == {"1"}
+
+
+def test_reset_database_drops_minutes_prediction_rows(tmp_path: Path) -> None:
+    """reset_database empties the minutes_prediction table."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        upsert_minutes_prediction(
+            connection,
+            _minutes_prediction_frame(
+                [
+                    {
+                        "season": "2025-26",
+                        "gw": 1,
+                        "element": 5,
+                        "opponent": 12,
+                        "p_zero": 0.1,
+                        "p_partial": 0.2,
+                        "p_sixty_plus": 0.7,
+                        "expected_minutes": 58.5,
+                        "model_version": "1",
+                    }
+                ]
+            ),
+            "2025-26",
+        )
+        reset_database(connection)
+        out = load_minutes_prediction(connection)
+    finally:
+        connection.close()
+    assert out.height == 0
