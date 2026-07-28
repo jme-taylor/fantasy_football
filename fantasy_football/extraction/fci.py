@@ -349,7 +349,9 @@ class FciExtractor:
         long_season = season_short_to_long(short_season)
         snapshots, matchstats, players = self.fetch_season_frames(long_season)
         gameweeks = self.list_gameweeks(long_season)
-        player_gw_team = self.fpl_cache.build_player_gw_team(gameweeks)
+        player_gw_team = self.fpl_cache.build_player_gw_team(
+            short_season, gameweeks
+        )
         merged = build_merged_gw(
             snapshots,
             matchstats,

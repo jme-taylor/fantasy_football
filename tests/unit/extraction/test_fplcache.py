@@ -2,6 +2,7 @@ import json
 import lzma
 from datetime import datetime, timezone
 
+import pytest
 from pytest_mock import MockerFixture
 
 from fantasy_football.extraction.extractor import GitHubAPIClient
@@ -57,30 +58,6 @@ def test_latest_snapshot_path_walks_descending(
     )
 
     assert extractor._latest_snapshot_path() == "cache/2025/12/26/1833.json.xz"
-
-
-def test_event_deadlines_parses_from_latest_snapshot(
-    mocker: MockerFixture,
-) -> None:
-    """event_deadlines reads the events array from the latest snapshot."""
-    extractor = _make_extractor()
-    mocker.patch.object(
-        extractor, "_latest_snapshot_path", return_value="cache/x.json.xz"
-    )
-    mocker.patch.object(
-        extractor,
-        "_read_snapshot",
-        return_value={
-            "events": [
-                {"id": 1, "deadline_time": "2025-08-15T17:30:00Z"},
-                {"id": 2, "deadline_time": "2025-08-22T17:30:00Z"},
-            ]
-        },
-    )
-
-    deadlines = extractor.event_deadlines()
-    assert deadlines[1] == datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc)
-    assert deadlines[2] == datetime(2025, 8, 22, 17, 30, tzinfo=timezone.utc)
 
 
 def test_snapshot_path_for_picks_first_at_or_after_deadline(
@@ -300,7 +277,7 @@ def test_build_player_gw_team_emits_per_gw_team_code(
     extractor = _make_extractor()
     mocker.patch.object(
         extractor,
-        "event_deadlines",
+        "season_event_deadlines",
         return_value={
             1: datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc),
             2: datetime(2025, 8, 22, 17, 30, tzinfo=timezone.utc),
@@ -319,9 +296,85 @@ def test_build_player_gw_team_emits_per_gw_team_code(
         extractor, "_read_snapshot", side_effect=lambda p: snapshots[p]
     )
 
-    result = extractor.build_player_gw_team([1, 2]).sort("gw")
+    result = extractor.build_player_gw_team("2025-26", [1, 2]).sort("gw")
     assert result.columns == ["gw", "element", "team_code"]
     assert result.to_dicts() == [
         {"gw": 1, "element": 82, "team_code": 91},
         {"gw": 2, "element": 82, "team_code": 43},
     ]
+
+
+def test_build_player_gw_team_uses_the_requested_seasons_deadlines(
+    mocker: MockerFixture,
+) -> None:
+    """Deadlines come from the season being built, not the latest snapshot."""
+    extractor = _make_extractor()
+    season_deadlines = mocker.patch.object(
+        extractor,
+        "season_event_deadlines",
+        return_value={1: datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc)},
+    )
+    mocker.patch.object(
+        extractor, "_snapshot_path_for", return_value="cache/15.json.xz"
+    )
+    mocker.patch.object(
+        extractor,
+        "_read_snapshot",
+        return_value={"elements": [{"id": 82, "team_code": 91}]},
+    )
+
+    extractor.build_player_gw_team("2025-26", [1])
+    season_deadlines.assert_called_once_with("2025-26")
+
+
+def test_build_player_gw_team_skips_missing_snapshot(
+    mocker: MockerFixture,
+) -> None:
+    """A gameweek with no snapshot yet is skipped, not fatal."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor,
+        "season_event_deadlines",
+        return_value={
+            1: datetime(2025, 8, 15, 17, 30, tzinfo=timezone.utc),
+            2: datetime(2025, 8, 22, 17, 30, tzinfo=timezone.utc),
+        },
+    )
+
+    def fake_path(deadline: datetime) -> str:
+        if deadline.day == 22:
+            raise ValueError("no snapshot yet")
+        return "cache/15.json.xz"
+
+    mocker.patch.object(extractor, "_snapshot_path_for", side_effect=fake_path)
+    mocker.patch.object(
+        extractor,
+        "_read_snapshot",
+        return_value={"elements": [{"id": 82, "team_code": 91}]},
+    )
+
+    result = extractor.build_player_gw_team("2025-26", [1, 2])
+    assert result.to_dicts() == [{"gw": 1, "element": 82, "team_code": 91}]
+
+
+def test_build_player_gw_team_raises_when_no_snapshots(
+    mocker: MockerFixture,
+) -> None:
+    """No snapshot for any gameweek is fatal, not a silent empty mapping."""
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor,
+        "season_event_deadlines",
+        return_value={
+            1: datetime(2026, 8, 21, 17, 30, tzinfo=timezone.utc),
+            2: datetime(2026, 8, 28, 17, 30, tzinfo=timezone.utc),
+        },
+    )
+    mocker.patch.object(
+        extractor,
+        "_snapshot_path_for",
+        side_effect=ValueError("no snapshot yet"),
+    )
+
+    with pytest.raises(ValueError, match="2025-26"):
+        extractor.build_player_gw_team("2025-26", [1, 2])
