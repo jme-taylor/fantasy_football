@@ -20,7 +20,7 @@ MAN_CITY_CODE = 43
 def test_gw1_team_is_pre_transfer_club() -> None:
     """In GW1, Semenyo/Guehi are at their original clubs, not Man City."""
     extractor = FplCacheExtractor()
-    table = extractor.build_player_gw_team([1])
+    table = extractor.build_player_gw_team("2025-26", [1])
 
     semenyo = table.filter(
         (table["gw"] == 1) & (table["element"] == SEMENYO_ELEMENT)

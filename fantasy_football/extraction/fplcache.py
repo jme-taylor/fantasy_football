@@ -100,22 +100,6 @@ class FplCacheExtractor:
     # How many days past a deadline to search for a snapshot before giving up.
     _MAX_LOOKAHEAD_DAYS = 7
 
-    def event_deadlines(self) -> dict[int, datetime]:
-        """Map gameweek id to its deadline datetime (UTC).
-
-        Returns
-        -------
-        dict[int, datetime]
-            ``{event_id: deadline_time}`` parsed from the latest snapshot.
-        """
-        snapshot = self._read_snapshot(self._latest_snapshot_path())
-        return {
-            event["id"]: datetime.fromisoformat(
-                event["deadline_time"].replace("Z", "+00:00")
-            )
-            for event in snapshot["events"]
-        }
-
     def _snapshot_path_for(self, deadline: datetime) -> str:
         """Return the path of the first snapshot at or after a deadline.
 
@@ -155,11 +139,23 @@ class FplCacheExtractor:
                     return f"{directory}/{name}"
         raise ValueError(f"No fplcache snapshot found at or after {deadline}")
 
-    def build_player_gw_team(self, gameweeks: list[int]) -> pl.DataFrame:
+    def build_player_gw_team(
+        self, season: str, gameweeks: list[int]
+    ) -> pl.DataFrame:
         """Build the per-gameweek player team_code table.
+
+        Gameweeks with no snapshot yet (future rounds of a live season) are
+        skipped; ``build_merged_gw`` fills their team from the neighbouring
+        gameweeks. No snapshot for *any* gameweek is fatal, since the resulting
+        empty mapping would silently fall back to FCI's end-of-season clubs.
 
         Parameters
         ----------
+        season : str
+            Short-form season string, e.g. ``"2025-26"``. Deadlines are read
+            from a snapshot taken inside this season, not the latest snapshot
+            in the cache, which belongs to whichever season FPL is currently
+            serving.
         gameweeks : list[int]
             Gameweek numbers to resolve.
 
@@ -169,11 +165,24 @@ class FplCacheExtractor:
             One row per ``(gw, element)`` with columns ``gw, element,
             team_code`` (all ``Int64``), where ``element`` is the FPL element
             id (== FCI ``player_id``).
+
+        Raises
+        ------
+        ValueError
+            If no gameweek could be resolved to a snapshot.
         """
-        deadlines = self.event_deadlines()
+        deadlines = self.season_event_deadlines(season)
         frames: list[pl.DataFrame] = []
         for gw in gameweeks:
-            path = self._snapshot_path_for(deadlines[gw])
+            try:
+                path = self._snapshot_path_for(deadlines[gw])
+            except ValueError:
+                logger.warning(
+                    "No fplcache snapshot for %s GW%d yet; skipping.",
+                    season,
+                    gw,
+                )
+                continue
             snapshot = self._read_snapshot(path)
             frames.append(
                 pl.DataFrame(
@@ -190,6 +199,11 @@ class FplCacheExtractor:
                         "team_code": pl.Int64,
                     },
                 )
+            )
+        if not frames:
+            raise ValueError(
+                f"No fplcache snapshot found for any of {season} gameweeks "
+                f"{gameweeks}"
             )
         return pl.concat(frames, how="vertical")
 
