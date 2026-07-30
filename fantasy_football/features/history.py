@@ -186,3 +186,93 @@ def add_history_features(
         )
         .drop("season_start")
     )
+
+
+# Columns add_cold_start_features appends, in the order it appends them.
+COLD_START_FEATURES: list[str] = [
+    "age_years",
+    "days_since_team_join",
+    "is_promoted_club",
+]
+
+# Seasons start in August; anchoring age and join-recency at 1 August of the
+# starting year keeps both comparable across seasons without needing a fixture
+# date per row.
+SEASON_ANCHOR_MONTH_DAY: tuple[int, int] = (8, 1)
+
+
+def add_cold_start_features(
+    data: pl.DataFrame, team_fixture: pl.DataFrame
+) -> pl.DataFrame:
+    """Add the signals that stand in for history when a player has none.
+
+    A player arriving from another league has a ``player_code`` but no Premier
+    League past, so every ``prev_season_*`` feature is null for them. These four
+    signals are what remains: how old they are, how recently they joined their
+    club, and whether that club itself is new to the division. Their FPL price
+    -- already a model feature -- carries the rest.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Player rows with ``season``, ``team``, ``birth_date`` and
+        ``team_join_date``.
+    team_fixture : pl.DataFrame
+        Fixture rows with ``season`` and ``team``, used to decide which clubs
+        were in the division in the prior season.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``data`` with every column in ``COLD_START_FEATURES`` added.
+    """
+    month, day = SEASON_ANCHOR_MONTH_DAY
+    frame = data.with_columns(
+        pl.date(_season_start_year("season"), month, day).alias(
+            "_season_anchor"
+        )
+    )
+
+    frame = frame.with_columns(
+        (pl.col("_season_anchor") - pl.col("birth_date"))
+        .dt.total_days()
+        .truediv(365.25)
+        .alias("age_years"),
+        (pl.col("_season_anchor") - pl.col("team_join_date"))
+        .dt.total_days()
+        .cast(pl.Float64)
+        .alias("days_since_team_join"),
+    )
+
+    # A club is promoted when it has fixtures this season but none last season.
+    # The earliest season on record has no prior season to compare against, so
+    # every club in it would look promoted; exclude it explicitly.
+    seasons_with_fixtures = (
+        team_fixture.select("season", "team")
+        .unique()
+        .with_columns(_season_start_year("season").alias("season_start"))
+    )
+    earliest_start = seasons_with_fixtures["season_start"].min()
+    prior_presence = seasons_with_fixtures.select(
+        pl.col("team"),
+        (pl.col("season_start") + 1).alias("season_start"),
+        pl.lit(True).alias("_in_prior_season"),
+    )
+
+    frame = (
+        frame.with_columns(_season_start_year("season").alias("season_start"))
+        .join(
+            prior_presence,
+            on=["team", "season_start"],
+            how="left",
+            coalesce=True,
+        )
+        .with_columns(
+            pl.when(pl.col("season_start") <= earliest_start)
+            .then(pl.lit(False))
+            .otherwise(pl.col("_in_prior_season").is_null())
+            .alias("is_promoted_club")
+        )
+        .drop("_season_anchor", "season_start", "_in_prior_season")
+    )
+    return frame

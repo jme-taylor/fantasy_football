@@ -234,3 +234,97 @@ def test_double_gameweek_does_not_inflate_start_rate() -> None:
 
     # Three matches, two of them 60+.
     assert _row(out, "2022-23", 20)["prev_season_start_rate"] == 2 / 3
+
+
+def test_cold_start_features_compute_age_and_join_recency() -> None:
+    """Age and days-since-joining come from the bio dates and the season start."""
+    from datetime import date
+
+    from fantasy_football.features.history import add_cold_start_features
+
+    data = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "gw": [1],
+            "element": [30],
+            "team": ["Liverpool"],
+            "birth_date": [date(1992, 6, 15)],
+            "team_join_date": [date(2023, 7, 1)],
+        },
+        schema_overrides={"birth_date": pl.Date, "team_join_date": pl.Date},
+    )
+    fixtures = pl.DataFrame(
+        {
+            "season": ["2022-23", "2023-24"],
+            "gw": [1, 1],
+            "team": ["Liverpool", "Liverpool"],
+            "opposition": ["Arsenal", "Arsenal"],
+        }
+    )
+    out = add_cold_start_features(data, fixtures)
+
+    # Season start is anchored at 1 August of the starting year: 2023-08-01.
+    assert round(out["age_years"].item(), 1) == 31.1
+    assert out["days_since_team_join"].item() == 31.0
+    assert out["is_promoted_club"].item() is False
+
+
+def test_cold_start_flags_a_promoted_club() -> None:
+    """A team with no fixtures in the prior season is newly promoted."""
+    from datetime import date
+
+    from fantasy_football.features.history import add_cold_start_features
+
+    data = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "gw": [1],
+            "element": [30],
+            "team": ["Luton"],
+            "birth_date": [date(1999, 1, 1)],
+            "team_join_date": [None],
+        },
+        schema_overrides={"birth_date": pl.Date, "team_join_date": pl.Date},
+    )
+    fixtures = pl.DataFrame(
+        {
+            "season": ["2022-23", "2023-24"],
+            "gw": [1, 1],
+            "team": ["Liverpool", "Luton"],
+            "opposition": ["Arsenal", "Arsenal"],
+        }
+    )
+    out = add_cold_start_features(data, fixtures)
+
+    assert out["is_promoted_club"].item() is True
+    assert out["days_since_team_join"].item() is None
+
+
+def test_cold_start_earliest_season_is_not_flagged_promoted() -> None:
+    """With no prior season on record, promotion is unknowable, not True."""
+    from datetime import date
+
+    from fantasy_football.features.history import add_cold_start_features
+
+    data = pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "element": [30],
+            "team": ["Liverpool"],
+            "birth_date": [date(1999, 1, 1)],
+            "team_join_date": [None],
+        },
+        schema_overrides={"birth_date": pl.Date, "team_join_date": pl.Date},
+    )
+    fixtures = pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "team": ["Liverpool"],
+            "opposition": ["Arsenal"],
+        }
+    )
+    out = add_cold_start_features(data, fixtures)
+
+    assert out["is_promoted_club"].item() is False
