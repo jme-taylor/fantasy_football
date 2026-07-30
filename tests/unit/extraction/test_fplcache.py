@@ -378,3 +378,70 @@ def test_build_player_gw_team_raises_when_no_snapshots(
 
     with pytest.raises(ValueError, match="2025-26"):
         extractor.build_player_gw_team("2025-26", [1, 2])
+
+
+def test_season_event_deadlines_rejects_wrong_season(
+    mocker: MockerFixture,
+) -> None:
+    """Reject deadline maps from a neighbouring season.
+
+    A deadline map from a neighbouring season raises rather than silently
+    passing off last season's dates as this season's.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "_snapshot_path_for", side_effect=ValueError("none")
+    )
+    mocker.patch.object(
+        extractor, "_latest_snapshot_path", return_value="cache/x"
+    )
+    # 2025-26 deadlines returned while 2026-27 was requested.
+    mocker.patch.object(
+        extractor,
+        "_read_snapshot",
+        return_value={
+            "events": [
+                {"id": 1, "deadline_time": "2025-08-15T17:30:00Z"},
+                {"id": 2, "deadline_time": "2025-08-22T17:30:00Z"},
+            ]
+        },
+    )
+    with pytest.raises(ValueError, match="2026-27"):
+        extractor.season_event_deadlines("2026-27")
+
+
+def test_season_event_deadlines_accepts_correct_season(
+    mocker: MockerFixture,
+) -> None:
+    """An August-to-May deadline map for the requested season is returned.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "_snapshot_path_for", side_effect=ValueError("none")
+    )
+    mocker.patch.object(
+        extractor, "_latest_snapshot_path", return_value="cache/x"
+    )
+    mocker.patch.object(
+        extractor,
+        "_read_snapshot",
+        return_value={
+            "events": [
+                {"id": 1, "deadline_time": "2026-08-21T17:30:00Z"},
+                {"id": 38, "deadline_time": "2027-05-30T13:30:00Z"},
+            ]
+        },
+    )
+    deadlines = extractor.season_event_deadlines("2026-27")
+    assert deadlines[1] == datetime(2026, 8, 21, 17, 30, tzinfo=timezone.utc)
+    assert deadlines[38] == datetime(2027, 5, 30, 13, 30, tzinfo=timezone.utc)

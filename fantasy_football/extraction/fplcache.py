@@ -30,6 +30,31 @@ _CHANCE_OF_PLAYING_SCHEMA: dict[str, pl.DataType] = {
 }
 
 
+def _season_window(season: str) -> tuple[datetime, datetime]:
+    """Return the earliest and latest plausible deadline for a season.
+
+    A Premier League season's gameweek deadlines fall between June of its
+    start year and the end of June in its end year. The window is
+    deliberately wide: it exists to catch a whole-season mismatch, not to
+    validate individual fixtures.
+
+    Parameters
+    ----------
+    season : str
+        Short-form season string, e.g. ``"2026-27"``.
+
+    Returns
+    -------
+    tuple[datetime, datetime]
+        Inclusive ``(start, end)`` bounds in UTC.
+    """
+    start_year = int(season[:4])
+    return (
+        datetime(start_year, 6, 1, tzinfo=timezone.utc),
+        datetime(start_year + 1, 7, 1, tzinfo=timezone.utc),
+    )
+
+
 class FplCacheExtractor:
     """Resolve each gameweek's player->team_code map from fplcache snapshots."""
 
@@ -241,18 +266,38 @@ class FplCacheExtractor:
         -------
         dict[int, datetime]
             ``{event_id: deadline_time}`` for the season.
+
+        Raises
+        ------
+        ValueError
+            If the resolved deadlines fall outside ``season``'s own window,
+            meaning the snapshot belongs to a different season.
         """
         try:
             path = self._snapshot_path_for(self._season_probe_datetime(season))
         except ValueError:
             path = self._latest_snapshot_path()
         snapshot = self._read_snapshot(path)
-        return {
+        deadlines = {
             event["id"]: datetime.fromisoformat(
                 event["deadline_time"].replace("Z", "+00:00")
             )
             for event in snapshot["events"]
         }
+        start, end = _season_window(season)
+        outside = [
+            gw
+            for gw, deadline in deadlines.items()
+            if not start <= deadline <= end
+        ]
+        if outside:
+            raise ValueError(
+                f"Snapshot {path} does not hold {season} deadlines: "
+                f"gameweeks {sorted(outside)} fall outside "
+                f"{start.date()}..{end.date()}. The fplcache fallback "
+                f"probably returned a different season's events."
+            )
+        return deadlines
 
     def build_player_chance_of_playing(
         self, season: str, gameweeks: list[int] | None = None
