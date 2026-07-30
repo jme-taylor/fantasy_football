@@ -17,14 +17,101 @@ from fantasy_football.storage.tables import (
     propagate_static_columns,
 )
 
+# Frozen copies of the DDL as it stood before the descriptor refactor.
+# These are a golden record: if a spec change alters the built schema,
+# this test fails and the change must be deliberate.
+_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS player_week (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
+    name VARCHAR,
+    position VARCHAR,
+    team VARCHAR,
+    bonus BIGINT,
+    minutes BIGINT,
+    round BIGINT,
+    total_points BIGINT,
+    value BIGINT,
+    PRIMARY KEY (season, gw, element)
+)
+"""
+
+_CREATE_TEAM_FIXTURE_TABLE = """
+CREATE TABLE IF NOT EXISTS team_fixture (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    team VARCHAR NOT NULL,
+    is_home BOOLEAN,
+    opposition VARCHAR NOT NULL,
+    kickoff_time TIMESTAMP,
+    PRIMARY KEY (season, gw, team, opposition)
+)
+"""
+
+_CREATE_PLAYER_MATCH_TABLE = """
+CREATE TABLE IF NOT EXISTS player_match (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
+    opponent BIGINT NOT NULL,
+    is_home BOOLEAN,
+    minutes BIGINT,
+    total_points BIGINT,
+    PRIMARY KEY (season, gw, element, opponent)
+)
+"""
+
+_CREATE_PLAYER_AVAILABILITY_TABLE = """
+CREATE TABLE IF NOT EXISTS player_availability (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
+    chance_of_playing_this_round BIGINT,
+    PRIMARY KEY (season, gw, element)
+)
+"""
+
+_CREATE_MINUTES_PREDICTION_TABLE = """
+CREATE TABLE IF NOT EXISTS minutes_prediction (
+    season VARCHAR NOT NULL,
+    gw BIGINT NOT NULL,
+    element BIGINT NOT NULL,
+    opponent BIGINT NOT NULL,
+    p_zero DOUBLE,
+    p_partial DOUBLE,
+    p_sixty_plus DOUBLE,
+    expected_minutes DOUBLE,
+    model_version VARCHAR,
+    PRIMARY KEY (season, gw, element, opponent)
+)
+"""
+
+_CREATE_PLAYER_SEASON_TABLE = """
+CREATE TABLE IF NOT EXISTS player_season (
+    season VARCHAR NOT NULL,
+    element BIGINT NOT NULL,
+    player_code BIGINT,
+    web_name VARCHAR,
+    first_name VARCHAR,
+    second_name VARCHAR,
+    position VARCHAR,
+    team_code BIGINT,
+    birth_date DATE,
+    region BIGINT,
+    team_join_date DATE,
+    PRIMARY KEY (season, element)
+)
+"""
+
 # Each spec paired with the legacy DDL string it must reproduce.
 LEGACY_DDL = [
-    (PLAYER_WEEK, database._CREATE_TABLE),
-    (TEAM_FIXTURE, database._CREATE_TEAM_FIXTURE_TABLE),
-    (PLAYER_MATCH, database._CREATE_PLAYER_MATCH_TABLE),
-    (PLAYER_AVAILABILITY, database._CREATE_PLAYER_AVAILABILITY_TABLE),
-    (MINUTES_PREDICTION, database._CREATE_MINUTES_PREDICTION_TABLE),
-    (PLAYER_SEASON, database._CREATE_PLAYER_SEASON_TABLE),
+    (PLAYER_WEEK, _CREATE_TABLE),
+    (TEAM_FIXTURE, _CREATE_TEAM_FIXTURE_TABLE),
+    (PLAYER_MATCH, _CREATE_PLAYER_MATCH_TABLE),
+    (PLAYER_AVAILABILITY, _CREATE_PLAYER_AVAILABILITY_TABLE),
+    (MINUTES_PREDICTION, _CREATE_MINUTES_PREDICTION_TABLE),
+    (PLAYER_SEASON, _CREATE_PLAYER_SEASON_TABLE),
 ]
 
 
