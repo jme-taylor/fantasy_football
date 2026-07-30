@@ -299,6 +299,45 @@ class FplCacheExtractor:
             )
         return deadlines
 
+    def played_gameweeks(
+        self,
+        season: str,
+        gameweeks: list[int],
+        now: datetime | None = None,
+    ) -> list[int]:
+        """Return the gameweeks whose deadline has already passed.
+
+        FCI creates all 38 gameweek folders before a season kicks off, so the
+        folder list alone says nothing about what has been played. A passed
+        deadline is the cheap first test: it needs only the deadline map, so
+        callers can narrow the gameweek list before downloading any CSV.
+
+        Gameweeks missing from the season's deadline map are excluded — FCI
+        occasionally lists a folder FPL's ``events`` array does not carry.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2026-27"``.
+        gameweeks : list[int]
+            Candidate gameweek numbers.
+        now : datetime | None, optional
+            Timezone-aware instant to compare deadlines against. Defaults to
+            the current UTC time.
+
+        Returns
+        -------
+        list[int]
+            Ascending gameweek numbers whose deadline is at or before ``now``.
+        """
+        moment = now or datetime.now(timezone.utc)
+        deadlines = self.season_event_deadlines(season)
+        return sorted(
+            gw
+            for gw in gameweeks
+            if gw in deadlines and deadlines[gw] <= moment
+        )
+
     def build_player_chance_of_playing(
         self, season: str, gameweeks: list[int] | None = None
     ) -> pl.DataFrame:

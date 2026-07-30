@@ -445,3 +445,89 @@ def test_season_event_deadlines_accepts_correct_season(
     deadlines = extractor.season_event_deadlines("2026-27")
     assert deadlines[1] == datetime(2026, 8, 21, 17, 30, tzinfo=timezone.utc)
     assert deadlines[38] == datetime(2027, 5, 30, 13, 30, tzinfo=timezone.utc)
+
+
+_DEADLINES = {
+    1: datetime(2026, 8, 21, 17, 30, tzinfo=timezone.utc),
+    2: datetime(2026, 8, 28, 17, 30, tzinfo=timezone.utc),
+    3: datetime(2026, 9, 12, 10, 0, tzinfo=timezone.utc),
+}
+
+
+def test_played_gameweeks_empty_before_season_starts(
+    mocker: MockerFixture,
+) -> None:
+    """Every deadline in the future yields no played gameweeks.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "season_event_deadlines", return_value=_DEADLINES
+    )
+    now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+    assert extractor.played_gameweeks("2026-27", [1, 2, 3], now=now) == []
+
+
+def test_played_gameweeks_includes_passed_deadlines_only(
+    mocker: MockerFixture,
+) -> None:
+    """Mid-season, only gameweeks whose deadline has passed are returned.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "season_event_deadlines", return_value=_DEADLINES
+    )
+    now = datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc)
+    assert extractor.played_gameweeks("2026-27", [1, 2, 3], now=now) == [1, 2]
+
+
+def test_played_gameweeks_includes_gameweek_at_its_deadline(
+    mocker: MockerFixture,
+) -> None:
+    """A gameweek exactly at its deadline counts as played (boundary).
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "season_event_deadlines", return_value=_DEADLINES
+    )
+    assert extractor.played_gameweeks(
+        "2026-27", [1, 2, 3], now=_DEADLINES[1]
+    ) == [1]
+
+
+def test_played_gameweeks_skips_gameweeks_with_no_deadline(
+    mocker: MockerFixture,
+) -> None:
+    """A gameweek absent from the deadline map is excluded, not an error.
+
+    FCI can list a gameweek folder that FPL's events array does not carry.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "season_event_deadlines", return_value=_DEADLINES
+    )
+    now = datetime(2027, 6, 1, tzinfo=timezone.utc)
+    assert extractor.played_gameweeks("2026-27", [1, 2, 3, 99], now=now) == [
+        1,
+        2,
+        3,
+    ]
