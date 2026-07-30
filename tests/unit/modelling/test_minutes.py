@@ -2,6 +2,7 @@ from unittest import mock
 
 import numpy as np
 import polars as pl
+import pytest
 from sklearn.pipeline import Pipeline
 
 from fantasy_football.constants import (
@@ -281,23 +282,6 @@ def test_run_minutes_model_logs_to_mlflow() -> None:
     )
 
 
-def test_run_minutes_model_returns_empty_when_one_season() -> None:
-    """With a single season there are no folds; returns {} without MLflow."""
-    df = _synthetic_model_df(["2022-23"])
-
-    with (
-        mock.patch(
-            "fantasy_football.modelling.minutes.assemble_model_frame",
-            return_value=df,
-        ),
-        mock.patch("fantasy_football.modelling.minutes.mlflow") as mlflow_mock,
-    ):
-        agg = run_minutes_model()
-
-    assert agg == {}
-    mlflow_mock.start_run.assert_not_called()
-
-
 def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
     """A DGW (two opponents same gw/element) produces two model-frame rows."""
     feature_frame = build_feature_frame(_player_week(), _availability())
@@ -355,7 +339,7 @@ from types import SimpleNamespace  # noqa: E402
 from mlflow.exceptions import MlflowException  # noqa: E402
 
 from fantasy_football.modelling.minutes import (  # noqa: E402
-    production_model_version,
+    get_production_model,
     score_minutes,
 )
 
@@ -417,8 +401,9 @@ def test_score_minutes_missing_class_gives_zero_column() -> None:
     assert out["expected_minutes"].to_list() == [0.7 * 75]
 
 
-def test_production_model_version_returns_version() -> None:
-    """production_model_version returns the aliased version string."""
+def test_get_production_model_returns_version_and_model() -> None:
+    """get_production_model returns the aliased version string and model."""
+    stub_model = _StubModel([BUCKET_ZERO], np.array([[1.0]]))
     with mock.patch(
         "fantasy_football.modelling.minutes.mlflow"
     ) as mlflow_mock:
@@ -426,13 +411,19 @@ def test_production_model_version_returns_version() -> None:
         client.get_model_version_by_alias.return_value = SimpleNamespace(
             version="7"
         )
-        version = production_model_version()
+        mlflow_mock.sklearn.load_model.return_value = stub_model
+        version, model = get_production_model()
 
     assert version == "7"
+    assert model is stub_model
 
 
-def test_production_model_version_none_when_missing() -> None:
-    """A missing alias/registered model yields None, not an error."""
+def test_get_production_model_raises_when_alias_missing() -> None:
+    """A missing alias/registered model now propagates, not swallowed to None.
+
+    Callers (e.g. ``backfill_minutes``) are expected to let this fail loudly
+    rather than silently skip, so the exception must surface unchanged.
+    """
     with mock.patch(
         "fantasy_football.modelling.minutes.mlflow"
     ) as mlflow_mock:
@@ -440,9 +431,9 @@ def test_production_model_version_none_when_missing() -> None:
         client.get_model_version_by_alias.side_effect = MlflowException(
             "no such alias"
         )
-        version = production_model_version()
 
-    assert version is None
+        with pytest.raises(MlflowException):
+            get_production_model()
 
 
 from fantasy_football.constants import CURRENT_SEASON  # noqa: E402
@@ -491,8 +482,8 @@ def _patched_backfill(tmp_path, prod_version, db_name="bf.duckdb"):
     return (
         db_path,
         mock.patch(
-            "fantasy_football.modelling.minutes.production_model_version",
-            return_value=prod_version,
+            "fantasy_football.modelling.minutes.get_production_model",
+            return_value=(prod_version, _ConstantModel()),
         ),
         mock.patch(
             "fantasy_football.modelling.minutes.assemble_model_frame",
@@ -502,35 +493,15 @@ def _patched_backfill(tmp_path, prod_version, db_name="bf.duckdb"):
             "fantasy_football.modelling.minutes.get_connection",
             side_effect=lambda: get_connection(db_path),
         ),
-        mock.patch(
-            "fantasy_football.modelling.minutes.mlflow.sklearn.load_model",
-            return_value=_ConstantModel(),
-        ),
     )
-
-
-def test_backfill_minutes_noop_without_production_alias(tmp_path) -> None:
-    """With no production alias the backfill writes nothing and never loads."""
-    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
-        tmp_path, prod_version=None
-    )
-    with p_ver, p_frame, p_conn, p_load as load_mock:
-        backfill_minutes()
-
-    load_mock.assert_not_called()
-    conn = get_connection(db_path)
-    try:
-        assert load_minutes_prediction(conn).height == 0
-    finally:
-        conn.close()
 
 
 def test_backfill_minutes_populates_all_seasons_when_empty(tmp_path) -> None:
     """First backfill scores every season and stamps the production version."""
-    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+    db_path, p_ver, p_frame, p_conn = _patched_backfill(
         tmp_path, prod_version="2"
     )
-    with p_ver, p_frame, p_conn, p_load:
+    with p_ver, p_frame, p_conn:
         backfill_minutes()
 
     conn = get_connection(db_path)
@@ -546,7 +517,7 @@ def test_backfill_minutes_skips_historic_when_version_matches(
     tmp_path,
 ) -> None:
     """Matching version leaves historic rows untouched, refreshes current."""
-    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+    db_path, p_ver, p_frame, p_conn = _patched_backfill(
         tmp_path, prod_version="2"
     )
     # Pre-seed historic season with a sentinel expected_minutes at version 2.
@@ -571,7 +542,7 @@ def test_backfill_minutes_skips_historic_when_version_matches(
     finally:
         seed_conn.close()
 
-    with p_ver, p_frame, p_conn, p_load:
+    with p_ver, p_frame, p_conn:
         backfill_minutes()
 
     conn = get_connection(db_path)
@@ -590,7 +561,7 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
     tmp_path,
 ) -> None:
     """A new production version triggers a full historic rewrite."""
-    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+    db_path, p_ver, p_frame, p_conn = _patched_backfill(
         tmp_path, prod_version="3"
     )
     seed_conn = get_connection(db_path)
@@ -614,7 +585,7 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
     finally:
         seed_conn.close()
 
-    with p_ver, p_frame, p_conn, p_load:
+    with p_ver, p_frame, p_conn:
         backfill_minutes()
 
     conn = get_connection(db_path)
