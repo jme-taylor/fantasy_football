@@ -111,3 +111,42 @@ def test_propagate_static_columns_leaves_null_codes_alone():
     )
     result = propagate_static_columns(frame)
     assert result["first_name"].to_list() == [None, "Someone"]
+
+
+def minimal_row(table) -> pl.DataFrame:
+    """Build a one-row frame satisfying a table's NOT NULL columns.
+
+    Primary-key columns across all six tables are either Utf8 or Int64,
+    so those two placeholders suffice. Every other column is null.
+
+    Parameters
+    ----------
+    table : Table
+        The spec to build a row for.
+
+    Returns
+    -------
+    pl.DataFrame
+        A single row shaped to the table's schema.
+    """
+    values = {}
+    for column, dtype in table.schema.items():
+        if column not in table.primary_key:
+            values[column] = [None]
+        elif dtype == pl.Utf8:
+            values[column] = ["2024-25"]
+        else:
+            values[column] = [1]
+    return pl.DataFrame(values, schema=table.schema)
+
+
+def test_reset_database_clears_every_table(db):
+    """Reset empties all six tables, not a hand-listed subset."""
+    for table in TABLES:
+        table.upsert_current(db, minimal_row(table), "2024-25")
+        assert not table.load(db).is_empty()
+
+    database.reset_database(db)
+
+    for table in TABLES:
+        assert table.load(db).is_empty(), f"{table.name} not cleared"

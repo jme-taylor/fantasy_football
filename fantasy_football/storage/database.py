@@ -13,6 +13,8 @@ import duckdb
 import polars as pl
 
 from fantasy_football.constants import DATABASE_PATH
+from fantasy_football.storage import engine
+from fantasy_football.storage.tables import TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -113,19 +115,14 @@ def get_connection(
     Returns
     -------
     duckdb.DuckDBPyConnection
-        An open connection with the ``player_week`` and ``team_fixture`` tables
-        guaranteed to exist. The caller is responsible for closing the
-        connection.
+        An open connection with every table in ``TABLES`` guaranteed to
+        exist. The caller is responsible for closing the connection.
     """
     path = db_path or DATABASE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = duckdb.connect(str(path))
-    connection.execute(_CREATE_TABLE)
-    connection.execute(_CREATE_TEAM_FIXTURE_TABLE)
-    connection.execute(_CREATE_PLAYER_MATCH_TABLE)
-    connection.execute(_CREATE_PLAYER_AVAILABILITY_TABLE)
-    connection.execute(_CREATE_MINUTES_PREDICTION_TABLE)
-    connection.execute(_CREATE_PLAYER_SEASON_TABLE)
+    for table in TABLES:
+        engine.create(connection, table.ddl)
     return connection
 
 
@@ -1075,22 +1072,13 @@ def load_player_season(
 
 
 def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
-    """Drop and recreate the ``player_week`` and ``team_fixture`` tables (full-rebuild escape hatch).
+    """Drop and recreate every table in ``TABLES`` (full-rebuild escape hatch).
 
     Parameters
     ----------
     connection : duckdb.DuckDBPyConnection
         An open connection.
     """
-    connection.execute("DROP TABLE IF EXISTS player_week")
-    connection.execute(_CREATE_TABLE)
-    connection.execute("DROP TABLE IF EXISTS team_fixture")
-    connection.execute(_CREATE_TEAM_FIXTURE_TABLE)
-    connection.execute("DROP TABLE IF EXISTS player_match")
-    connection.execute(_CREATE_PLAYER_MATCH_TABLE)
-    connection.execute("DROP TABLE IF EXISTS player_availability")
-    connection.execute(_CREATE_PLAYER_AVAILABILITY_TABLE)
-    connection.execute("DROP TABLE IF EXISTS minutes_prediction")
-    connection.execute(_CREATE_MINUTES_PREDICTION_TABLE)
-    connection.execute("DROP TABLE IF EXISTS player_season")
-    connection.execute(_CREATE_PLAYER_SEASON_TABLE)
+    for table in TABLES:
+        engine.drop(connection, table.name)
+        engine.create(connection, table.ddl)
