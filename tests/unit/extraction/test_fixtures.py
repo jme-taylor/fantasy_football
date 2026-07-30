@@ -21,11 +21,8 @@ from fantasy_football.fpl_types import (
     FplFixtures,
     FplTeamInfo,
 )
-from fantasy_football.storage.database import (
-    fixture_seasons_present,
-    get_connection,
-    load_team_fixture,
-)
+from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.tables import TEAM_FIXTURE
 
 
 def test_transform_emits_two_rows_per_fixture() -> None:
@@ -237,8 +234,8 @@ def test_load_fixtures_routes_historic_and_current(
 
         load_fixtures(conn, "2025-26", api=MagicMock(), extractor=MagicMock())
 
-        assert fixture_seasons_present(conn) == {"2023-24", "2025-26"}
-        assert load_team_fixture(conn).height == 4
+        assert TEAM_FIXTURE.seasons_present(conn) == {"2023-24", "2025-26"}
+        assert TEAM_FIXTURE.load(conn).height == 4
     finally:
         conn.close()
 
@@ -299,7 +296,7 @@ def test_load_fixtures_vaastav_fetch_failure_is_skipped(
             lambda season, api: fixtures_to_team_rows([], {}, season),
         )
         load_fixtures(conn, "2099-00", api=MagicMock(), extractor=MagicMock())
-        assert fixture_seasons_present(conn) == {"2023-24"}
+        assert TEAM_FIXTURE.seasons_present(conn) == {"2023-24"}
     finally:
         conn.close()
 
@@ -338,6 +335,6 @@ def test_load_fixtures_skips_non_current_fci_season(
         load_fixtures(conn, "2099-00", api=MagicMock(), extractor=MagicMock())
 
         # "2030-31" was skipped; "2099-00" is empty; only "2023-24" landed.
-        assert fixture_seasons_present(conn) == {"2023-24"}
+        assert TEAM_FIXTURE.seasons_present(conn) == {"2023-24"}
     finally:
         conn.close()

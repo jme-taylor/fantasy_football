@@ -7,7 +7,8 @@ from fantasy_football.extraction.player_match import (
     load_current_season_player_match,
 )
 from fantasy_football.fpl_types import FplPlayer
-from fantasy_football.storage.database import get_connection, load_player_match
+from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.tables import PLAYER_MATCH
 
 
 def _player(element_id: int) -> FplPlayer:
@@ -47,7 +48,7 @@ def test_load_current_season_player_match_concatenates_and_upserts(
     connection = get_connection(tmp_path / "test.duckdb")
     try:
         load_current_season_player_match("2025-26", connection, fpl_api)
-        out = load_player_match(connection)
+        out = PLAYER_MATCH.load(connection)
     finally:
         connection.close()
 

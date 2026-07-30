@@ -6,10 +6,8 @@ import polars as pl
 from fantasy_football.extraction.availability import (
     load_player_availability_data,
 )
-from fantasy_football.storage.database import (
-    get_connection,
-    load_player_availability,
-)
+from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.tables import PLAYER_AVAILABILITY
 
 
 def _frame(season: str, chance: int) -> pl.DataFrame:
@@ -37,7 +35,7 @@ def test_load_player_availability_data_backfills_and_upserts(
         load_player_availability_data(
             connection, current_season="2023-24", extractor=extractor
         )
-        out = load_player_availability(connection)
+        out = PLAYER_AVAILABILITY.load(connection)
     finally:
         connection.close()
 

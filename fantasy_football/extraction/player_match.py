@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from fantasy_football.extraction.fpl import FplAPI
-from fantasy_football.storage.database import upsert_current_player_match
+from fantasy_football.storage.tables import PLAYER_MATCH
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -46,7 +46,7 @@ def load_current_season_player_match(
     combined = pl.concat(non_empty, how="vertical").with_columns(
         pl.lit(season).alias("season")
     )
-    upsert_current_player_match(connection, combined, season)
+    PLAYER_MATCH.upsert_current(connection, combined, season)
     logger.info(
         "Upserted %d player-match rows for current season %s",
         combined.height,
