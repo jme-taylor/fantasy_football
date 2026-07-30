@@ -1,0 +1,142 @@
+import polars as pl
+
+from fantasy_football.features.history import add_history_features
+
+
+def _player_season() -> pl.DataFrame:
+    """Element ids deliberately differ per season, as FPL reassigns them."""
+    return pl.DataFrame(
+        {
+            "season": ["2021-22", "2022-23", "2023-24", "2023-24"],
+            "element": [10, 20, 30, 40],
+            "player_code": [111, 111, 111, 999],
+        }
+    )
+
+
+def _player_match() -> pl.DataFrame:
+    """Player 111: two 2021-22 matches (one 60+), none in 2022-23."""
+    return pl.DataFrame(
+        {
+            "season": ["2021-22", "2021-22", "2023-24", "2023-24"],
+            "gw": [1, 2, 1, 1],
+            "element": [10, 10, 30, 40],
+            "opponent": [1, 2, 3, 3],
+            "minutes": [90, 20, 90, 90],
+            "total_points": [8, 1, 5, 6],
+        }
+    )
+
+
+def _player_week() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": ["2021-22", "2022-23", "2023-24", "2023-24"],
+            "gw": [1, 1, 1, 1],
+            "element": [10, 20, 30, 40],
+            "minutes": [90, 0, 90, 90],
+            "total_points": [8, 0, 5, 6],
+        }
+    )
+
+
+def _row(frame: pl.DataFrame, season: str, element: int) -> dict:
+    return frame.filter(
+        (pl.col("season") == season) & (pl.col("element") == element)
+    ).to_dicts()[0]
+
+
+def test_consecutive_seasons_carry_history() -> None:
+    """A player who played last season gets seasons_since_last_pl == 0."""
+    out = add_history_features(
+        _player_week(), _player_match(), _player_season()
+    )
+
+    row = _row(out, "2022-23", 20)
+    assert row["seasons_since_last_pl"] == 0
+    assert row["prev_season_minutes"] == 110
+    assert row["is_pl_newcomer"] is False
+
+
+def test_start_rate_is_over_matches_not_gameweeks() -> None:
+    """One 60+ appearance in two matches is a 0.5 start rate."""
+    out = add_history_features(
+        _player_week(), _player_match(), _player_season()
+    )
+
+    assert _row(out, "2022-23", 20)["prev_season_start_rate"] == 0.5
+
+
+def test_points_per_start_averages_over_sixty_plus_matches_only() -> None:
+    """The 20-minute, 1-point match is excluded from points_per_start."""
+    out = add_history_features(
+        _player_week(), _player_match(), _player_season()
+    )
+
+    assert _row(out, "2022-23", 20)["prev_season_points_per_start"] == 8.0
+
+
+def test_gap_season_reports_distance_and_last_played_history() -> None:
+    """After a blank 2022-23, 2023-24 sees a gap of 1 and 2021-22's history."""
+    out = add_history_features(
+        _player_week(), _player_match(), _player_season()
+    )
+
+    row = _row(out, "2023-24", 30)
+    assert row["seasons_since_last_pl"] == 1
+    assert row["prev_season_minutes"] == 110
+    assert row["pl_seasons_played"] == 1
+
+
+def test_first_ever_season_is_a_newcomer() -> None:
+    """Player 999 debuts in 2023-24: newcomer, null history, no gap value."""
+    out = add_history_features(
+        _player_week(), _player_match(), _player_season()
+    )
+
+    row = _row(out, "2023-24", 40)
+    assert row["is_pl_newcomer"] is True
+    assert row["prev_season_minutes"] is None
+    assert row["prev_season_start_rate"] is None
+    assert row["seasons_since_last_pl"] is None
+    assert row["pl_seasons_played"] == 0
+
+
+def test_earliest_season_yields_nulls_without_raising() -> None:
+    """The first season in the frame has no prior season; this is not an error."""
+    out = add_history_features(
+        _player_week(), _player_match(), _player_season()
+    )
+
+    row = _row(out, "2021-22", 10)
+    assert row["prev_season_minutes"] is None
+    assert row["is_pl_newcomer"] is True
+
+
+def test_player_code_is_attached() -> None:
+    """The output carries player_code so downstream windows can group on it."""
+    out = add_history_features(
+        _player_week(), _player_match(), _player_season()
+    )
+
+    assert _row(out, "2023-24", 30)["player_code"] == 111
+
+
+def test_double_gameweek_does_not_inflate_start_rate() -> None:
+    """Two matches in one gameweek count as two matches, not one."""
+    matches = _player_match().vstack(
+        pl.DataFrame(
+            {
+                "season": ["2021-22"],
+                "gw": [2],
+                "element": [10],
+                "opponent": [7],
+                "minutes": [90],
+                "total_points": [6],
+            }
+        )
+    )
+    out = add_history_features(_player_week(), matches, _player_season())
+
+    # Three matches, two of them 60+.
+    assert _row(out, "2022-23", 20)["prev_season_start_rate"] == 2 / 3
