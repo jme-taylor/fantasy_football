@@ -321,12 +321,12 @@ def test_fetch_season_frames_uses_supplied_gameweeks(
 def test_build_current_season_merged_gw_upserts_to_db(
     mocker: MockerFixture, tmp_path
 ) -> None:
-    """End-to-end build upserts player-week rows readable via load_player_week."""
-    from fantasy_football.storage.database import (
-        PLAYER_WEEK_COLUMNS,
-        get_connection,
-        load_player_week,
-    )
+    """Build upserts player-week rows.
+
+    Readable back via ``PLAYER_WEEK.load``.
+    """
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     extractor = FciExtractor(
         api_client=GitHubAPIClient(
@@ -355,11 +355,11 @@ def test_build_current_season_merged_gw_upserts_to_db(
     connection = get_connection(tmp_path / "t.duckdb")
     try:
         extractor.build_current_season_merged_gw("2025-26", connection)
-        stored = load_player_week(connection)
+        stored = PLAYER_WEEK.load(connection)
     finally:
         connection.close()
 
-    assert stored.columns == PLAYER_WEEK_COLUMNS
+    assert stored.columns == PLAYER_WEEK.columns
     assert stored.height == 4
     assert stored["season"].unique().to_list() == ["2025-26"]
 
@@ -483,10 +483,8 @@ def test_build_current_season_ingests_nothing_before_season_starts(
     tmp_path : pathlib.Path
         Pytest temporary directory fixture.
     """
-    from fantasy_football.storage.database import (
-        get_connection,
-        load_player_week,
-    )
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     extractor = _preseason_extractor(mocker)
     fetch = mocker.patch.object(extractor, "fetch_season_frames")
@@ -499,7 +497,7 @@ def test_build_current_season_ingests_nothing_before_season_starts(
         result = extractor.build_current_season_merged_gw(
             "2026-27", connection
         )
-        stored = load_player_week(connection)
+        stored = PLAYER_WEEK.load(connection)
     finally:
         connection.close()
 
@@ -514,7 +512,7 @@ def test_build_current_season_does_not_wipe_existing_rows(
 ) -> None:
     """A no-op run must not delete rows a previous run stored.
 
-    ``upsert_current_season`` is delete-then-insert, so calling it with an
+    ``PLAYER_WEEK.upsert_current`` is delete-then-insert, so calling it with an
     empty frame would blank the season. It must be skipped entirely.
 
     Parameters
@@ -524,11 +522,8 @@ def test_build_current_season_does_not_wipe_existing_rows(
     tmp_path : pathlib.Path
         Pytest temporary directory fixture.
     """
-    from fantasy_football.storage.database import (
-        get_connection,
-        load_player_week,
-        upsert_current_season,
-    )
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     merged = build_merged_gw(
         SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
@@ -542,9 +537,9 @@ def test_build_current_season_does_not_wipe_existing_rows(
 
     connection = get_connection(tmp_path / "t.duckdb")
     try:
-        upsert_current_season(connection, seeded, "2026-27")
+        PLAYER_WEEK.upsert_current(connection, seeded, "2026-27")
         extractor.build_current_season_merged_gw("2026-27", connection)
-        stored = load_player_week(connection)
+        stored = PLAYER_WEEK.load(connection)
     finally:
         connection.close()
 
@@ -559,7 +554,7 @@ def test_build_current_season_does_not_wipe_rows_when_no_prem_matches(
     Deadlines can pass for gameweeks FCI has not populated with Premier
     League match data yet. ``_gameweeks_with_prem_matches`` then returns an
     empty list even though ``played_gameweeks`` was non-empty, and that
-    second early return must also skip ``upsert_current_season`` rather
+    second early return must also skip ``PLAYER_WEEK.upsert_current`` rather
     than wiping the season with an empty frame.
 
     Parameters
@@ -569,11 +564,8 @@ def test_build_current_season_does_not_wipe_rows_when_no_prem_matches(
     tmp_path : pathlib.Path
         Pytest temporary directory fixture.
     """
-    from fantasy_football.storage.database import (
-        get_connection,
-        load_player_week,
-        upsert_current_season,
-    )
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     merged = build_merged_gw(
         SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
@@ -616,9 +608,9 @@ def test_build_current_season_does_not_wipe_rows_when_no_prem_matches(
 
     connection = get_connection(tmp_path / "t.duckdb")
     try:
-        upsert_current_season(connection, seeded, "2026-27")
+        PLAYER_WEEK.upsert_current(connection, seeded, "2026-27")
         extractor.build_current_season_merged_gw("2026-27", connection)
-        stored = load_player_week(connection)
+        stored = PLAYER_WEEK.load(connection)
     finally:
         connection.close()
 
@@ -641,10 +633,8 @@ def test_build_current_season_drops_gameweeks_with_no_match_rows(
     tmp_path : pathlib.Path
         Pytest temporary directory fixture.
     """
-    from fantasy_football.storage.database import (
-        get_connection,
-        load_player_week,
-    )
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     extractor = FciExtractor(
         api_client=GitHubAPIClient(
@@ -674,7 +664,7 @@ def test_build_current_season_drops_gameweeks_with_no_match_rows(
     connection = get_connection(tmp_path / "t.duckdb")
     try:
         extractor.build_current_season_merged_gw("2026-27", connection)
-        stored = load_player_week(connection)
+        stored = PLAYER_WEEK.load(connection)
     finally:
         connection.close()
 
@@ -695,10 +685,8 @@ def test_build_current_season_excludes_non_prem_only_gameweeks(
     tmp_path : pathlib.Path
         Pytest temporary directory fixture.
     """
-    from fantasy_football.storage.database import (
-        get_connection,
-        load_player_week,
-    )
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     cup_only = pl.DataFrame(
         {
@@ -740,7 +728,7 @@ def test_build_current_season_excludes_non_prem_only_gameweeks(
     connection = get_connection(tmp_path / "t.duckdb")
     try:
         extractor.build_current_season_merged_gw("2026-27", connection)
-        stored = load_player_week(connection)
+        stored = PLAYER_WEEK.load(connection)
     finally:
         connection.close()
 

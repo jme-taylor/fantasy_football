@@ -29,13 +29,7 @@ from fantasy_football.extraction.seasons import (
     seasons_in_range,
     source_for_season,
 )
-from fantasy_football.storage.database import (
-    PLAYER_SEASON_COLUMNS,
-    coerce_player_season,
-    player_season_seasons_present,
-    upsert_current_player_season,
-    write_immutable_player_season,
-)
+from fantasy_football.storage.tables import PLAYER_SEASON
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -111,18 +105,18 @@ def _finalise(frame: pl.DataFrame, season: str) -> pl.DataFrame:
     Returns
     -------
     pl.DataFrame
-        A frame with exactly ``PLAYER_SEASON_COLUMNS``.
+        A frame with exactly ``PLAYER_SEASON.columns``.
     """
     missing = [
         column
-        for column in PLAYER_SEASON_COLUMNS
+        for column in PLAYER_SEASON.columns
         if column not in frame.columns
     ]
     if missing:
         frame = frame.with_columns(
             [pl.lit(None).alias(column) for column in missing]
         )
-    shaped = coerce_player_season(frame)
+    shaped = PLAYER_SEASON.coerce(frame)
     _check_identity_integrity(shaped, season)
     return shaped
 
@@ -145,7 +139,7 @@ def build_player_season_from_vaastav(
     Returns
     -------
     pl.DataFrame
-        One row per ``(season, element)`` with ``PLAYER_SEASON_COLUMNS``.
+        One row per ``(season, element)`` with ``PLAYER_SEASON.columns``.
 
     Raises
     ------
@@ -189,7 +183,7 @@ def build_player_season_from_fci(
     Returns
     -------
     pl.DataFrame
-        One row per ``(season, element)`` with ``PLAYER_SEASON_COLUMNS``.
+        One row per ``(season, element)`` with ``PLAYER_SEASON.columns``.
 
     Raises
     ------
@@ -217,7 +211,7 @@ def _enrich_with_bio(frame: pl.DataFrame, bio: pl.DataFrame) -> pl.DataFrame:
     Parameters
     ----------
     frame : pl.DataFrame
-        A shaped player-season frame with ``PLAYER_SEASON_COLUMNS``.
+        A shaped player-season frame with ``PLAYER_SEASON.columns``.
     bio : pl.DataFrame
         Rows from ``FplCacheExtractor.build_player_bio``.
 
@@ -240,7 +234,7 @@ def _enrich_with_bio(frame: pl.DataFrame, bio: pl.DataFrame) -> pl.DataFrame:
             pl.coalesce([f"{column}_bio", column]).alias(column)
             for column in bio_columns
         ]
-    ).select(PLAYER_SEASON_COLUMNS)
+    ).select(PLAYER_SEASON.columns)
 
 
 def load_player_identity_data(
@@ -288,7 +282,7 @@ def load_player_identity_data(
     vaastav = vaastav or DataExtractor()
     fci = fci or FciExtractor()
     fplcache = fplcache or FplCacheExtractor()
-    present = player_season_seasons_present(connection)
+    present = PLAYER_SEASON.seasons_present(connection)
     current_season_loaded = False
 
     for season in seasons_in_range(EARLIEST_IDENTITY_SEASON, current_season):
@@ -335,10 +329,10 @@ def load_player_identity_data(
                 )
 
         if season == current_season:
-            upsert_current_player_season(connection, frame, season)
+            PLAYER_SEASON.upsert_current(connection, frame, season)
             current_season_loaded = True
         else:
-            write_immutable_player_season(connection, frame, season)
+            PLAYER_SEASON.write_immutable(connection, frame, season)
 
     if not current_season_loaded and current_season not in present:
         raise RuntimeError(

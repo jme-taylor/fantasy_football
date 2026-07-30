@@ -21,10 +21,7 @@ from fantasy_football.extraction.extractor import GitHubAPIClient
 from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.extraction.fplcache import FplCacheExtractor
 from fantasy_football.extraction.seasons import season_short_to_long
-from fantasy_football.storage.database import (
-    coerce_player_week,
-    upsert_current_season,
-)
+from fantasy_football.storage.tables import PLAYER_WEEK
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -398,7 +395,8 @@ class FciExtractor:
 
         When nothing qualifies — a season that has not started — the database
         is left untouched rather than upserted with an empty frame, since
-        ``upsert_current_season`` deletes the season's rows before inserting.
+        ``PLAYER_WEEK.upsert_current`` deletes the season's rows before
+        inserting.
 
         Parameters
         ----------
@@ -454,11 +452,11 @@ class FciExtractor:
         player_week = merged.rename({"GW": "gw"}).with_columns(
             pl.lit(short_season).alias("season")
         )
-        upsert_current_season(connection, player_week, short_season)
+        PLAYER_WEEK.upsert_current(connection, player_week, short_season)
         logger.info(
             "Upserted %d FCI rows for %s across gameweeks %s",
             player_week.height,
             short_season,
             gameweeks,
         )
-        return coerce_player_week(player_week)
+        return PLAYER_WEEK.coerce(player_week)

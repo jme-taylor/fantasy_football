@@ -8,7 +8,7 @@ from fantasy_football.extraction.player_identity import (
     build_player_season_from_fci,
     build_player_season_from_vaastav,
 )
-from fantasy_football.storage.database import PLAYER_SEASON_COLUMNS
+from fantasy_football.storage.tables import PLAYER_SEASON
 
 
 def _vaastav_frame() -> pl.DataFrame:
@@ -43,7 +43,7 @@ def test_vaastav_builder_maps_id_and_code() -> None:
     """Vaastav's id/code become element/player_code."""
     out = build_player_season_from_vaastav(_vaastav_frame(), "2023-24")
 
-    assert out.columns == PLAYER_SEASON_COLUMNS
+    assert out.columns == PLAYER_SEASON.columns
     assert out["element"].to_list() == [1, 2]
     assert out["player_code"].to_list() == [111, 222]
     assert out["season"].to_list() == ["2023-24", "2023-24"]
@@ -82,7 +82,7 @@ def test_fci_builder_maps_player_id_and_code() -> None:
     """FCI's player_id/player_code become element/player_code."""
     out = build_player_season_from_fci(_fci_frame(), "2025-26")
 
-    assert out.columns == PLAYER_SEASON_COLUMNS
+    assert out.columns == PLAYER_SEASON.columns
     assert out["element"].to_list() == [1, 2]
     assert out["player_code"].to_list() == [111, 222]
 
@@ -124,10 +124,7 @@ from unittest.mock import MagicMock
 from fantasy_football.extraction.player_identity import (
     load_player_identity_data,
 )
-from fantasy_football.storage.database import (
-    get_connection,
-    load_player_season,
-)
+from fantasy_football.storage.database import get_connection
 
 
 def _fake_vaastav() -> MagicMock:
@@ -175,7 +172,7 @@ def test_load_player_identity_data_routes_sources_by_season(
             fci=fci,
             fplcache=_fake_fplcache(),
         )
-        out = load_player_season(connection)
+        out = PLAYER_SEASON.load(connection)
     finally:
         connection.close()
 
@@ -200,7 +197,7 @@ def test_load_player_identity_data_enriches_from_fplcache(
             fci=_fake_fci(),
             fplcache=_fake_fplcache(),
         )
-        out = load_player_season(connection).filter(
+        out = PLAYER_SEASON.load(connection).filter(
             (pl.col("season") == "2025-26") & (pl.col("element") == 1)
         )
     finally:
@@ -260,7 +257,7 @@ def test_load_player_identity_data_survives_a_missing_source_file(
             fci=_fake_fci(),
             fplcache=_fake_fplcache(),
         )
-        out = load_player_season(connection)
+        out = PLAYER_SEASON.load(connection)
     finally:
         connection.close()
 
@@ -291,7 +288,7 @@ def test_load_player_identity_data_raises_when_current_season_fails(
                 fci=fci,
                 fplcache=_fake_fplcache(),
             )
-        out = load_player_season(connection)
+        out = PLAYER_SEASON.load(connection)
     finally:
         connection.close()
 
