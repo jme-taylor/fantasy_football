@@ -12,7 +12,7 @@ MLFLOW_DB_PATH = MODELS_FOLDER.joinpath("mlflow.db")
 DATABASE_PATH = DATA_FOLDER.joinpath("fantasy_football.duckdb")
 
 FPL_ID = "7515957"
-CURRENT_SEASON = "2025-26"
+CURRENT_SEASON = "2026-27"
 
 # Data ingestion stop date
 VASTAAV_LAST_SEASON = "2024-2025"

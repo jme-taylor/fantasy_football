@@ -733,6 +733,7 @@ def coerce_minutes_prediction(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+# TODO(JT): Look into the best practice for this, would you keep the prev version predictions?
 def upsert_minutes_prediction(
     connection: duckdb.DuckDBPyConnection,
     frame: pl.DataFrame,

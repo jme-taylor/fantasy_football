@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import mlflow
 import mlflow.sklearn
@@ -73,12 +73,6 @@ MINUTE_MIDPOINTS = {
     BUCKET_PARTIAL: 30.0,
     BUCKET_SIXTY_PLUS: 75.0,
 }
-# FPL appearance points: 0 for no game, 1 for <60 mins, 2 for 60+.
-APPEARANCE_POINTS = {
-    BUCKET_ZERO: 0.0,
-    BUCKET_PARTIAL: 1.0,
-    BUCKET_SIXTY_PLUS: 2.0,
-}
 
 
 def create_minutes_bucket(
@@ -145,6 +139,7 @@ def build_feature_frame(
     return frame.select(["season", "gw", "element", "position", *NUM_FEATURES])
 
 
+# TODO (JT): Work out a cleaner way to do this (feature store?)
 def build_model_frame(
     player_match: pl.DataFrame, feature_frame: pl.DataFrame
 ) -> pl.DataFrame:
@@ -266,6 +261,8 @@ def _boundary_column(
     return np.zeros(proba.shape[0])
 
 
+# TODO (JT): Make a boundary metrics dataclass as output type
+# TODO (JT): Go through the metrics and make sure they make sense
 def boundary_metrics(
     y_true_bucket: list[str],
     proba: np.ndarray,
@@ -318,13 +315,6 @@ def boundary_metrics(
         + p_60 * MINUTE_MIDPOINTS[BUCKET_SIXTY_PLUS]
     )
     out["e_min_mae"] = float(np.mean(np.abs(expected_minutes - minutes)))
-
-    expected_app = (
-        p_partial * APPEARANCE_POINTS[BUCKET_PARTIAL]
-        + p_60 * APPEARANCE_POINTS[BUCKET_SIXTY_PLUS]
-    )
-    true_app = np.where(minutes >= 60, 2.0, np.where(minutes > 0, 1.0, 0.0))
-    out["e_app_mae"] = float(np.mean(np.abs(expected_app - true_app)))
 
     return out
 
@@ -424,11 +414,6 @@ def run_minutes_model() -> dict[str, float]:
     model_df = assemble_model_frame()
     seasons = model_df["season"].unique().to_list()
     folds = season_folds(seasons)
-    if not folds:
-        logger.warning(
-            f"Need at least two seasons to evaluate the minutes model; found {len(seasons)}. Skipping."
-        )
-        return {}
 
     per_fold, agg = cross_validate(model_df, folds)
     final_model = train_final(model_df)
@@ -436,6 +421,7 @@ def run_minutes_model() -> dict[str, float]:
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MINUTES_EXPERIMENT)
     with mlflow.start_run():
+        # TODO (JT: Don't have magic strings here
         mlflow.log_params(
             {
                 "model": "logistic_regression",
@@ -449,17 +435,19 @@ def run_minutes_model() -> dict[str, float]:
             for key, value in fold_metrics.items():
                 mlflow.log_metric(key, value, step=step)
         mlflow.log_metrics(agg)
+        # TODO (JT): Add auto alias promotion if the metrics are good enough
         mlflow.sklearn.log_model(
             final_model,
             name="model",
             registered_model_name=MINUTES_REGISTERED_MODEL,
         )
 
+    # TODO (JT: Don't logg the agg, just show the model ID
     logger.info("Minutes model logged to MLflow: %s", agg)
     return agg
 
 
-def production_model_version() -> str | None:
+def get_production_model() -> tuple[str, Any]:
     """Return the version string carrying the production alias, or None.
 
     Looks up ``MINUTES_REGISTERED_MODEL@MINUTES_PRODUCTION_ALIAS`` in the MLflow
@@ -474,13 +462,13 @@ def production_model_version() -> str | None:
     """
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     client = mlflow.tracking.MlflowClient()
-    try:
-        version = client.get_model_version_by_alias(
-            MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
-        )
-    except MlflowException:
-        return None
-    return version.version
+    version = client.get_model_version_by_alias(
+        MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
+    )
+    model = mlflow.sklearn.load_model(
+        f"models:/{MINUTES_REGISTERED_MODEL}@{MINUTES_PRODUCTION_ALIAS}"
+    )
+    return version.version, model
 
 
 def score_minutes(frame: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
@@ -551,22 +539,13 @@ def backfill_minutes() -> None:
     Does nothing (logs a warning) when no ``production`` alias is set, which is
     the normal state until the first manual promotion in the MLflow UI.
     """
-    prod_version = production_model_version()
-    if prod_version is None:
-        logger.warning(
-            f"No '{MINUTES_PRODUCTION_ALIAS}' alias on registered model {MINUTES_REGISTERED_MODEL}; skipping minutes backfill. "
-            "Promote a version in the MLflow UI to enable it.",
-        )
-        return
-
-    model = mlflow.sklearn.load_model(
-        f"models:/{MINUTES_REGISTERED_MODEL}@{MINUTES_PRODUCTION_ALIAS}"
-    )
+    prod_version, model = get_production_model()
     model_frame = assemble_model_frame()
     all_seasons = set(model_frame["season"].unique().to_list())
     historic_seasons = sorted(all_seasons - {CURRENT_SEASON})
 
     connection = get_connection()
+    # TODO(JT): Can you do this with a context manager?
     try:
         # The current season is always refreshed — new gameweeks each run.
         _score_and_store(
