@@ -40,16 +40,15 @@ from fantasy_football.features.valuation import (
     add_positional_value_rank,
     add_team_value,
 )
-from fantasy_football.storage.database import (
-    get_connection,
-    load_player_availability,
-    load_player_match,
-    load_player_season,
-    load_player_week,
-    load_team_fixture,
-    minutes_prediction_seasons_present,
+from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.tables import (
+    MINUTES_PREDICTION,
+    PLAYER_AVAILABILITY,
+    PLAYER_MATCH,
+    PLAYER_SEASON,
+    PLAYER_WEEK,
+    TEAM_FIXTURE,
     minutes_prediction_versions,
-    upsert_minutes_prediction,
 )
 
 if TYPE_CHECKING:
@@ -161,16 +160,16 @@ def build_feature_frame(
     Parameters
     ----------
     player_week : pl.DataFrame
-        Player-week rows from :func:`load_player_week`.
+        Player-week rows from :meth:`PLAYER_WEEK.load`.
     availability : pl.DataFrame
-        Availability rows from :func:`load_player_availability`.
+        Availability rows from :meth:`PLAYER_AVAILABILITY.load`.
     player_match : pl.DataFrame
-        Per-fixture rows from :func:`load_player_match`, used for prior-season
+        Per-fixture rows from :meth:`PLAYER_MATCH.load`, used for prior-season
         aggregates that must not be distorted by double gameweeks.
     player_season : pl.DataFrame
-        Identity rows from :func:`load_player_season`.
+        Identity rows from :meth:`PLAYER_SEASON.load`.
     team_fixture : pl.DataFrame
-        Fixture rows from :func:`load_team_fixture`, used to detect promoted
+        Fixture rows from :meth:`TEAM_FIXTURE.load`, used to detect promoted
         clubs.
 
     Returns
@@ -216,7 +215,7 @@ def build_model_frame(
     Parameters
     ----------
     player_match : pl.DataFrame
-        Match rows from :func:`load_player_match` (``season``, ``gw``,
+        Match rows from :meth:`PLAYER_MATCH.load` (``season``, ``gw``,
         ``element``, ``minutes`` and more).
     feature_frame : pl.DataFrame
         Output of :func:`build_feature_frame`.
@@ -256,13 +255,13 @@ def assemble_model_frame() -> pl.DataFrame:
     pl.DataFrame
         The match-level model frame from :func:`build_model_frame`.
     """
-    player_match = load_player_match()
+    player_match = PLAYER_MATCH.load()
     feature_frame = build_feature_frame(
-        load_player_week(),
-        load_player_availability(),
+        PLAYER_WEEK.load(),
+        PLAYER_AVAILABILITY.load(),
         player_match,
-        load_player_season(),
-        load_team_fixture(),
+        PLAYER_SEASON.load(),
+        TEAM_FIXTURE.load(),
     )
     return build_model_frame(player_match, feature_frame)
 
@@ -601,7 +600,7 @@ def _score_and_store(
     scored = score_minutes(sub, model).with_columns(
         model_version=pl.lit(version)
     )
-    upsert_minutes_prediction(connection, scored, season)
+    MINUTES_PREDICTION.upsert_current(connection, scored, season)
 
 
 def backfill_minutes() -> None:
@@ -633,7 +632,7 @@ def backfill_minutes() -> None:
         stored_versions = minutes_prediction_versions(
             connection, seasons=historic_seasons
         )
-        stored_seasons = minutes_prediction_seasons_present(connection) & set(
+        stored_seasons = MINUTES_PREDICTION.seasons_present(connection) & set(
             historic_seasons
         )
         historic_needs_rebuild = bool(historic_seasons) and (

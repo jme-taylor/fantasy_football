@@ -5,7 +5,7 @@ import polars as pl
 from pydantic import ConfigDict, TypeAdapter
 from pydantic.dataclasses import dataclass
 
-from fantasy_football.storage.database import load_player_week
+from fantasy_football.storage.tables import PLAYER_WEEK
 
 config = ConfigDict(extra="forbid")
 
@@ -72,7 +72,7 @@ def resolve_names_to_ids(names: list[str], season: str) -> list[int]:
     ValueError
         If any name has no row, or maps to more than one distinct element.
     """
-    merged = load_player_week().filter(pl.col("season") == season)
+    merged = PLAYER_WEEK.load().filter(pl.col("season") == season)
     name_to_ids: dict[str, set[int]] = {}
     for name, element in zip(
         merged["name"].to_list(), merged["element"].to_list(), strict=True

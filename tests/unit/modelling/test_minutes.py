@@ -525,11 +525,8 @@ def test_get_production_model_raises_when_alias_missing() -> None:
 
 from fantasy_football.constants import CURRENT_SEASON  # noqa: E402
 from fantasy_football.modelling.minutes import backfill_minutes  # noqa: E402
-from fantasy_football.storage.database import (  # noqa: E402
-    get_connection,
-    load_minutes_prediction,
-    upsert_minutes_prediction,
-)
+from fantasy_football.storage.database import get_connection  # noqa: E402
+from fantasy_football.storage.tables import MINUTES_PREDICTION  # noqa: E402
 
 
 class _ConstantModel:
@@ -593,7 +590,7 @@ def test_backfill_minutes_populates_all_seasons_when_empty(tmp_path) -> None:
 
     conn = get_connection(db_path)
     try:
-        out = load_minutes_prediction(conn)
+        out = MINUTES_PREDICTION.load(conn)
     finally:
         conn.close()
     assert set(out["season"].to_list()) == {"2024-25", CURRENT_SEASON}
@@ -625,7 +622,7 @@ def test_backfill_minutes_skips_historic_when_version_matches(
                 }
             ]
         )
-        upsert_minutes_prediction(seed_conn, seeded, "2024-25")
+        MINUTES_PREDICTION.upsert_current(seed_conn, seeded, "2024-25")
     finally:
         seed_conn.close()
 
@@ -634,7 +631,7 @@ def test_backfill_minutes_skips_historic_when_version_matches(
 
     conn = get_connection(db_path)
     try:
-        out = load_minutes_prediction(conn)
+        out = MINUTES_PREDICTION.load(conn)
     finally:
         conn.close()
     historic = out.filter(pl.col("season") == "2024-25")
@@ -668,7 +665,7 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
                 }
             ]
         )
-        upsert_minutes_prediction(seed_conn, seeded, "2024-25")
+        MINUTES_PREDICTION.upsert_current(seed_conn, seeded, "2024-25")
     finally:
         seed_conn.close()
 
@@ -677,7 +674,7 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
 
     conn = get_connection(db_path)
     try:
-        out = load_minutes_prediction(conn)
+        out = MINUTES_PREDICTION.load(conn)
     finally:
         conn.close()
     assert set(out["model_version"].to_list()) == {"3"}

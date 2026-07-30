@@ -3,10 +3,7 @@ import logging
 import polars as pl
 
 from fantasy_football.constants import DATA_FOLDER, ROLLING_WINDOW
-from fantasy_football.storage.database import (
-    load_player_season,
-    load_player_week,
-)
+from fantasy_football.storage.tables import PLAYER_SEASON, PLAYER_WEEK
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +38,8 @@ def load_gw_data() -> pl.DataFrame:
         One row per (player, gameweek) for all seasons, with ``season``, ``gw``
         and ``player_code`` columns.
     """
-    return load_player_week().join(
-        load_player_season().select(["season", "element", "player_code"]),
+    return PLAYER_WEEK.load().join(
+        PLAYER_SEASON.load().select(["season", "element", "player_code"]),
         on=["season", "element"],
         how="left",
         coalesce=True,

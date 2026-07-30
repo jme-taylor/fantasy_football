@@ -15,11 +15,8 @@ from fantasy_football.features.transformation import (
     rolling_column_name,
 )
 from fantasy_football.storage import database
-from fantasy_football.storage.database import (
-    get_connection,
-    upsert_current_season,
-    write_immutable_season,
-)
+from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.tables import PLAYER_WEEK
 
 
 @pytest.fixture
@@ -80,8 +77,8 @@ def _seed_player_week_db(db_path: Path) -> None:
     )
     connection = get_connection(db_path)
     try:
-        write_immutable_season(connection, historic, "2020-21")
-        upsert_current_season(connection, current, "2025-26")
+        PLAYER_WEEK.write_immutable(connection, historic, "2020-21")
+        PLAYER_WEEK.upsert_current(connection, current, "2025-26")
     finally:
         connection.close()
 
@@ -357,7 +354,7 @@ def test_create_rolling_points_data_respects_rolling_window(
     )
     connection = get_connection(db_path)
     try:
-        write_immutable_season(connection, historic, "2020-21")
+        PLAYER_WEEK.write_immutable(connection, historic, "2020-21")
     finally:
         connection.close()
 
@@ -492,7 +489,7 @@ def test_create_rolling_points_data_separates_players_with_null_player_code(
     )
     connection = get_connection(db_path)
     try:
-        write_immutable_season(connection, historic, "2020-21")
+        PLAYER_WEEK.write_immutable(connection, historic, "2020-21")
     finally:
         connection.close()
 
