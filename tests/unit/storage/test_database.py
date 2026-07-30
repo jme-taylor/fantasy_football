@@ -385,7 +385,7 @@ def test_get_connection_creates_player_match_table(
 
 
 def test_coerce_player_match_selects_and_pins_dtypes() -> None:
-    """coerce_player_match drops extra columns and pins the canonical dtypes."""
+    """PLAYER_MATCH.coerce selects and pins the canonical dtypes."""
     frame = _player_match_frame(
         [
             {
