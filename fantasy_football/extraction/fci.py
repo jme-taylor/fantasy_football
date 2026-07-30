@@ -10,6 +10,7 @@ does the reshaping; the IO and orchestration live in ``FciExtractor``.
 import io
 import logging
 import re
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -333,28 +334,98 @@ class FciExtractor:
         matchstats = pl.concat(matchstat_frames, how="diagonal")
         return snapshots, matchstats, players
 
+    def _gameweeks_with_prem_matches(
+        self, matchstats: pl.DataFrame
+    ) -> list[int]:
+        """Return the gameweeks backed by at least one Premier League match.
+
+        FCI publishes a gameweek's folder before its results land, so a
+        passed deadline is not proof the data exists yet. Premier League
+        match rows are, and they are the same rows the minutes come from.
+
+        Parameters
+        ----------
+        matchstats : pl.DataFrame
+            Concatenated ``playermatchstats`` carrying ``gw`` and
+            ``match_id`` columns.
+
+        Returns
+        -------
+        list[int]
+            Ascending gameweek numbers with Premier League match rows.
+        """
+        if matchstats.is_empty():
+            return []
+        return sorted(
+            matchstats.filter(
+                pl.col("match_id").str.contains(_PREM_MATCH_ID_RE)
+            )["gw"]
+            .unique()
+            .cast(pl.Int64)
+            .to_list()
+        )
+
     def build_current_season_merged_gw(
-        self, short_season: str, connection: "DuckDBPyConnection"
+        self,
+        short_season: str,
+        connection: "DuckDBPyConnection",
+        now: datetime | None = None,
     ) -> pl.DataFrame:
         """Build current-season player-week rows and upsert them into the DB.
+
+        Only gameweeks that have actually been played are ingested. FCI
+        creates all 38 gameweek folders before a season kicks off, and its
+        pre-season ``player_gameweek_stats`` files carry a full roster of
+        all-zero rows. Ingesting those would record a phantom gameweek in
+        which every player scored nothing. A gameweek therefore qualifies
+        only when its deadline has passed *and* FCI holds at least one
+        Premier League match row for it.
+
+        When nothing qualifies — a season that has not started — the database
+        is left untouched rather than upserted with an empty frame, since
+        ``upsert_current_season`` deletes the season's rows before inserting.
 
         Parameters
         ----------
         short_season : str
-            Short-form season string, e.g. ``"2025-26"``.
+            Short-form season string, e.g. ``"2026-27"``.
         connection : duckdb.DuckDBPyConnection
             Open connection to the player-week database.
+        now : datetime | None, optional
+            Timezone-aware instant used to decide which deadlines have
+            passed. Defaults to the current UTC time.
 
         Returns
         -------
         pl.DataFrame
-            The coerced player-week frame that was upserted.
+            The coerced player-week frame that was upserted, empty when no
+            gameweek has been played yet.
         """
         long_season = season_short_to_long(short_season)
-        gameweeks = self.list_gameweeks(long_season)
-        snapshots, matchstats, players = self.fetch_season_frames(
-            long_season, gameweeks
+        candidates = self.fpl_cache.played_gameweeks(
+            short_season, self.list_gameweeks(long_season), now=now
         )
+        if not candidates:
+            logger.info(
+                "No played gameweeks for %s yet; nothing to ingest.",
+                short_season,
+            )
+            return pl.DataFrame()
+
+        snapshots, matchstats, players = self.fetch_season_frames(
+            long_season, candidates
+        )
+        gameweeks = self._gameweeks_with_prem_matches(matchstats)
+        if not gameweeks:
+            logger.info(
+                "No %s gameweeks have Premier League match data yet; "
+                "nothing to ingest.",
+                short_season,
+            )
+            return pl.DataFrame()
+
+        snapshots = snapshots.filter(pl.col("gw").is_in(gameweeks))
+        matchstats = matchstats.filter(pl.col("gw").is_in(gameweeks))
         player_gw_team = self.fpl_cache.build_player_gw_team(
             short_season, gameweeks
         )
@@ -370,6 +441,9 @@ class FciExtractor:
         )
         upsert_current_season(connection, player_week, short_season)
         logger.info(
-            "Upserted %d FCI rows for %s", player_week.height, short_season
+            "Upserted %d FCI rows for %s across gameweeks %s",
+            player_week.height,
+            short_season,
+            gameweeks,
         )
         return coerce_player_week(player_week)
