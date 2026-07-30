@@ -286,7 +286,7 @@ class FciExtractor:
         return {team.code: team.name for team in self.fpl_api.get_teams()}
 
     def fetch_season_frames(
-        self, long_season: str
+        self, long_season: str, gameweeks: list[int] | None = None
     ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
         """Download and concatenate the FCI frames needed to build merged_gw.
 
@@ -294,6 +294,9 @@ class FciExtractor:
         ----------
         long_season : str
             Long-form season string, e.g. ``"2025-2026"``.
+        gameweeks : list[int] | None, optional
+            Gameweek numbers to fetch. Defaults to every gameweek folder the
+            season has, via ``list_gameweeks``.
 
         Returns
         -------
@@ -302,7 +305,8 @@ class FciExtractor:
             are narrowed to the columns the adapter needs and carry an added
             ``gw`` column.
         """
-        gameweeks = self.list_gameweeks(long_season)
+        if gameweeks is None:
+            gameweeks = self.list_gameweeks(long_season)
         if not gameweeks:
             raise ValueError(
                 f"No gameweek data found for season {long_season}"
@@ -347,8 +351,10 @@ class FciExtractor:
             The coerced player-week frame that was upserted.
         """
         long_season = season_short_to_long(short_season)
-        snapshots, matchstats, players = self.fetch_season_frames(long_season)
         gameweeks = self.list_gameweeks(long_season)
+        snapshots, matchstats, players = self.fetch_season_frames(
+            long_season, gameweeks
+        )
         player_gw_team = self.fpl_cache.build_player_gw_team(
             short_season, gameweeks
         )

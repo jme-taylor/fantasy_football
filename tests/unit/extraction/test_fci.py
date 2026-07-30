@@ -247,6 +247,75 @@ def test_fetch_season_frames_raises_when_no_gameweeks(
         extractor.fetch_season_frames("2025-2026")
 
 
+def test_fetch_season_frames_uses_supplied_gameweeks(
+    mocker: MockerFixture,
+) -> None:
+    """An explicit gameweek list is used instead of calling list_gameweeks.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    listed = mocker.patch.object(
+        extractor, "list_gameweeks", return_value=[1, 2, 3]
+    )
+
+    def fake_read_csv(path: str) -> pl.DataFrame:
+        """Return a minimally-shaped frame for whichever file is asked for.
+
+        Parameters
+        ----------
+        path : str
+            Repo-relative CSV path.
+
+        Returns
+        -------
+        pl.DataFrame
+            A one-row frame carrying the columns the adapter selects.
+        """
+        if "player_gameweek_stats" in path:
+            return pl.DataFrame(
+                {
+                    "id": [1],
+                    "first_name": ["David"],
+                    "second_name": ["Raya"],
+                    "now_cost": [6.0],
+                    "event_points": [6],
+                    "bonus": [1],
+                }
+            )
+        if "playermatchstats" in path:
+            return pl.DataFrame(
+                {
+                    "player_id": [1],
+                    "minutes_played": [90],
+                    "match_id": ["26-27-prem-arsenal-vs-chelsea"],
+                }
+            )
+        return pl.DataFrame(
+            {"player_id": [1], "position": ["Goalkeeper"], "team_code": [3]}
+        )
+
+    read = mocker.patch.object(
+        extractor, "_read_csv", side_effect=fake_read_csv
+    )
+
+    extractor.fetch_season_frames("2026-2027", gameweeks=[2])
+
+    listed.assert_not_called()
+    paths = [call.args[0] for call in read.call_args_list]
+    assert any("GW2/player_gameweek_stats.csv" in p for p in paths)
+    assert not any("GW1/" in p for p in paths)
+    assert not any("GW3/" in p for p in paths)
+
+
 def test_build_current_season_merged_gw_upserts_to_db(
     mocker: MockerFixture, tmp_path
 ) -> None:
