@@ -122,6 +122,100 @@ def test_player_code_is_attached() -> None:
     assert _row(out, "2023-24", 30)["player_code"] == 111
 
 
+def test_most_recent_of_multiple_prior_seasons_wins() -> None:
+    """With two qualifying prior seasons, the more recent one's numbers win.
+
+    Player 555 appears in 2019-20 and 2020-21, is blank in 2021-22 and
+    2022-23, then reappears in 2023-24. If the "most recent" selection
+    silently regressed to "any" prior season, this would pick up 2019-20's
+    very different minutes total instead of 2020-21's.
+    """
+    player_season = _player_season().vstack(
+        pl.DataFrame(
+            {
+                "season": ["2019-20", "2020-21", "2023-24"],
+                "element": [1, 2, 5],
+                "player_code": [555, 555, 555],
+            }
+        )
+    )
+    player_match = _player_match().vstack(
+        pl.DataFrame(
+            {
+                "season": ["2019-20", "2020-21", "2020-21"],
+                "gw": [1, 1, 2],
+                "element": [1, 2, 2],
+                "opponent": [9, 9, 8],
+                "minutes": [90, 90, 45],
+                "total_points": [3, 10, 2],
+            }
+        )
+    )
+    player_week = _player_week().vstack(
+        pl.DataFrame(
+            {
+                "season": ["2023-24"],
+                "gw": [1],
+                "element": [5],
+                "minutes": [90],
+                "total_points": [7],
+            }
+        )
+    )
+
+    out = add_history_features(player_week, player_match, player_season)
+
+    row = _row(out, "2023-24", 5)
+    # 2020-21 (90 + 45 minutes, one of two matches a start), not 2019-20's
+    # single 90-minute, 3-point match.
+    assert row["prev_season_minutes"] == 135
+    assert row["prev_season_start_rate"] == 0.5
+    assert row["seasons_since_last_pl"] == 2
+
+
+def test_points_per_start_is_null_without_any_sixty_plus_match() -> None:
+    """A prior season with no 60+ minute match yields a null points-per-start."""
+    player_season = _player_season().vstack(
+        pl.DataFrame(
+            {
+                "season": ["2021-22", "2022-23"],
+                "element": [50, 60],
+                "player_code": [777, 777],
+            }
+        )
+    )
+    player_match = _player_match().vstack(
+        pl.DataFrame(
+            {
+                "season": ["2021-22", "2021-22"],
+                "gw": [1, 2],
+                "element": [50, 50],
+                "opponent": [4, 5],
+                "minutes": [30, 45],
+                "total_points": [1, 2],
+            }
+        )
+    )
+    player_week = _player_week().vstack(
+        pl.DataFrame(
+            {
+                "season": ["2022-23"],
+                "gw": [1],
+                "element": [60],
+                "minutes": [0],
+                "total_points": [0],
+            }
+        )
+    )
+
+    out = add_history_features(player_week, player_match, player_season)
+
+    row = _row(out, "2022-23", 60)
+    assert row["prev_season_minutes"] == 75
+    assert row["prev_season_start_rate"] == 0.0
+    assert row["prev_season_points_per_start"] is None
+
+
 def test_double_gameweek_does_not_inflate_start_rate() -> None:
     """Two matches in one gameweek count as two matches, not one."""
     matches = _player_match().vstack(
