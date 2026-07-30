@@ -959,3 +959,18 @@ def test_load_player_season_does_not_propagate_season_varying_columns(
 
     assert out["team_join_date"].to_list() == [None, date(2017, 7, 1)]
     assert out["web_name"].to_list() == ["M.Salah", "Salah"]
+
+
+def test_reset_database_drops_player_season_rows(tmp_path: Path) -> None:
+    """reset_database empties the player_season table."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        write_immutable_player_season(
+            connection, _player_season_frame("2023-24", 1, 111), "2023-24"
+        )
+        reset_database(connection)
+        out = load_player_season(connection)
+    finally:
+        connection.close()
+
+    assert out.height == 0
