@@ -7,11 +7,7 @@ the row's own season, so none of it leaks: a completed season is entirely in
 the past relative to every gameweek of the season being scored.
 """
 
-import logging
-
 import polars as pl
-
-logger = logging.getLogger(__name__)
 
 # Columns add_history_features appends, in the order it appends them.
 HISTORY_FEATURES: list[str] = [
@@ -77,7 +73,8 @@ def _season_totals(
         coalesce=True,
     )
     return (
-        joined.group_by(["player_code", "season"])
+        joined.filter(pl.col("player_code").is_not_null())
+        .group_by(["player_code", "season"])
         .agg(
             pl.col("minutes").sum().alias("season_minutes"),
             (pl.col("minutes") >= START_MINUTES)
@@ -100,10 +97,14 @@ def add_history_features(
     """Attach ``player_code`` and prior-season features to player-week rows.
 
     For each row, the ``prev_season_*`` columns describe the most recent season
-    strictly before it in which the player made an appearance -- which is not
-    necessarily the immediately preceding season. ``seasons_since_last_pl``
-    reports how stale that history is, so a model can discount it rather than
-    treating a three-year-old season as current.
+    strictly before it in which the player had a ``player_match`` row -- that
+    is, was in the squad for at least one fixture, not necessarily that they
+    were on the pitch. Roughly 60% of ``player_match`` rows are 0-minute squad
+    entries, so a bench-bound player correctly gets ``prev_season_minutes`` of
+    0 rather than a null that would hide them from the model entirely. This is
+    also not necessarily the immediately preceding season.
+    ``seasons_since_last_pl`` reports how stale that history is, so a model can
+    discount it rather than treating a three-year-old season as current.
 
     Parameters
     ----------
@@ -268,7 +269,9 @@ def add_cold_start_features(
             coalesce=True,
         )
         .with_columns(
-            pl.when(pl.col("season_start") <= earliest_start)
+            pl.when(pl.col("team").is_null())
+            .then(pl.lit(False))
+            .when(pl.col("season_start") <= earliest_start)
             .then(pl.lit(False))
             .otherwise(pl.col("_in_prior_season").is_null())
             .alias("is_promoted_club")

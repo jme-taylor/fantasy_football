@@ -300,6 +300,40 @@ def test_cold_start_flags_a_promoted_club() -> None:
     assert out["days_since_team_join"].item() is None
 
 
+def test_cold_start_null_team_is_not_flagged_promoted() -> None:
+    """A null team (2025-26 player_week gap) yields False, not a null-join True."""
+    from datetime import date
+
+    from fantasy_football.features.history import add_cold_start_features
+
+    data = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "gw": [1],
+            "element": [30],
+            "team": [None],
+            "birth_date": [date(1999, 1, 1)],
+            "team_join_date": [None],
+        },
+        schema_overrides={
+            "team": pl.Utf8,
+            "birth_date": pl.Date,
+            "team_join_date": pl.Date,
+        },
+    )
+    fixtures = pl.DataFrame(
+        {
+            "season": ["2022-23", "2023-24"],
+            "gw": [1, 1],
+            "team": ["Liverpool", "Liverpool"],
+            "opposition": ["Arsenal", "Arsenal"],
+        }
+    )
+    out = add_cold_start_features(data, fixtures)
+
+    assert out["is_promoted_club"].item() is False
+
+
 def test_cold_start_earliest_season_is_not_flagged_promoted() -> None:
     """With no prior season on record, promotion is unknowable, not True."""
     from datetime import date
