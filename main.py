@@ -11,6 +11,9 @@ from fantasy_football.extraction.availability import (
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fci import FciExtractor
 from fantasy_football.extraction.fixtures import load_fixtures
+from fantasy_football.extraction.player_identity import (
+    load_player_identity_data,
+)
 from fantasy_football.extraction.player_match import (
     load_current_season_player_match,
 )
@@ -121,6 +124,7 @@ def main(
         load_fixtures(connection, CURRENT_SEASON)
         load_player_match_data(CURRENT_SEASON, connection)
         load_player_availability_data(connection, CURRENT_SEASON)
+        load_player_identity_data(connection, CURRENT_SEASON)
     finally:
         connection.close()
 

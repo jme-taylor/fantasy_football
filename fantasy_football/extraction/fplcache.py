@@ -396,3 +396,61 @@ class FplCacheExtractor:
         if not frames:
             return pl.DataFrame(schema=_CHANCE_OF_PLAYING_SCHEMA)
         return pl.concat(frames, how="vertical")
+
+    def build_player_bio(self, season: str) -> pl.DataFrame:
+        """Read static player bio fields from the season's GW1 snapshot.
+
+        These fields exist only in the fplcache bootstrap snapshots (2022-23
+        onwards); neither Vaastav's earlier files nor FCI's ``players.csv``
+        carry ``birth_date``. GW1 is used because every registered player is
+        present at the season's start.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2025-26"``.
+
+        Returns
+        -------
+        pl.DataFrame
+            One row per ``element`` with ``birth_date``, ``region`` and
+            ``team_join_date``. Empty when the season has no GW1 snapshot yet.
+        """
+        empty = pl.DataFrame(
+            schema={
+                "element": pl.Int64,
+                "birth_date": pl.Date,
+                "region": pl.Int64,
+                "team_join_date": pl.Date,
+            }
+        )
+        deadlines = self.season_event_deadlines(season)
+        try:
+            path = self._snapshot_path_for(deadlines[1])
+        except (KeyError, ValueError):
+            logger.warning(
+                "No fplcache snapshot for %s GW1; no bio data available.",
+                season,
+            )
+            return empty
+
+        elements = self._read_snapshot(path)["elements"]
+        return pl.DataFrame(
+            {
+                "element": [e["id"] for e in elements],
+                "birth_date": [e.get("birth_date") for e in elements],
+                "region": [e.get("region") for e in elements],
+                "team_join_date": [e.get("team_join_date") for e in elements],
+            },
+            schema={
+                "element": pl.Int64,
+                "birth_date": pl.Utf8,
+                "region": pl.Int64,
+                "team_join_date": pl.Utf8,
+            },
+        ).with_columns(
+            pl.col("birth_date").str.to_date(format="%Y-%m-%d", strict=False),
+            pl.col("team_join_date").str.to_date(
+                format="%Y-%m-%d", strict=False
+            ),
+        )

@@ -8,14 +8,37 @@ upstream source already carries it under a different name: Vaastav calls it
 """
 
 import logging
+from typing import TYPE_CHECKING
 
 import polars as pl
 
-from fantasy_football.extraction.fci import FCI_POSITION_TO_VAASTAV
+from fantasy_football.constants import (
+    CURRENT_SEASON,
+    EARLIEST_IDENTITY_SEASON,
+    FPLCACHE_FIRST_SEASON,
+)
+from fantasy_football.extraction.extractor import DataExtractor
+from fantasy_football.extraction.fci import (
+    FCI_POSITION_TO_VAASTAV,
+    FciExtractor,
+)
+from fantasy_football.extraction.fplcache import FplCacheExtractor
+from fantasy_football.extraction.seasons import (
+    DataSource,
+    season_short_to_long,
+    seasons_in_range,
+    source_for_season,
+)
 from fantasy_football.storage.database import (
     PLAYER_SEASON_COLUMNS,
     coerce_player_season,
+    player_season_seasons_present,
+    upsert_current_player_season,
+    write_immutable_player_season,
 )
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
 
@@ -181,3 +204,120 @@ def build_player_season_from_fci(
         .alias("position"),
     )
     return _finalise(frame, season)
+
+
+def _enrich_with_bio(frame: pl.DataFrame, bio: pl.DataFrame) -> pl.DataFrame:
+    """Overlay fplcache bio columns onto a shaped player-season frame.
+
+    The source builders always emit ``birth_date``, ``region`` and
+    ``team_join_date`` (null when the source has no such column), so the join
+    coalesces the incoming values over the existing ones rather than adding
+    columns.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        A shaped player-season frame with ``PLAYER_SEASON_COLUMNS``.
+    bio : pl.DataFrame
+        Rows from ``FplCacheExtractor.build_player_bio``.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``frame`` with bio columns filled where fplcache had a value.
+    """
+    if bio.is_empty():
+        return frame
+    bio_columns = ["birth_date", "region", "team_join_date"]
+    joined = frame.join(
+        bio.rename({column: f"{column}_bio" for column in bio_columns}),
+        on="element",
+        how="left",
+        coalesce=True,
+    )
+    return joined.with_columns(
+        [
+            pl.coalesce([f"{column}_bio", column]).alias(column)
+            for column in bio_columns
+        ]
+    ).select(PLAYER_SEASON_COLUMNS)
+
+
+def load_player_identity_data(
+    connection: "DuckDBPyConnection",
+    current_season: str = CURRENT_SEASON,
+    vaastav: DataExtractor | None = None,
+    fci: FciExtractor | None = None,
+    fplcache: FplCacheExtractor | None = None,
+) -> None:
+    """Populate ``player_season`` for every season up to ``current_season``.
+
+    Completed seasons are fetched once and skipped thereafter; the current
+    season is upserted each run so newly-registered players appear. Seasons
+    from ``FPLCACHE_FIRST_SEASON`` onwards are enriched with bio fields no
+    other source carries.
+
+    A season whose source file cannot be fetched is logged at WARNING and
+    skipped. A gap in the middle of history must not stop the current season
+    from loading, and a missing season simply means no history features for the
+    players who only appear in it.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        Open connection to the database.
+    current_season : str, optional
+        Short-form current season. Defaults to ``CURRENT_SEASON``.
+    vaastav : DataExtractor | None, optional
+        Vaastav extractor. Defaults to a new ``DataExtractor``.
+    fci : FciExtractor | None, optional
+        FCI extractor. Defaults to a new ``FciExtractor``.
+    fplcache : FplCacheExtractor | None, optional
+        fplcache extractor. Defaults to a new ``FplCacheExtractor``.
+    """
+    vaastav = vaastav or DataExtractor()
+    fci = fci or FciExtractor()
+    fplcache = fplcache or FplCacheExtractor()
+    present = player_season_seasons_present(connection)
+
+    for season in seasons_in_range(EARLIEST_IDENTITY_SEASON, current_season):
+        if season != current_season and season in present:
+            logger.info(
+                "Player-season season %s already present; skipping fetch.",
+                season,
+            )
+            continue
+        try:
+            if source_for_season(season) == DataSource.VAASTAV:
+                frame = build_player_season_from_vaastav(
+                    vaastav.read_players_raw(season), season
+                )
+            else:
+                frame = build_player_season_from_fci(
+                    fci.read_players(season_short_to_long(season)), season
+                )
+        except Exception:
+            logger.warning(
+                "Could not fetch player identity for season %s; skipping.",
+                season,
+                exc_info=True,
+            )
+            continue
+
+        if season >= FPLCACHE_FIRST_SEASON:
+            try:
+                frame = _enrich_with_bio(
+                    frame, fplcache.build_player_bio(season)
+                )
+            except Exception:
+                logger.warning(
+                    "Could not fetch fplcache bio for season %s; continuing "
+                    "without it.",
+                    season,
+                    exc_info=True,
+                )
+
+        if season == current_season:
+            upsert_current_player_season(connection, frame, season)
+        else:
+            write_immutable_player_season(connection, frame, season)
