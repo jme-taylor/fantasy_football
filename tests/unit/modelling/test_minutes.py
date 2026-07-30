@@ -696,12 +696,17 @@ def test_num_features_includes_history_and_cold_start() -> None:
 
     # is_pl_newcomer and is_promoted_club are booleans that live in
     # BOOL_FEATURES instead (passthrough, not median-imputed/scaled) -- see
-    # make_pipeline. Every other history/cold-start feature is continuous and
-    # must land in NUM_FEATURES.
+    # make_pipeline. days_since_team_join is deliberately excluded from the
+    # model (see the comment on NUM_FEATURES): it is 100% null in most
+    # training seasons and null for every 2026-27 row. Every other
+    # history/cold-start feature is continuous and must land in NUM_FEATURES.
+    excluded = {"is_pl_newcomer", "is_promoted_club", "days_since_team_join"}
     for feature in HISTORY_FEATURES + COLD_START_FEATURES:
-        if feature in ("is_pl_newcomer", "is_promoted_club"):
+        if feature in excluded:
             continue
         assert feature in NUM_FEATURES, f"{feature} missing from NUM_FEATURES"
+
+    assert "days_since_team_join" not in NUM_FEATURES
     assert "avg_minutes_rolling_5" in NUM_FEATURES
     assert "games_played_this_season" in NUM_FEATURES
 

@@ -83,7 +83,14 @@ NUM_FEATURES = [
     "pl_seasons_played",
     "seasons_since_last_pl",
     "age_years",
-    "days_since_team_join",
+    # days_since_team_join is deliberately excluded: FPL only began publishing
+    # team_join_date around 2024 and FCI's players.csv does not carry it at
+    # all, so it is 100% null in 6 of 8 training seasons and 564/564 null in
+    # 2026-27 -- the season this work exists to serve. Its non-nullness
+    # correlates almost perfectly with season membership, so the
+    # median-imputed column risked acting as a season proxy in train_final.
+    # It is still produced by add_cold_start_features and kept in
+    # player_season; re-add it here once FPL's coverage reaches further back.
 ]
 CAT_FEATURES = ["position"]
 BOOL_FEATURES = ["is_pl_newcomer", "is_promoted_club"]
@@ -92,9 +99,11 @@ FEATURES = NUM_FEATURES + CAT_FEATURES + BOOL_FEATURES
 # HISTORY_FEATURES and COLD_START_FEATURES are imported (rather than only used
 # in features/history.py) so this assertion catches drift between this
 # module's feature list and the features module the moment either changes.
-assert set(HISTORY_FEATURES) | set(COLD_START_FEATURES) <= set(
-    NUM_FEATURES
-) | set(BOOL_FEATURES)
+# days_since_team_join is deliberately excluded from the model (see the
+# comment on NUM_FEATURES above), so it is the one column carved out here.
+assert set(HISTORY_FEATURES) | set(COLD_START_FEATURES) - {
+    "days_since_team_join"
+} <= set(NUM_FEATURES) | set(BOOL_FEATURES)
 
 # Representative minutes per bucket, for the expected-minutes leverage metric.
 MINUTE_MIDPOINTS = {
@@ -262,7 +271,10 @@ def make_pipeline() -> Pipeline:
     """Build the logistic-regression pipeline.
 
     Numeric features are median-imputed then standardised; the categorical
-    ``position`` is one-hot encoded. All preprocessing lives inside the pipeline
+    ``position`` is one-hot encoded; the boolean ``BOOL_FEATURES`` pass straight
+    through untouched -- they are cast to ``Int8`` and never null by the time
+    they reach the pipeline (see :func:`build_feature_frame`), so they need
+    neither imputation nor scaling. All preprocessing lives inside the pipeline
     so it is refit per CV fold on train data only.
 
     Returns
@@ -465,14 +477,16 @@ def run_minutes_model() -> dict[str, float]:
     Assembles the model frame, scores it with expanding-window CV, fits the
     final pipeline on all seasons, and logs run params, per-fold metrics
     (stepped), aggregate mean/std metrics and the fitted model to the
-    ``MINUTES_EXPERIMENT`` experiment. With fewer than two seasons there are no
-    folds, so the function logs a warning and returns an empty dict.
+    ``MINUTES_EXPERIMENT`` experiment. With fewer than two seasons
+    :func:`season_folds` produces no folds, so ``per_fold`` and ``agg`` are
+    both empty and no CV metrics are logged, but the run still fits and
+    registers the final model.
 
     Returns
     -------
     dict[str, float]
         The aggregate metrics (``{metric}_mean`` / ``{metric}_std``), or an
-        empty dict when there is too little data to evaluate.
+        empty dict when there is too little data to cross-validate.
     """
     model_df = assemble_model_frame()
     seasons = model_df["season"].unique().to_list()
