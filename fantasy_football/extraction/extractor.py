@@ -292,7 +292,24 @@ class DataExtractor:
         url = self.api_client.get_raw_file_url(file_path)
         response = requests.get(url)
         response.raise_for_status()
-        return pl.read_csv(io.BytesIO(response.content))
+        return pl.read_csv(
+            io.BytesIO(response.content), infer_schema_length=10000
+        )
+
+    def read_players_raw(self, season: str) -> pl.DataFrame:
+        """Download a season's ``players_raw.csv`` from the Vaastav repo.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2023-24"``.
+
+        Returns
+        -------
+        pl.DataFrame
+            The parsed file, one row per registered player.
+        """
+        return self._read_csv(f"data/{season}/players_raw.csv")
 
     def load_immutable_seasons(
         self,

@@ -276,6 +276,21 @@ class FciExtractor:
         response.raise_for_status()
         return pl.read_csv(io.BytesIO(response.content))
 
+    def read_players(self, long_season: str) -> pl.DataFrame:
+        """Download a season's ``players.csv`` from the FCI repo.
+
+        Parameters
+        ----------
+        long_season : str
+            Long-form season string, e.g. ``"2025-2026"``.
+
+        Returns
+        -------
+        pl.DataFrame
+            The parsed file, one row per registered player.
+        """
+        return self._read_csv(f"data/{long_season}/players.csv")
+
     def _team_code_to_name(self) -> dict[int, str]:
         """Map FCI team_code (== FPL team code) to official team name.
 
