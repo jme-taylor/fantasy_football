@@ -149,6 +149,7 @@ def table_info(ddl: str, name: str) -> list[tuple]:
 def test_generated_ddl_matches_legacy_ddl(table, legacy):
     """Every generated DDL builds the same table as the legacy string."""
     assert table_info(table.ddl, table.name) == table_info(legacy, table.name)
+    assert f"PRIMARY KEY ({', '.join(table.primary_key)})" in legacy
 
 
 def test_tables_tuple_covers_every_spec():

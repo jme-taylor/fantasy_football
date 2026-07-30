@@ -114,8 +114,8 @@ def add_history_features(
         Per-fixture rows with ``season``, ``element``, ``minutes`` and
         ``total_points``.
     player_season : pl.DataFrame
-        Identity rows from ``load_player_season``, with ``season``, ``element``
-        and ``player_code``.
+        Identity rows from ``PLAYER_SEASON.load()``, with ``season``,
+        ``element`` and ``player_code``.
 
     Returns
     -------

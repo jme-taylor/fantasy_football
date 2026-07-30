@@ -1,15 +1,14 @@
-"""DuckDB storage for player-week data — the single source of truth.
+"""DuckDB connection lifecycle for the storage layer's six tables.
 
-This module owns the DuckDB connection lifecycle. Table schemas live as
-declarative ``Table`` specs in ``tables.py``; those specs are built from the
-low-level DDL/DML descriptors in ``table.py``, which in turn sit on the
-DuckDB primitives in ``engine.py``. This module just wires the two lifecycle
-entry points -- opening a connection and resetting the database -- to
-whatever tables ``tables.TABLES`` declares, so adding a table never requires
-touching this file.
+This module owns opening the database connection and resetting it. Table
+schemas live as declarative ``Table`` specs in ``tables.py``; those specs
+are built from the low-level DDL/DML descriptors in ``table.py``, which in
+turn sit on the DuckDB primitives in ``engine.py``. This module just wires
+the two lifecycle entry points -- opening a connection and resetting the
+database -- to whatever tables ``tables.TABLES`` declares, so adding a
+table never requires touching this file.
 """
 
-import logging
 from pathlib import Path
 
 import duckdb
@@ -17,8 +16,6 @@ import duckdb
 from fantasy_football.constants import DATABASE_PATH
 from fantasy_football.storage import engine
 from fantasy_football.storage.tables import TABLES
-
-logger = logging.getLogger(__name__)
 
 
 def get_connection(

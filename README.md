@@ -19,10 +19,20 @@ fantasy_football/
 ├── logging_config.py   — logging setup
 ├── fpl_types.py        — Pydantic types describing FPL API responses
 ├── storage/            — persistence
-│   └── database.py     — DuckDB store; the single source of truth for the
-│                          player_week, team_fixture, player_match,
-│                          player_availability and minutes_prediction tables
-│                          (create/coerce/upsert/load)
+│   ├── engine.py       — DuckDB primitives (create/drop/insert/delete/
+│   │                      select/distinct); the only module that touches
+│   │                      Arrow, `register`/`unregister`, and `.pl()`
+│   ├── table.py        — the `Table` descriptor: column order and dtypes
+│   │                      from one `schema` dict, generated DDL, and the
+│   │                      five operations (coerce, load, seasons_present,
+│   │                      write_immutable, upsert_current)
+│   ├── tables.py       — the six table specs (player_season, player_week,
+│   │                      team_fixture, player_match, player_availability,
+│   │                      minutes_prediction) and the `TABLES` tuple;
+│   │                      adding a table means adding a spec here and
+│   │                      nothing else
+│   └── database.py     — `get_connection` and `reset_database`, both
+│                          driven by `TABLES`
 ├── extraction/         — ingest raw data into the DuckDB store
 │   ├── fpl.py          — wrappers around the live FPL API (players, teams, fixtures, per-fixture history)
 │   ├── player_match.py — build the current season's per-fixture player_match rows from the FPL API
@@ -58,9 +68,16 @@ marked `@pytest.mark.integration` and deselected by default.
 ## Storage
 
 The source of truth is a single-file DuckDB database at
-`data/fantasy_football.duckdb` (gitignored). `storage/database.py` is the only
-module that touches DuckDB: extractors hand it Polars frames, downstream code
-reads frames back. It owns six tables:
+`data/fantasy_football.duckdb` (gitignored). The storage layer is a
+three-layer design: `storage/engine.py` holds the DuckDB primitives (the
+only module that touches Arrow, `register`/`unregister`, and `.pl()`),
+`storage/table.py` builds on it with the `Table` descriptor (column order
+and dtypes from one `schema` dict, generated DDL, and the five operations
+`coerce`/`load`/`seasons_present`/`write_immutable`/`upsert_current`), and
+`storage/tables.py` declares the six tables as `Table` specs gathered into
+`TABLES`. `storage/database.py` reduces to `get_connection` and
+`reset_database`, both driven by `TABLES`. Extractors hand the layer Polars
+frames; downstream code reads frames back. The six tables are:
 
 * **`player_season`** — the `(season, element) -> player_code` identity
   dimension. `player_code` is FPL's stable global player identifier, unlike

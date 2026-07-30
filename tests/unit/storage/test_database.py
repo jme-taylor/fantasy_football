@@ -2,8 +2,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
-import polars as pl  # noqa: F401  # used by later tasks appended to this file
-import pytest  # noqa: F401  # used by later tasks appended to this file
+import polars as pl
+import pytest
 
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.tables import (
@@ -60,7 +60,7 @@ def test_get_connection_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_coerce_player_week_normalises_gkp_and_selects_columns() -> None:
-    """GKP collapses to GK; output is exactly PLAYER_WEEK_COLUMNS in order."""
+    """GKP collapses to GK; output is exactly PLAYER_WEEK.columns in order."""
     raw = pl.DataFrame(
         {
             "season": ["2020-21"],
@@ -229,7 +229,7 @@ from fantasy_football.storage.database import reset_database  # noqa: E402
 def test_load_player_week_returns_all_rows_ordered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """load_player_week opens the default DB and returns every row, ordered."""
+    """PLAYER_WEEK.load opens the default DB and returns every row, ordered."""
     db_path = tmp_path / "t.duckdb"
     monkeypatch.setattr(database, "DATABASE_PATH", db_path)
     connection = get_connection(db_path)
@@ -292,7 +292,7 @@ def test_get_connection_creates_team_fixture_table(
 
 
 def test_coerce_team_fixture_selects_and_orders_columns() -> None:
-    """coerce_team_fixture reduces a frame to the canonical columns/order."""
+    """TEAM_FIXTURE.coerce reduces a frame to the canonical columns/order."""
     frame = _fixture_frame().with_columns(pl.lit("extra").alias("junk"))
     shaped = TEAM_FIXTURE.coerce(frame)
     assert shaped.columns == TEAM_FIXTURE.columns
@@ -301,7 +301,7 @@ def test_coerce_team_fixture_selects_and_orders_columns() -> None:
 def test_load_team_fixture_round_trips(
     db: duckdb.DuckDBPyConnection,
 ) -> None:
-    """A frame inserted directly is read back via load_team_fixture."""
+    """A frame inserted directly is read back via TEAM_FIXTURE.load."""
     conn = db
     conn.register("incoming", TEAM_FIXTURE.coerce(_fixture_frame()).to_arrow())
     conn.execute("INSERT INTO team_fixture SELECT * FROM incoming")
@@ -327,7 +327,7 @@ def test_reset_database_drops_team_fixture_rows(
 def test_write_immutable_fixtures_inserts_once(
     db: duckdb.DuckDBPyConnection,
 ) -> None:
-    """write_immutable_fixtures inserts a new season but skips a present one."""
+    """TEAM_FIXTURE.write_immutable inserts a new season but skips a present one."""
     conn = db
     TEAM_FIXTURE.write_immutable(conn, _fixture_frame(), "2023-24")
     assert TEAM_FIXTURE.load(conn).height == 2
@@ -341,7 +341,7 @@ def test_write_immutable_fixtures_inserts_once(
 def test_upsert_current_fixtures_replaces_season(
     db: duckdb.DuckDBPyConnection,
 ) -> None:
-    """upsert_current_fixtures deletes then reinserts the season's rows."""
+    """TEAM_FIXTURE.upsert_current deletes then reinserts the season's rows."""
     conn = db
     TEAM_FIXTURE.upsert_current(conn, _fixture_frame(), "2023-24")
     replacement = pl.DataFrame(
@@ -361,7 +361,7 @@ def test_upsert_current_fixtures_replaces_season(
 
 
 def test_fixture_seasons_present(db: duckdb.DuckDBPyConnection) -> None:
-    """fixture_seasons_present returns distinct stored seasons."""
+    """TEAM_FIXTURE.seasons_present returns distinct stored seasons."""
     conn = db
     assert TEAM_FIXTURE.seasons_present(conn) == set()
     TEAM_FIXTURE.write_immutable(conn, _fixture_frame(), "2023-24")
@@ -471,7 +471,7 @@ def test_write_immutable_player_match_is_noop_when_present(
 def test_load_player_match_round_trips_ordered(
     db: duckdb.DuckDBPyConnection,
 ) -> None:
-    """load_player_match returns every row ordered by the key."""
+    """PLAYER_MATCH.load returns every row ordered by the key."""
     connection = db
     frame = _player_match_frame(
         [

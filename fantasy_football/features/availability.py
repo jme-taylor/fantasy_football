@@ -63,7 +63,8 @@ def add_chance_of_playing(
         Player data containing ``season``, ``gw`` and ``element``.
     availability : pl.DataFrame
         Availability rows with ``season``, ``gw``, ``element`` and
-        ``chance_of_playing_this_round`` (e.g. from ``load_player_availability``).
+        ``chance_of_playing_this_round`` (e.g. from
+        ``PLAYER_AVAILABILITY.load()``).
 
     Returns
     -------

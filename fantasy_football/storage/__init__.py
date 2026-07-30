@@ -1,1 +1,1 @@
-"""Storage package: DuckDB-backed persistence for player-week data."""
+"""Storage package: DuckDB-backed persistence for the project's tables."""
