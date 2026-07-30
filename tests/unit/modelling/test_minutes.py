@@ -1,3 +1,4 @@
+from datetime import date
 from unittest import mock
 
 import numpy as np
@@ -72,9 +73,55 @@ def _availability() -> pl.DataFrame:
     )
 
 
+def _history_player_match() -> pl.DataFrame:
+    """Player-match rows for the history-feature join.
+
+    Distinct from the match-level ``player_match`` frame used by
+    ``build_model_frame``.
+    """
+    return pl.DataFrame(
+        {
+            "season": ["2022-23"] * 3,
+            "gw": [1, 1, 1],
+            "element": [1, 2, 3],
+            "minutes": [90, 0, 45],
+            "total_points": [6, 0, 2],
+        }
+    )
+
+
+def _player_season() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": ["2022-23"] * 3,
+            "element": [1, 2, 3],
+            "player_code": [101, 102, 103],
+            "birth_date": [date(1995, 1, 1)] * 3,
+            "team_join_date": [date(2020, 1, 1)] * 3,
+        },
+        schema_overrides={"birth_date": pl.Date, "team_join_date": pl.Date},
+    )
+
+
+def _team_fixture() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "team": ["Arsenal"],
+        }
+    )
+
+
 def test_build_feature_frame_has_one_row_per_player_week() -> None:
     """Feature frame keeps the player-week grain and the feature columns."""
-    frame = build_feature_frame(_player_week(), _availability())
+    frame = build_feature_frame(
+        _player_week(),
+        _availability(),
+        _history_player_match(),
+        _player_season(),
+        _team_fixture(),
+    )
 
     assert frame.height == 3
     for column in ["season", "gw", "element", "position", *FEATURES]:
@@ -90,7 +137,13 @@ def test_build_feature_frame_has_one_row_per_player_week() -> None:
 
 def test_build_model_frame_joins_features_onto_matches() -> None:
     """Match rows get features by (season, gw, element) and a bucket target."""
-    feature_frame = build_feature_frame(_player_week(), _availability())
+    feature_frame = build_feature_frame(
+        _player_week(),
+        _availability(),
+        _history_player_match(),
+        _player_season(),
+        _team_fixture(),
+    )
     player_match = pl.DataFrame(
         {
             "season": ["2022-23"] * 3,
@@ -176,7 +229,18 @@ def test_make_pipeline_fits_and_predicts_proba() -> None:
             "chance_of_playing_this_round": rng.choice([0, 75, 100], n),
             "fit_rivals_same_pos": rng.integers(0, 4, n),
             "fit_rivals_ahead": rng.integers(0, 4, n),
+            "avg_minutes_rolling_5": rng.random(n) * 90,
+            "games_played_this_season": rng.integers(0, 10, n),
+            "prev_season_minutes": rng.integers(0, 3000, n),
+            "prev_season_start_rate": rng.random(n),
+            "prev_season_points_per_start": rng.random(n) * 6,
+            "pl_seasons_played": rng.integers(0, 5, n),
+            "seasons_since_last_pl": rng.integers(0, 3, n),
+            "age_years": rng.random(n) * 15 + 17,
+            "days_since_team_join": rng.random(n) * 3000,
             "position": rng.choice(["GK", "DEF", "MID", "FWD"], n),
+            "is_pl_newcomer": rng.integers(0, 2, n),
+            "is_promoted_club": rng.integers(0, 2, n),
             "minutes_bucket": rng.choice(MINUTES_BUCKETS, n),
         }
     )
@@ -217,7 +281,18 @@ def _synthetic_model_df(
                     "chance_of_playing_this_round": 100,
                     "fit_rivals_same_pos": rank - 1,
                     "fit_rivals_ahead": rank - 1,
+                    "avg_minutes_rolling_5": float(rng.random() * 90),
+                    "games_played_this_season": int(rng.integers(0, 10)),
+                    "prev_season_minutes": int(rng.integers(0, 3000)),
+                    "prev_season_start_rate": float(rng.random()),
+                    "prev_season_points_per_start": float(rng.random() * 6),
+                    "pl_seasons_played": int(rng.integers(0, 5)),
+                    "seasons_since_last_pl": int(rng.integers(0, 3)),
+                    "age_years": float(rng.random() * 15 + 17),
+                    "days_since_team_join": float(rng.random() * 3000),
                     "position": rng.choice(["DEF", "MID", "FWD"]),
+                    "is_pl_newcomer": int(rng.integers(0, 2)),
+                    "is_promoted_club": int(rng.integers(0, 2)),
                     "minutes": minutes,
                     "minutes_bucket": bucket,
                 }
@@ -284,7 +359,13 @@ def test_run_minutes_model_logs_to_mlflow() -> None:
 
 def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
     """A DGW (two opponents same gw/element) produces two model-frame rows."""
-    feature_frame = build_feature_frame(_player_week(), _availability())
+    feature_frame = build_feature_frame(
+        _player_week(),
+        _availability(),
+        _history_player_match(),
+        _player_season(),
+        _team_fixture(),
+    )
 
     # Element 1 plays twice in GW1 (opponents 10 and 20 — a double gameweek).
     player_match = pl.DataFrame(
@@ -314,7 +395,13 @@ def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
 
 def test_build_model_frame_carries_opponent_for_match_grain() -> None:
     """Opponent survives the join so predictions key by match on a DGW."""
-    feature_frame = build_feature_frame(_player_week(), _availability())
+    feature_frame = build_feature_frame(
+        _player_week(),
+        _availability(),
+        _history_player_match(),
+        _player_season(),
+        _team_fixture(),
+    )
     player_match = pl.DataFrame(
         {
             "season": ["2022-23", "2022-23"],
@@ -597,3 +684,90 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
     historic = out.filter(pl.col("season") == "2024-25")
     # Sentinel overwritten by a fresh score.
     assert historic["expected_minutes"].to_list() != [999.0]
+
+
+def test_num_features_includes_history_and_cold_start() -> None:
+    """The history block is actually wired into the model's feature list."""
+    from fantasy_football.features.history import (
+        COLD_START_FEATURES,
+        HISTORY_FEATURES,
+    )
+    from fantasy_football.modelling.minutes import NUM_FEATURES
+
+    # is_pl_newcomer and is_promoted_club are booleans that live in
+    # BOOL_FEATURES instead (passthrough, not median-imputed/scaled) -- see
+    # make_pipeline. Every other history/cold-start feature is continuous and
+    # must land in NUM_FEATURES.
+    for feature in HISTORY_FEATURES + COLD_START_FEATURES:
+        if feature in ("is_pl_newcomer", "is_promoted_club"):
+            continue
+        assert feature in NUM_FEATURES, f"{feature} missing from NUM_FEATURES"
+    assert "avg_minutes_rolling_5" in NUM_FEATURES
+    assert "games_played_this_season" in NUM_FEATURES
+
+
+def test_build_feature_frame_emits_every_declared_feature() -> None:
+    """Every name in FEATURES exists as a column on the built frame."""
+    from datetime import datetime
+
+    from fantasy_football.modelling.minutes import (
+        FEATURES,
+        build_feature_frame,
+    )
+
+    player_week = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 2],
+            "element": [10, 10],
+            "position": ["MID", "MID"],
+            "team": ["Liverpool", "Liverpool"],
+            "value": [125, 125],
+            "minutes": [90, 80],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 2],
+            "element": [10, 10],
+            "chance_of_playing_this_round": [100, 100],
+        }
+    )
+    player_match = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 2],
+            "element": [10, 10],
+            "opponent": [3, 4],
+            "minutes": [90, 80],
+            "total_points": [8, 5],
+        }
+    )
+    player_season = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "element": [10],
+            "player_code": [111],
+            "birth_date": [date(1992, 6, 15)],
+            "team_join_date": [date(2017, 7, 1)],
+        },
+        schema_overrides={"birth_date": pl.Date, "team_join_date": pl.Date},
+    )
+    team_fixture = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "gw": [1],
+            "team": ["Liverpool"],
+            "is_home": [True],
+            "opposition": ["Arsenal"],
+            "kickoff_time": [datetime(2023, 8, 12, 15, 0)],
+        }
+    )
+
+    out = build_feature_frame(
+        player_week, availability, player_match, player_season, team_fixture
+    )
+
+    for feature in FEATURES:
+        assert feature in out.columns, f"{feature} missing from feature frame"

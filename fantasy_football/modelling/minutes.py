@@ -6,7 +6,6 @@ import mlflow.sklearn
 import mlflow.tracking
 import numpy as np
 import polars as pl
-from mlflow.exceptions import MlflowException
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -27,7 +26,15 @@ from fantasy_football.constants import (
 )
 from fantasy_football.features.availability import (
     add_chance_of_playing,
+    add_games_played_this_season,
     add_positional_availability,
+    add_rolling_minutes,
+)
+from fantasy_football.features.history import (
+    COLD_START_FEATURES,
+    HISTORY_FEATURES,
+    add_cold_start_features,
+    add_history_features,
 )
 from fantasy_football.features.valuation import (
     add_positional_value_rank,
@@ -37,7 +44,9 @@ from fantasy_football.storage.database import (
     get_connection,
     load_player_availability,
     load_player_match,
+    load_player_season,
     load_player_week,
+    load_team_fixture,
     minutes_prediction_seasons_present,
     minutes_prediction_versions,
     upsert_minutes_prediction,
@@ -54,7 +63,10 @@ BUCKET_PARTIAL = "1_to_59_minutes"
 BUCKET_SIXTY_PLUS = "60_minutes_plus"
 MINUTES_BUCKETS = [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
 
-# Model inputs.
+# Model inputs. The first block is contemporaneous -- everything knowable at
+# the deadline. The second reaches across the summer break through player_code
+# (see features/history.py), which is what lets the model say anything useful
+# at GW1 of a new season, before any in-season evidence exists.
 NUM_FEATURES = [
     "value",
     "value_share_of_team",
@@ -63,9 +75,26 @@ NUM_FEATURES = [
     "chance_of_playing_this_round",
     "fit_rivals_same_pos",
     "fit_rivals_ahead",
+    "avg_minutes_rolling_5",
+    "games_played_this_season",
+    "prev_season_minutes",
+    "prev_season_start_rate",
+    "prev_season_points_per_start",
+    "pl_seasons_played",
+    "seasons_since_last_pl",
+    "age_years",
+    "days_since_team_join",
 ]
 CAT_FEATURES = ["position"]
-FEATURES = NUM_FEATURES + CAT_FEATURES
+BOOL_FEATURES = ["is_pl_newcomer", "is_promoted_club"]
+FEATURES = NUM_FEATURES + CAT_FEATURES + BOOL_FEATURES
+
+# HISTORY_FEATURES and COLD_START_FEATURES are imported (rather than only used
+# in features/history.py) so this assertion catches drift between this
+# module's feature list and the features module the moment either changes.
+assert set(HISTORY_FEATURES) | set(COLD_START_FEATURES) <= set(
+    NUM_FEATURES
+) | set(BOOL_FEATURES)
 
 # Representative minutes per bucket, for the expected-minutes leverage metric.
 MINUTE_MIDPOINTS = {
@@ -107,36 +136,62 @@ def create_minutes_bucket(
 
 
 def build_feature_frame(
-    player_week: pl.DataFrame, availability: pl.DataFrame
+    player_week: pl.DataFrame,
+    availability: pl.DataFrame,
+    player_match: pl.DataFrame,
+    player_season: pl.DataFrame,
+    team_fixture: pl.DataFrame,
 ) -> pl.DataFrame:
     """Build the model feature frame at the player-week grain.
 
-    Value features (``value_share_of_team``, ``pos_value_rank``,
-    ``players_same_pos``) and availability features
-    (``chance_of_playing_this_round``, ``fit_rivals_same_pos``,
-    ``fit_rivals_ahead``) are computed once per ``(season, gw, element)`` so the
-    per-gameweek counts are correct, then narrowed to the columns the model
-    consumes plus the join keys and ``position``.
+    Contemporaneous features (value share, positional rank, chance of playing,
+    fit rivals) are computed per ``(season, gw, element)`` so the per-gameweek
+    counts are correct. History features join through ``player_code`` to reach
+    prior seasons, and cold-start features stand in for players who have none.
 
     Parameters
     ----------
     player_week : pl.DataFrame
-        Player-week rows from :func:`load_player_week` (``season``, ``gw``,
-        ``element``, ``position``, ``team``, ``value`` and more).
+        Player-week rows from :func:`load_player_week`.
     availability : pl.DataFrame
         Availability rows from :func:`load_player_availability`.
+    player_match : pl.DataFrame
+        Per-fixture rows from :func:`load_player_match`, used for prior-season
+        aggregates that must not be distorted by double gameweeks.
+    player_season : pl.DataFrame
+        Identity rows from :func:`load_player_season`.
+    team_fixture : pl.DataFrame
+        Fixture rows from :func:`load_team_fixture`, used to detect promoted
+        clubs.
 
     Returns
     -------
     pl.DataFrame
         One row per ``(season, gw, element)`` with ``position`` and every
-        column in ``NUM_FEATURES``.
+        column in ``NUM_FEATURES`` and ``BOOL_FEATURES``.
     """
     frame = add_team_value(player_week)
     frame = add_positional_value_rank(frame)
     frame = add_chance_of_playing(frame, availability)
     frame = add_positional_availability(frame)
-    return frame.select(["season", "gw", "element", "position", *NUM_FEATURES])
+    frame = add_rolling_minutes(frame)
+    frame = add_games_played_this_season(frame)
+    frame = add_history_features(frame, player_match, player_season)
+    frame = frame.join(
+        player_season.select(
+            ["season", "element", "birth_date", "team_join_date"]
+        ),
+        on=["season", "element"],
+        how="left",
+        coalesce=True,
+    )
+    frame = add_cold_start_features(frame, team_fixture)
+    frame = frame.with_columns(
+        [pl.col(column).cast(pl.Int8) for column in BOOL_FEATURES]
+    )
+    return frame.select(
+        ["season", "gw", "element", "position", *NUM_FEATURES, *BOOL_FEATURES]
+    )
 
 
 # TODO (JT): Work out a cleaner way to do this (feature store?)
@@ -177,7 +232,9 @@ def build_model_frame(
             "opponent",
             "minutes",
             "minutes_bucket",
-            *FEATURES,
+            *NUM_FEATURES,
+            *CAT_FEATURES,
+            *BOOL_FEATURES,
         ]
     )
 
@@ -190,10 +247,15 @@ def assemble_model_frame() -> pl.DataFrame:
     pl.DataFrame
         The match-level model frame from :func:`build_model_frame`.
     """
+    player_match = load_player_match()
     feature_frame = build_feature_frame(
-        load_player_week(), load_player_availability()
+        load_player_week(),
+        load_player_availability(),
+        player_match,
+        load_player_season(),
+        load_team_fixture(),
     )
-    return build_model_frame(load_player_match(), feature_frame)
+    return build_model_frame(player_match, feature_frame)
 
 
 def make_pipeline() -> Pipeline:
@@ -221,6 +283,7 @@ def make_pipeline() -> Pipeline:
                 NUM_FEATURES,
             ),
             ("cat", OneHotEncoder(handle_unknown="ignore"), CAT_FEATURES),
+            ("bool", "passthrough", BOOL_FEATURES),
         ]
     )
     return Pipeline(
