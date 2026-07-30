@@ -60,8 +60,17 @@ marked `@pytest.mark.integration` and deselected by default.
 The source of truth is a single-file DuckDB database at
 `data/fantasy_football.duckdb` (gitignored). `storage/database.py` is the only
 module that touches DuckDB: extractors hand it Polars frames, downstream code
-reads frames back. It owns five tables:
+reads frames back. It owns six tables:
 
+* **`player_season`** — the `(season, element) -> player_code` identity
+  dimension. `player_code` is FPL's stable global player identifier, unlike
+  `element` (recycled per season) or player name (renamed, accented
+  differently across sources, or shared by two players). It also carries
+  slow-moving static attributes (`birth_date`, `team_join_date`, position)
+  that are back- and forward-filled across a player's seasons from wherever
+  they were first observed. This is what lets features span the Vaastav ->
+  FPL Core Insights source seam and the close-season gap — see
+  [Minutes-played model](#minutes-played-model).
 * **`player_week`** — one row per `(season, gw, element)`, collapsed across
   double gameweeks. The substrate for the rolling-points features and the
   per-position points models.
@@ -117,6 +126,15 @@ per-gameweek `team_code`, because FCI only records a player's final club and so
 gets mid-season transfers wrong for pre-transfer gameweeks. Coverage starts
 from `2022-23` (fplcache's earliest snapshots, set by `FPLCACHE_FIRST_SEASON`).
 
+> **Known gap: no 2018-19 / 2019-20 in `cleaned_merged_seasons.csv`.** That
+> file only covers seasons from 2020-21 onwards. Earlier `merged_gw.csv` files
+> lack the `position` and `team` columns those seasons would need, and 2018-19
+> is additionally latin-1 encoded with no accompanying `teams.csv`. The two
+> seasons were deliberately left out rather than backfilled, so
+> `cleaned_merged_seasons.csv`-derived tables (e.g. `player_week`) have a gap
+> there. `player_season`, which is built from a different source
+> (`players_raw.csv`, present for every season), still has rows for both.
+
 ## Minutes-played model
 
 `modelling/minutes.py` trains a single 3-class classifier that predicts each
@@ -127,12 +145,43 @@ probability of *any* appearance and probability of a *60+ minute* appearance —
 cross-validated with an expanding window over seasons, then refit on all
 seasons and logged to MLflow (experiment `minutes_played_classification`).
 
-Its features are assembled from the `player_match`, `player_week` and
-`player_availability` tables: rolling minutes, FPL chance-of-playing,
-positional availability (fit same-club, same-position rivals), team-value share
-and positional value rank. The model runs on every data refresh from `main`,
-but a modelling failure is logged and swallowed so it can never block
-prediction and optimisation.
+Its features are assembled from the `player_match`, `player_week`,
+`player_availability` and `player_season` tables. Contemporaneous features
+(knowable at the deadline): value, value share of team, positional value rank,
+number of same-position teammates, FPL chance-of-playing, positional
+availability (fit same-club, same-position rivals ahead and at the same
+position), rolling 5-match minutes, and games played so far this season.
+Cross-season features, joined through `player_season.player_code` (see
+[Storage](#storage)): previous-season minutes, start rate and points-per-start,
+seasons played in the Premier League, seasons since the player was last in the
+Premier League, age, days since joining the current club, whether the player
+is a Premier League newcomer, and whether their club was promoted. These
+reach across the summer break, which is what lets the model say anything
+useful about a player at GW1 of a new season, before any in-season evidence
+exists — previously it had nothing but contemporaneous, in-season signal. The
+model runs on every data refresh from `main`, but a modelling failure is
+logged and swallowed so it can never block prediction and optimisation.
+
+**Measured impact (2026-07-30).** Training on the real database end to end,
+5-fold expanding-window CV, comparing the run with the new cross-season
+features against the most recent prior run (contemporaneous features only):
+
+| metric | prior | new | change |
+|---|---|---|---|
+| `logloss_appear_mean` | 0.630 | 0.378 | lower is better — improved |
+| `logloss_60_mean` | 0.637 | 0.349 | lower is better — improved |
+| `auc_appear_mean` | 0.798 | 0.910 | higher is better — improved |
+| `auc_60_mean` | 0.777 | 0.917 | higher is better — improved |
+| `brier_appear_mean` | 0.212 | 0.118 | lower is better — improved |
+| `e_min_mae_mean` | 30.93 | 19.57 | lower is better — improved |
+
+The new features improved every CV metric, and fold-to-fold variance (the
+`_std` companions to each metric above) also dropped substantially, suggesting
+the gain is not a single lucky fold. Two features (`fit_rivals_ahead`,
+`days_since_team_join`) were all-null in at least one CV fold, which the
+imputer skips with a warning rather than a failure; this is a candidate for
+follow-up but did not prevent training. This run was **not** promoted —
+promotion to `production` remains a manual step in the MLflow UI.
 
 ### Registry, promotion and backfill
 
@@ -186,6 +235,7 @@ The high-level milestones are:
   * [X] 3-class classifier with expanding-window CV, scored on appearance and 60+ boundaries, logged to MLflow
   * [X] Register each trained model in the MLflow Model Registry (manual `production` promotion via the UI)
   * [X] Version-gated backfill of production predictions to the `minutes_prediction` table
+  * [X] Cross-season player identity (`player_season`, keyed on FPL's stable `player_code`) feeding prior-season history and cold-start features into the model
   * [ ] Gated auto-promotion (promote a new version only when it beats the champion)
   * [ ] Feed its appearance probabilities into the per-position points models
 * [ ] Dig into the worst-performing position and investigate its scoring errors
@@ -215,9 +265,13 @@ integrated:
   agent as an alternative to the pure optimiser.
 
 Open questions still being worked through include how to handle double
-gameweeks, chips (wildcard, triple captain, etc.), promoted teams and new
-players, managerial changes, disciplinary suspensions, mid-season transfers,
-and backtesting how good the optimiser actually is.
+gameweeks, chips (wildcard, triple captain, etc.), managerial changes,
+disciplinary suspensions, mid-season transfers, and backtesting how good the
+optimiser actually is. Promoted teams and new players are handled by the
+minutes model's `is_promoted_club` / `is_pl_newcomer` cold-start features
+(measured to improve every CV metric, see
+[Minutes-played model](#minutes-played-model)); it is no longer an open
+question there.
 
 ## Installation
 
