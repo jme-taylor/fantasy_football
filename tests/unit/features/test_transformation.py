@@ -7,6 +7,7 @@ import pytest
 from fantasy_football.features import transformation as data_transformation
 from fantasy_football.features.transformation import (
     KNOWN_POSITIONS,
+    add_rolling_identity_column,
     create_rolling_average_column,
     create_rolling_points_data,
     fill_missing_values_by_position,
@@ -420,3 +421,91 @@ def test_rolling_average_does_not_span_a_season_boundary() -> None:
     column = rolling_column_name("total_points", 2)
 
     assert out.sort(["season", "gw"])[column].to_list() == [10.0, 10.0, 2.0]
+
+
+def test_add_rolling_identity_column_gives_distinct_fallbacks_for_null_codes() -> (
+    None
+):
+    """Two null-player_code rows for different elements get different keys.
+
+    ``.over()`` pools every null value into one partition, so a fallback is
+    required for rows with no ``player_code``. This checks the fallback is
+    keyed on ``element`` (distinct rows stay distinct) and cannot collide
+    with a real ``player_code`` string.
+    """
+    data = pl.DataFrame(
+        {
+            "player_code": [None, None, 111],
+            "element": [1, 2, 111],
+        }
+    )
+
+    result = add_rolling_identity_column(data)
+
+    identities = result["rolling_identity"].to_list()
+    assert len(set(identities)) == 3
+    # The real player_code's identity is its bare digit string...
+    assert identities[2] == "111"
+    # ...which cannot equal either fallback, even though element == 111 here.
+    assert identities[0] != identities[2]
+    assert identities[1] != identities[2]
+
+
+def test_create_rolling_points_data_separates_players_with_null_player_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rows with no player_season identity row must not be pooled together.
+
+    ``player_code`` is null whenever a season has no matching
+    ``player_season`` row -- which happens by design when
+    ``load_player_identity_data`` catches a failed source fetch and skips
+    that season. Grouping the rolling window directly on ``player_code``
+    would pool every null-coded player in that season into one shared
+    series. This seeds two distinct players in the same season with no
+    ``player_season`` rows at all (so both get a null ``player_code``) and
+    clearly different points, and asserts their rolling series stay
+    separate rather than being averaged together.
+    """
+    db_path = tmp_path / "t.duckdb"
+    transformed_data = tmp_path / "transformed"
+    current_season = "2025-26"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(
+        data_transformation, "TRANSFORMED_DATA_FOLDER", transformed_data
+    )
+
+    historic = pl.DataFrame(
+        {
+            "season": ["2020-21"] * 4,
+            "gw": [1, 2, 1, 2],
+            "element": [1, 1, 2, 2],
+            "name": ["Player1", "Player1", "Player2", "Player2"],
+            "position": ["GK", "GK", "GK", "GK"],
+            "team": ["Arsenal", "Arsenal", "Chelsea", "Chelsea"],
+            "bonus": [0, 0, 0, 0],
+            "minutes": [90, 90, 90, 90],
+            "round": [1, 2, 1, 2],
+            "total_points": [10, 10, 2, 2],
+            "value": [50, 50, 50, 50],
+        }
+    )
+    connection = get_connection(db_path)
+    try:
+        write_immutable_season(connection, historic, "2020-21")
+    finally:
+        connection.close()
+
+    create_rolling_points_data(current_season, rolling_window=2)
+
+    result = pl.read_csv(transformed_data / "rolling_points.csv")
+    column = rolling_column_name("total_points", 2)
+    player1_values = (
+        result.filter(pl.col("element") == 1).sort("gw")[column].to_list()
+    )
+    player2_values = (
+        result.filter(pl.col("element") == 2).sort("gw")[column].to_list()
+    )
+
+    assert player1_values == [10.0, 10.0]
+    assert player2_values == [2.0, 2.0]

@@ -14,6 +14,13 @@ TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 
 KNOWN_POSITIONS: tuple[str, ...] = ("GK", "DEF", "MID", "FWD")
 
+# Prefix used to build a fallback rolling-window identity for rows with a
+# null player_code. It must contain a non-digit character: a real
+# player_code is rendered as bare digits, so a string starting with a
+# non-digit character can never equal one, no matter how the two integer
+# ranges overlap.
+_FALLBACK_IDENTITY_PREFIX = "no_player_code_element_"
+
 
 def rolling_column_name(rolling_column: str, rolling_window: int) -> str:
     """Return the output column name produced by a rolling-average step."""
@@ -39,6 +46,50 @@ def load_gw_data() -> pl.DataFrame:
         on=["season", "element"],
         how="left",
         coalesce=True,
+    )
+
+
+def add_rolling_identity_column(data: pl.DataFrame) -> pl.DataFrame:
+    """Add a collision-safe identity key for the rolling-points window.
+
+    ``player_code`` is nullable: a row whose ``(season, element)`` has no
+    matching ``player_season`` row -- for example because
+    ``load_player_identity_data`` caught a failed source fetch and skipped
+    that season -- keeps a null ``player_code``. Polars pools every null
+    value in a ``.over()`` partition into a single group, so grouping the
+    rolling window directly on ``player_code`` would silently merge every
+    such player in a season into one shared series -- the same bug this
+    module exists to fix, just triggered by a missing identity rather than a
+    shared display name.
+
+    ``element`` is unique within a season, so it is a sound fallback identity
+    for these rows, but ``element`` and ``player_code`` are drawn from
+    overlapping integer ranges, so naively coalescing them risks an
+    unmatched player colliding with an unrelated real ``player_code``. This
+    stores the identity as a string instead: a real ``player_code`` is
+    rendered as its bare digits, while a fallback is prefixed with
+    ``_FALLBACK_IDENTITY_PREFIX``, which starts with a non-digit character.
+    A digit-only string can never equal a string carrying a non-digit
+    prefix, so the two spaces cannot collide regardless of the underlying
+    integer values.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Frame with ``player_code`` and ``element`` columns.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``data`` with a ``rolling_identity`` string column added.
+    """
+    return data.with_columns(
+        pl.when(pl.col("player_code").is_not_null())
+        .then(pl.col("player_code").cast(pl.Utf8))
+        .otherwise(
+            pl.lit(_FALLBACK_IDENTITY_PREFIX) + pl.col("element").cast(pl.Utf8)
+        )
+        .alias("rolling_identity")
     )
 
 
@@ -141,6 +192,12 @@ def create_rolling_points_data(
     anything, but writes the data to a CSV file in the transformed data folder
     named "rolling_points.csv".
 
+    The rolling window uses ``min_periods=1``, so a row with fewer than
+    ``rolling_window`` prior games in its partition gets a genuine (if thin)
+    average over whatever exists rather than a null -- meaning fewer rows
+    fall through to ``fill_missing_values_by_position``'s positional
+    fallback than before that was added.
+
     Parameters
     ----------
     current_season : str
@@ -152,9 +209,11 @@ def create_rolling_points_data(
     """
     gw_data = load_gw_data()
     rolling_column = rolling_column_name("total_points", rolling_window)
+    gw_data = add_rolling_identity_column(gw_data)
     gw_data = create_rolling_average_column(
-        gw_data, ["player_code", "season"], "total_points", rolling_window
+        gw_data, ["rolling_identity", "season"], "total_points", rolling_window
     )
+    gw_data = gw_data.drop("rolling_identity")
     gw_data = fill_missing_values_by_position(gw_data, rolling_column)
     TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
     gw_data.write_csv(TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"))
