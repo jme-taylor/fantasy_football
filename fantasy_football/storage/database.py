@@ -125,6 +125,7 @@ def get_connection(
     connection.execute(_CREATE_PLAYER_MATCH_TABLE)
     connection.execute(_CREATE_PLAYER_AVAILABILITY_TABLE)
     connection.execute(_CREATE_MINUTES_PREDICTION_TABLE)
+    connection.execute(_CREATE_PLAYER_SEASON_TABLE)
     return connection
 
 
@@ -848,6 +849,231 @@ def minutes_prediction_versions(
     return {row[0] for row in rows if row[0] is not None}
 
 
+# Canonical player-season column order. One row per (season, element); the
+# dimension that maps season-local element ids onto FPL's stable global
+# player_code so features can span seasons.
+PLAYER_SEASON_COLUMNS: list[str] = [
+    "season",
+    "element",
+    "player_code",
+    "web_name",
+    "first_name",
+    "second_name",
+    "position",
+    "team_code",
+    "birth_date",
+    "region",
+    "team_join_date",
+]
+
+# Attributes that are properties of the person, not of the season. One
+# observation anywhere determines them everywhere, so load_player_season fills
+# them across every season sharing a player_code. Everything else is
+# season-varying and must never be propagated -- team_join_date in particular
+# is the signal that a player is a recent signing.
+PLAYER_SEASON_STATIC_COLUMNS: list[str] = [
+    "first_name",
+    "second_name",
+    "birth_date",
+    "region",
+]
+
+# Polars dtypes incoming player-season frames are pinned to before insert.
+PLAYER_SEASON_SCHEMA: dict[str, pl.DataType] = {
+    "season": pl.Utf8,
+    "element": pl.Int64,
+    "player_code": pl.Int64,
+    "web_name": pl.Utf8,
+    "first_name": pl.Utf8,
+    "second_name": pl.Utf8,
+    "position": pl.Utf8,
+    "team_code": pl.Int64,
+    "birth_date": pl.Date,
+    "region": pl.Int64,
+    "team_join_date": pl.Date,
+}
+
+_CREATE_PLAYER_SEASON_TABLE = """
+CREATE TABLE IF NOT EXISTS player_season (
+    season VARCHAR NOT NULL,
+    element BIGINT NOT NULL,
+    player_code BIGINT,
+    web_name VARCHAR,
+    first_name VARCHAR,
+    second_name VARCHAR,
+    position VARCHAR,
+    team_code BIGINT,
+    birth_date DATE,
+    region BIGINT,
+    team_join_date DATE,
+    PRIMARY KEY (season, element)
+)
+"""
+
+
+def coerce_player_season(frame: pl.DataFrame) -> pl.DataFrame:
+    """Reduce a frame to the canonical player-season columns and dtypes.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        A frame containing at least ``PLAYER_SEASON_COLUMNS``. Extra columns
+        are dropped.
+
+    Returns
+    -------
+    pl.DataFrame
+        The frame narrowed to ``PLAYER_SEASON_COLUMNS`` and cast to
+        ``PLAYER_SEASON_SCHEMA``.
+    """
+    return frame.select(PLAYER_SEASON_COLUMNS).cast(
+        PLAYER_SEASON_SCHEMA, strict=False
+    )
+
+
+def player_season_seasons_present(
+    connection: duckdb.DuckDBPyConnection,
+) -> set[str]:
+    """Return the set of seasons already stored in ``player_season``.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+
+    Returns
+    -------
+    set[str]
+        Short-form season strings present in the table.
+    """
+    rows = connection.execute(
+        "SELECT DISTINCT season FROM player_season"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def write_immutable_player_season(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Insert a completed season's identity rows, only if not already stored.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        Rows for ``season``, containing ``PLAYER_SEASON_COLUMNS``.
+    season : str
+        Short-form season string, e.g. ``"2023-24"``.
+    """
+    if season in player_season_seasons_present(connection):
+        logger.info(
+            "Player-season season %s already present; skipping.", season
+        )
+        return
+    shaped = coerce_player_season(frame)
+    connection.register("incoming_player_season", shaped.to_arrow())
+    try:
+        connection.execute(
+            "INSERT INTO player_season SELECT * FROM incoming_player_season"
+        )
+    finally:
+        connection.unregister("incoming_player_season")
+    logger.info(
+        "Inserted %d player-season rows for immutable season %s",
+        shaped.height,
+        season,
+    )
+
+
+def upsert_current_player_season(
+    connection: duckdb.DuckDBPyConnection,
+    frame: pl.DataFrame,
+    season: str,
+) -> None:
+    """Replace all stored identity rows for ``season`` with a fresh frame.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    frame : pl.DataFrame
+        Rows for ``season``, containing ``PLAYER_SEASON_COLUMNS``.
+    season : str
+        Short-form season string, e.g. ``"2026-27"``.
+    """
+    shaped = coerce_player_season(frame)
+    connection.register("incoming_player_season", shaped.to_arrow())
+    try:
+        connection.execute(
+            "DELETE FROM player_season WHERE season = ?", [season]
+        )
+        connection.execute(
+            "INSERT INTO player_season SELECT * FROM incoming_player_season"
+        )
+    finally:
+        connection.unregister("incoming_player_season")
+    logger.info(
+        "Upserted %d player-season rows for current season %s",
+        shaped.height,
+        season,
+    )
+
+
+def load_player_season(
+    connection: duckdb.DuckDBPyConnection | None = None,
+) -> pl.DataFrame:
+    """Return the ``player_season`` table with static attributes propagated.
+
+    Attributes in ``PLAYER_SEASON_STATIC_COLUMNS`` are properties of the person
+    rather than of the season, so a single observation determines them for every
+    season that ``player_code`` appears in. This matters because ``birth_date``
+    is only observable from 2022-23 onwards (fplcache) and in Vaastav's 2024-25
+    file, while the data reaches back to 2016-17.
+
+    Within each ``player_code`` the first non-null value of each static column
+    is used. Rows with a null ``player_code`` are left untouched, since there is
+    no identity to propagate along.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. Defaults to a new connection, which is closed
+        before returning.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per ``(season, element)`` with ``PLAYER_SEASON_COLUMNS``,
+        ordered by ``(season, element)``.
+    """
+    owns_connection = connection is None
+    conn = connection or get_connection()
+    try:
+        frame = conn.execute(
+            f"SELECT {', '.join(PLAYER_SEASON_COLUMNS)} "
+            "FROM player_season ORDER BY season, element"
+        ).pl()
+    finally:
+        if owns_connection:
+            conn.close()
+
+    if frame.is_empty():
+        return frame
+
+    return frame.with_columns(
+        [
+            pl.when(pl.col("player_code").is_null())
+            .then(pl.col(column))
+            .otherwise(pl.col(column).drop_nulls().first().over("player_code"))
+            .alias(column)
+            for column in PLAYER_SEASON_STATIC_COLUMNS
+        ]
+    )
+
+
 def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
     """Drop and recreate the ``player_week`` and ``team_fixture`` tables (full-rebuild escape hatch).
 
@@ -866,3 +1092,5 @@ def reset_database(connection: duckdb.DuckDBPyConnection) -> None:
     connection.execute(_CREATE_PLAYER_AVAILABILITY_TABLE)
     connection.execute("DROP TABLE IF EXISTS minutes_prediction")
     connection.execute(_CREATE_MINUTES_PREDICTION_TABLE)
+    connection.execute("DROP TABLE IF EXISTS player_season")
+    connection.execute(_CREATE_PLAYER_SEASON_TABLE)

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
@@ -11,7 +11,10 @@ from fantasy_football.storage.database import (
     coerce_player_week,
     coerce_team_fixture,
     get_connection,
+    load_player_season,
     load_team_fixture,
+    upsert_current_player_season,
+    write_immutable_player_season,
 )
 
 
@@ -800,3 +803,159 @@ def test_reset_database_drops_minutes_prediction_rows(tmp_path: Path) -> None:
     finally:
         connection.close()
     assert out.height == 0
+
+
+def test_get_connection_creates_player_season_table(tmp_path: Path) -> None:
+    """get_connection creates an empty player_season table with canonical columns."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        columns = [
+            row[0]
+            for row in connection.execute("DESCRIBE player_season").fetchall()
+        ]
+    finally:
+        connection.close()
+
+    assert columns == [
+        "season",
+        "element",
+        "player_code",
+        "web_name",
+        "first_name",
+        "second_name",
+        "position",
+        "team_code",
+        "birth_date",
+        "region",
+        "team_join_date",
+    ]
+
+
+def _player_season_frame(
+    season: str,
+    element: int,
+    player_code: int,
+    birth_date: date | None = None,
+    team_join_date: date | None = None,
+    web_name: str = "Salah",
+) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": [season],
+            "element": [element],
+            "player_code": [player_code],
+            "web_name": [web_name],
+            "first_name": ["Mohamed"],
+            "second_name": ["Salah"],
+            "position": ["MID"],
+            "team_code": [14],
+            "birth_date": [birth_date],
+            "region": [None],
+            "team_join_date": [team_join_date],
+        },
+        schema_overrides={
+            "birth_date": pl.Date,
+            "team_join_date": pl.Date,
+            "region": pl.Int64,
+        },
+    )
+
+
+def test_write_immutable_player_season_skips_present_season(
+    tmp_path: Path,
+) -> None:
+    """A season already stored is not written a second time."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        write_immutable_player_season(
+            connection, _player_season_frame("2023-24", 1, 111), "2023-24"
+        )
+        write_immutable_player_season(
+            connection,
+            _player_season_frame("2023-24", 2, 222),
+            "2023-24",
+        )
+        out = load_player_season(connection)
+    finally:
+        connection.close()
+
+    assert out.height == 1
+    assert out["element"].to_list() == [1]
+
+
+def test_upsert_current_player_season_replaces_season(tmp_path: Path) -> None:
+    """Upserting a season replaces its rows rather than appending."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        upsert_current_player_season(
+            connection, _player_season_frame("2026-27", 1, 111), "2026-27"
+        )
+        upsert_current_player_season(
+            connection, _player_season_frame("2026-27", 9, 111), "2026-27"
+        )
+        out = load_player_season(connection)
+    finally:
+        connection.close()
+
+    assert out.height == 1
+    assert out["element"].to_list() == [9]
+
+
+def test_load_player_season_propagates_birth_date_across_seasons(
+    tmp_path: Path,
+) -> None:
+    """birth_date observed in one season fills the same code's other seasons."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        write_immutable_player_season(
+            connection,
+            _player_season_frame("2021-22", 1, 111, birth_date=None),
+            "2021-22",
+        )
+        write_immutable_player_season(
+            connection,
+            _player_season_frame(
+                "2023-24", 5, 111, birth_date=date(1992, 6, 15)
+            ),
+            "2023-24",
+        )
+        out = load_player_season(connection).sort("season")
+    finally:
+        connection.close()
+
+    assert out["birth_date"].to_list() == [
+        date(1992, 6, 15),
+        date(1992, 6, 15),
+    ]
+
+
+def test_load_player_season_does_not_propagate_season_varying_columns(
+    tmp_path: Path,
+) -> None:
+    """team_join_date and web_name stay per-season; a null stays null."""
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        write_immutable_player_season(
+            connection,
+            _player_season_frame(
+                "2021-22", 1, 111, team_join_date=None, web_name="M.Salah"
+            ),
+            "2021-22",
+        )
+        write_immutable_player_season(
+            connection,
+            _player_season_frame(
+                "2023-24",
+                5,
+                111,
+                team_join_date=date(2017, 7, 1),
+                web_name="Salah",
+            ),
+            "2023-24",
+        )
+        out = load_player_season(connection).sort("season")
+    finally:
+        connection.close()
+
+    assert out["team_join_date"].to_list() == [None, date(2017, 7, 1)]
+    assert out["web_name"].to_list() == ["M.Salah", "Salah"]
