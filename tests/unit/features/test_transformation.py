@@ -114,7 +114,7 @@ def test_create_rolling_average_column(sample_gw_data: pl.DataFrame) -> None:
     """
     result = create_rolling_average_column(
         sample_gw_data,
-        grouping_column="name",
+        grouping_columns=["name"],
         rolling_column="total_points",
         rolling_window=2,
     )
@@ -122,19 +122,22 @@ def test_create_rolling_average_column(sample_gw_data: pl.DataFrame) -> None:
     assert isinstance(result, pl.DataFrame)
     assert rolling_column_name("total_points", 2) in result.columns
 
+    # min_periods=1 means rows with fewer than `rolling_window` prior games
+    # now get a mean over whatever exists, rather than null. The first row
+    # per player is therefore its own value rather than None.
     player1_values = (
         result.filter(pl.col("name") == "Player1")
         .sort(["season", "gw"])[rolling_column_name("total_points", 2)]
         .to_list()
     )
-    assert player1_values == [None, 7.0, 6.0]
+    assert player1_values == [6.0, 7.0, 6.0]
 
     player2_values = (
         result.filter(pl.col("name") == "Player2")
         .sort(["season", "gw"])[rolling_column_name("total_points", 2)]
         .to_list()
     )
-    assert player2_values == [None, 8.0]
+    assert player2_values == [7.0, 8.0]
 
 
 def test_create_rolling_average_column_partitions_by_group() -> None:
@@ -163,7 +166,7 @@ def test_create_rolling_average_column_partitions_by_group() -> None:
 
     result = create_rolling_average_column(
         interleaved,
-        grouping_column="name",
+        grouping_columns=["name"],
         rolling_column="total_points",
         rolling_window=2,
     )
@@ -178,11 +181,12 @@ def test_create_rolling_average_column_partitions_by_group() -> None:
         .sort("gw")[rolling_column_name("total_points", 2)]
         .to_list()
     )
-    # Per-player means: P1 = [None, 15, 25], P2 = [None, 150, 250]
-    # Without partitioning, the first non-null rolling value would mix
-    # 10 and 100 (= 55.0), which is what this test catches.
-    assert player1_values == [None, 15.0, 25.0]
-    assert player2_values == [None, 150.0, 250.0]
+    # Per-player means: P1 = [10, 15, 25], P2 = [100, 150, 250]
+    # (min_periods=1 means the first row is its own value, not null).
+    # Without partitioning, the first rolling value would mix 10 and 100
+    # (= 55.0), which is what this test catches.
+    assert player1_values == [10.0, 15.0, 25.0]
+    assert player2_values == [100.0, 150.0, 250.0]
 
 
 def test_fill_missing_values_by_position(sample_gw_data: pl.DataFrame) -> None:
@@ -373,3 +377,46 @@ def test_create_rolling_points_data_respects_rolling_window(
         expected_column
     ][-1]
     assert actual == pytest.approx(expected_mean)
+
+
+def test_rolling_average_separates_players_sharing_a_name() -> None:
+    """Two distinct player_codes with the same name keep separate series.
+
+    This is the regression test for the original bug: the window was keyed on
+    the display name, so namesakes were pooled into one rolling series.
+    """
+    data = pl.DataFrame(
+        {
+            "season": ["2023-24"] * 4,
+            "gw": [1, 2, 1, 2],
+            "name": ["Danny Ward"] * 4,
+            "player_code": [111, 111, 222, 222],
+            "total_points": [10, 10, 2, 2],
+        }
+    )
+    out = create_rolling_average_column(
+        data, ["player_code", "season"], "total_points", 2
+    )
+    column = rolling_column_name("total_points", 2)
+    values = out.filter(pl.col("player_code") == 222)[column].to_list()
+
+    assert values == [2.0, 2.0]
+
+
+def test_rolling_average_does_not_span_a_season_boundary() -> None:
+    """A new season restarts the window rather than averaging over the break."""
+    data = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24", "2024-25"],
+            "gw": [1, 2, 1],
+            "name": ["Salah"] * 3,
+            "player_code": [111, 111, 111],
+            "total_points": [10, 10, 2],
+        }
+    )
+    out = create_rolling_average_column(
+        data, ["player_code", "season"], "total_points", 2
+    )
+    column = rolling_column_name("total_points", 2)
+
+    assert out.sort(["season", "gw"])[column].to_list() == [10.0, 10.0, 2.0]

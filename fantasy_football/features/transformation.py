@@ -3,7 +3,10 @@ import logging
 import polars as pl
 
 from fantasy_football.constants import DATA_FOLDER, ROLLING_WINDOW
-from fantasy_football.storage.database import load_player_week
+from fantasy_football.storage.database import (
+    load_player_season,
+    load_player_week,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,39 +21,46 @@ def rolling_column_name(rolling_column: str, rolling_window: int) -> str:
 
 
 def load_gw_data() -> pl.DataFrame:
-    """Load all player-week data across every season from the database.
+    """Load all player-week data across every season, with ``player_code``.
 
-    Reads the entire ``player_week`` table — historic, bridge, and current
-    seasons — which the extraction step populated. Positions are already
+    Reads the entire ``player_week`` table and left-joins the ``player_season``
+    identity dimension, so downstream windows can partition on a key that is
+    stable across seasons rather than on the display name. Positions are already
     normalised (``GKP`` collapsed to ``GK``) at write time.
 
     Returns
     -------
     pl.DataFrame
-        One row per (player, gameweek) for all seasons, with a ``season`` and
-        ``gw`` column.
+        One row per (player, gameweek) for all seasons, with ``season``, ``gw``
+        and ``player_code`` columns.
     """
-    return load_player_week()
+    return load_player_week().join(
+        load_player_season().select(["season", "element", "player_code"]),
+        on=["season", "element"],
+        how="left",
+        coalesce=True,
+    )
 
 
 def create_rolling_average_column(
     data: pl.DataFrame,
-    grouping_column: str,
+    grouping_columns: list[str],
     rolling_column: str,
     rolling_window: int,
 ) -> pl.DataFrame:
     """Create a rolling average column over a given window size.
 
-    This function takes the `grouping_column` and calculates the rolling
-    average of the `rolling_column` over a window size of `rolling_window`.
-    It does this on a dataframe that is sorted by season and gameweek.
+    The frame is sorted by season and gameweek, then ``rolling_column`` is
+    averaged over ``rolling_window`` rows within each ``grouping_columns``
+    partition.
 
     Parameters
     ----------
     data : pl.DataFrame
         The data to calculate the rolling average on.
-    grouping_column : str
-        The column to group by.
+    grouping_columns : list[str]
+        The columns to partition the window by. Include ``season`` to stop a
+        window spanning the summer break.
     rolling_column : str
         The column to calculate the rolling average on.
     rolling_window : int
@@ -67,8 +77,8 @@ def create_rolling_average_column(
     )
     data = data.sort(["season", "gw"]).with_columns(
         pl.col(rolling_column)
-        .rolling_mean(window_size=rolling_window)
-        .over(pl.col(grouping_column))
+        .rolling_mean(window_size=rolling_window, min_periods=1)
+        .over(grouping_columns)
         .alias(rolling_average_column_name)
     )
     return data
@@ -143,7 +153,7 @@ def create_rolling_points_data(
     gw_data = load_gw_data()
     rolling_column = rolling_column_name("total_points", rolling_window)
     gw_data = create_rolling_average_column(
-        gw_data, "name", "total_points", rolling_window
+        gw_data, ["player_code", "season"], "total_points", rolling_window
     )
     gw_data = fill_missing_values_by_position(gw_data, rolling_column)
     TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
