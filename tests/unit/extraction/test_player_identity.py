@@ -267,3 +267,32 @@ def test_load_player_identity_data_survives_a_missing_source_file(
     seasons = set(out["season"].to_list())
     assert "2020-21" not in seasons
     assert "2025-26" in seasons
+
+
+def test_load_player_identity_data_raises_when_current_season_fails(
+    tmp_path: Path,
+) -> None:
+    """A fetch failure for the current season is fatal, not logged and skipped.
+
+    Swallowing it would leave player_season empty for the current season,
+    silently reverting every player to a null-history newcomer -- the exact
+    failure mode this table exists to prevent.
+    """
+    fci = MagicMock()
+    fci.read_players.side_effect = requests.HTTPError("boom")
+
+    connection = get_connection(tmp_path / "test.duckdb")
+    try:
+        with pytest.raises(RuntimeError, match="2025-26"):
+            load_player_identity_data(
+                connection,
+                current_season="2025-26",
+                vaastav=_fake_vaastav(),
+                fci=fci,
+                fplcache=_fake_fplcache(),
+            )
+        out = load_player_season(connection)
+    finally:
+        connection.close()
+
+    assert "2025-26" not in set(out["season"].to_list())

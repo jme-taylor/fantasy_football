@@ -257,10 +257,15 @@ def load_player_identity_data(
     from ``FPLCACHE_FIRST_SEASON`` onwards are enriched with bio fields no
     other source carries.
 
-    A season whose source file cannot be fetched is logged at WARNING and
-    skipped. A gap in the middle of history must not stop the current season
-    from loading, and a missing season simply means no history features for the
-    players who only appear in it.
+    A historic season whose source file cannot be fetched is logged at WARNING
+    and skipped -- a gap in the middle of history must not stop the current
+    season from loading, and a missing season simply means no history features
+    for the players who only appear in it. The current season is different: if
+    it fails, ``player_season`` ends up empty for it, every player becomes an
+    ``is_pl_newcomer`` with null history, and the minutes model silently
+    degrades to its pre-identity-table quality while the rest of the pipeline
+    runs to completion. That failure mode must be loud, so a current-season
+    fetch failure raises instead of being skipped.
 
     Parameters
     ----------
@@ -274,11 +279,17 @@ def load_player_identity_data(
         FCI extractor. Defaults to a new ``FciExtractor``.
     fplcache : FplCacheExtractor | None, optional
         fplcache extractor. Defaults to a new ``FplCacheExtractor``.
+
+    Raises
+    ------
+    RuntimeError
+        If the current season produced no ``player_season`` rows.
     """
     vaastav = vaastav or DataExtractor()
     fci = fci or FciExtractor()
     fplcache = fplcache or FplCacheExtractor()
     present = player_season_seasons_present(connection)
+    current_season_loaded = False
 
     for season in seasons_in_range(EARLIEST_IDENTITY_SEASON, current_season):
         if season != current_season and season in present:
@@ -296,7 +307,13 @@ def load_player_identity_data(
                 frame = build_player_season_from_fci(
                     fci.read_players(season_short_to_long(season)), season
                 )
-        except Exception:
+        except Exception as exc:
+            if season == current_season:
+                raise RuntimeError(
+                    f"Could not fetch player identity for the current "
+                    f"season {season}; refusing to continue with an empty "
+                    "player_season for it."
+                ) from exc
             logger.warning(
                 "Could not fetch player identity for season %s; skipping.",
                 season,
@@ -319,5 +336,12 @@ def load_player_identity_data(
 
         if season == current_season:
             upsert_current_player_season(connection, frame, season)
+            current_season_loaded = True
         else:
             write_immutable_player_season(connection, frame, season)
+
+    if not current_season_loaded and current_season not in present:
+        raise RuntimeError(
+            f"player_season has no rows for the current season "
+            f"{current_season} after load_player_identity_data ran."
+        )
