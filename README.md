@@ -159,29 +159,45 @@ is a Premier League newcomer, and whether their club was promoted. These
 reach across the summer break, which is what lets the model say anything
 useful about a player at GW1 of a new season, before any in-season evidence
 exists — previously it had nothing but contemporaneous, in-season signal. The
-model runs on every data refresh from `main`, but a modelling failure is
-logged and swallowed so it can never block prediction and optimisation.
+model runs on every data refresh from `main`, and both `run_minutes_model()`
+and `backfill_minutes()` are called bare — a modelling failure is **fatal**
+and aborts `main()` before prediction and optimisation run, it is not logged
+and swallowed. This is deliberate fail-fast behaviour, but it has a sharp
+first-run consequence: `backfill_minutes()` calls `get_production_model()`,
+which raises if the `production` alias has never been set, so a fresh clone
+with no manually-promoted alias will abort `main()` on its very first run,
+before `predict_points` executes. The first run after cloning must include a
+manual promotion of a trained version to `production` in the MLflow UI (see
+[Registry, promotion and backfill](#registry-promotion-and-backfill)) before
+`main()` can complete.
 
 **Measured impact (2026-07-30).** Training on the real database end to end,
-5-fold expanding-window CV, comparing the run with the new cross-season
+7-fold expanding-window CV, comparing the run with the new cross-season
 features against the most recent prior run (contemporaneous features only):
 
-| metric | prior | new | change |
-|---|---|---|---|
-| `logloss_appear_mean` | 0.630 | 0.378 | lower is better — improved |
-| `logloss_60_mean` | 0.637 | 0.349 | lower is better — improved |
-| `auc_appear_mean` | 0.798 | 0.910 | higher is better — improved |
-| `auc_60_mean` | 0.777 | 0.917 | higher is better — improved |
-| `brier_appear_mean` | 0.212 | 0.118 | lower is better — improved |
-| `e_min_mae_mean` | 30.93 | 19.57 | lower is better — improved |
+| metric | pre-branch baseline | with cross-season features | after dropping `days_since_team_join` | change vs baseline |
+|---|---|---|---|---|
+| `logloss_appear_mean` | 0.630 | 0.378 | 0.378 | lower is better — improved |
+| `logloss_60_mean` | 0.637 | 0.349 | 0.349 | lower is better — improved |
+| `auc_appear_mean` | 0.798 | 0.910 | 0.910 | higher is better — improved |
+| `auc_60_mean` | 0.777 | 0.917 | 0.917 | higher is better — improved |
+| `brier_appear_mean` | 0.212 | 0.118 | 0.118 | lower is better — improved |
+| `e_min_mae_mean` | 30.93 | 19.57 | 19.56 | lower is better — improved |
 
-The new features improved every CV metric, and fold-to-fold variance (the
-`_std` companions to each metric above) also dropped substantially, suggesting
-the gain is not a single lucky fold. Two features (`fit_rivals_ahead`,
-`days_since_team_join`) were all-null in at least one CV fold, which the
-imputer skips with a warning rather than a failure; this is a candidate for
-follow-up but did not prevent training. This run was **not** promoted —
-promotion to `production` remains a manual step in the MLflow UI.
+The new features improved every CV metric over the pre-branch baseline, and
+fold-to-fold variance (the `_std` companions to each metric above) also
+dropped substantially, suggesting the gain is not a single lucky fold.
+`days_since_team_join` was removed from the model's feature list (it is
+100% null in 6 of 8 training seasons and 564/564 null in 2026-27, and its
+non-nullness correlated with season membership well enough to risk acting as
+a season proxy) — see the comment on `NUM_FEATURES` in `modelling/minutes.py`.
+Re-measuring after the removal changed nothing beyond noise: every metric
+above is within ±0.001 of the run that still had the column, confirming the
+median-imputed, near-constant column was carrying no real signal for the
+model to lose. `fit_rivals_ahead` is still all-null in at least one CV fold,
+which the imputer skips with a warning rather than a failure; this remains a
+candidate for follow-up but did not prevent training. This run was **not**
+promoted — promotion to `production` remains a manual step in the MLflow UI.
 
 ### Registry, promotion and backfill
 
