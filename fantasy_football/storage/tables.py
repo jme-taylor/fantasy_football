@@ -4,6 +4,7 @@ One ``Table`` per stored table. Adding a table means adding a spec here
 and an entry in ``TABLES``; nothing else in the storage layer changes.
 """
 
+import duckdb
 import polars as pl
 
 from fantasy_football.storage.table import Table
@@ -180,3 +181,36 @@ TABLES: tuple[Table, ...] = (
     MINUTES_PREDICTION,
     PLAYER_SEASON,
 )
+
+
+def minutes_prediction_versions(
+    connection: duckdb.DuckDBPyConnection,
+    seasons: list[str] | None = None,
+) -> set[str]:
+    """Return the distinct ``model_version`` values stored.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    seasons : list[str] | None, optional
+        When given, restrict to these seasons (used to gate the historic
+        backfill on the versions already stored for historic seasons).
+
+    Returns
+    -------
+    set[str]
+        Distinct non-null model versions.
+    """
+    if seasons is None:
+        rows = connection.execute(
+            "SELECT DISTINCT model_version FROM minutes_prediction"
+        ).fetchall()
+    else:
+        placeholders = ", ".join("?" for _ in seasons)
+        rows = connection.execute(
+            "SELECT DISTINCT model_version FROM minutes_prediction "
+            f"WHERE season IN ({placeholders})",
+            seasons,
+        ).fetchall()
+    return {row[0] for row in rows if row[0] is not None}
