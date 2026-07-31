@@ -9,6 +9,7 @@ from fantasy_football.constants import (
     OPPONENT_FACTOR_EXPONENT,
     ROLLING_WINDOW,
 )
+from fantasy_football.features.roster import current_roster
 from fantasy_football.features.transformation import (
     KNOWN_POSITIONS,
     fill_missing_values_by_position,
@@ -286,6 +287,12 @@ def _predict(
     will predict on all future gameweeks. It then attaches ELO ratings for
     each fixture and calculates the predicted points for each player.
 
+    When ``as_of_gw`` is None the roster comes from the latest player
+    snapshot, so a season with no played gameweeks still has players to
+    predict for. A backtest (``as_of_gw`` set) never reads the snapshot,
+    since it is a point-in-time capture of *now* and would leak future team
+    membership into a past pivot.
+
     Parameters
     ----------
     current_season: str
@@ -308,7 +315,8 @@ def _predict(
         TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
         try_parse_dates=True,
     )
-    baselines = _baselines(rolling, current_season, as_of_gw)
+    roster = current_roster(current_season) if as_of_gw is None else None
+    baselines = _baselines(rolling, current_season, as_of_gw, roster)
     fixtures = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("fixtures_enriched.csv"),
         try_parse_dates=True,

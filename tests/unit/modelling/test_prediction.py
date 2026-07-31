@@ -13,6 +13,7 @@ from fantasy_football.modelling.prediction import (
     _latest_rolling_by_code,
     predict_points,
 )
+from fantasy_football.storage import database
 
 
 def _setup_artifacts(
@@ -22,13 +23,21 @@ def _setup_artifacts(
     fixtures: pl.DataFrame,
     team_elo: pl.DataFrame,
 ) -> Path:
-    """Write CSV artifacts to tmp_path and monkeypatch the folder constant."""
+    """Write CSV artifacts to tmp_path and monkeypatch the folder constant.
+
+    Also points ``DATABASE_PATH`` at a fresh, empty database in ``tmp_path``,
+    so ``current_roster`` -- called by ``_predict`` whenever ``as_of_gw`` is
+    None -- resolves hermetically to an empty roster (falling back to the
+    pre-existing current-season behaviour) instead of touching the real,
+    developer-local database.
+    """
     transformed = tmp_path / "transformed"
     transformed.mkdir()
     rolling.write_csv(transformed / "rolling_points.csv")
     fixtures.write_csv(transformed / "fixtures_enriched.csv")
     team_elo.write_csv(transformed / "team_elo.csv")
     monkeypatch.setattr(prediction, "TRANSFORMED_DATA_FOLDER", transformed)
+    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "test.duckdb")
     return transformed
 
 
@@ -41,6 +50,7 @@ def _baseline_rolling() -> pl.DataFrame:
             "position": ["MID"],
             "team": ["Arsenal"],
             "element": [101],
+            "player_code": [999],
             "gw": [10],
             "total_points": [6],
             "total_points_rolling_5": [4.0],
@@ -613,3 +623,97 @@ def test_predict_points_is_deterministic(
         "predicted_points"
     ].to_list()
     assert first == second
+
+
+def test_predict_points_works_with_no_current_season_rolling_rows(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-season case: last season's form plus this season's roster.
+
+    This is the regression test for the whole bug -- predictions.csv was
+    written header-only for 2026-27, so main() skipped optimisation.
+    """
+    monkeypatch.setattr(
+        prediction,
+        "current_roster",
+        lambda season: pl.DataFrame(
+            {
+                "name": ["Bukayo Saka"],
+                "position": ["MID"],
+                "team": ["Arsenal"],
+                "element": [55],
+                "player_code": [999],
+                "value": [130],
+            }
+        ),
+    )
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26"],
+            "name": ["Bukayo Saka"],
+            "position": ["MID"],
+            "team": ["Arsenal"],
+            "element": [101],
+            "player_code": [999],
+            "gw": [38],
+            "total_points": [8],
+            "total_points_rolling_5": [5.0],
+        }
+    )
+    fixtures = pl.DataFrame(
+        {
+            "team": ["Arsenal"],
+            "opponent_team": ["Hull City"],
+            "is_home": [True],
+            "kickoff_date": [date(2026, 8, 15)],
+            "season": ["2026-27"],
+            "gw": [1],
+        }
+    )
+    team_elo = pl.DataFrame(
+        {
+            "team": ["Arsenal", "Hull City"],
+            "elo": [2000.0, 1400.0],
+            "from_date": [date(2026, 7, 1)] * 2,
+            "to_date": [date(2026, 12, 1)] * 2,
+        }
+    )
+    _setup_artifacts(tmp_path, monkeypatch, rolling, fixtures, team_elo)
+
+    result = predict_points("2026-27")
+
+    assert not result.is_empty()
+    assert result["gw"].to_list() == [1]
+    saka = result.filter(pl.col("name") == "Bukayo Saka")
+    assert saka["baseline"].item() == 5.0
+    assert saka["predicted_points"].item() is not None
+
+
+def test_predict_points_ignores_the_roster_when_as_of_gw_is_set(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A backtest never consults the snapshot, so no future state leaks in."""
+    called: list[str] = []
+    monkeypatch.setattr(
+        prediction,
+        "current_roster",
+        lambda season: called.append(season) or pl.DataFrame(),
+    )
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        _baseline_rolling(),
+        _baseline_fixtures(),
+        pl.DataFrame(
+            {
+                "team": ["Arsenal", "Chelsea", "Spurs"],
+                "elo": [2000.0, 1900.0, 1850.0],
+                "from_date": [date(2025, 10, 1)] * 3,
+                "to_date": [date(2025, 12, 1)] * 3,
+            }
+        ),
+    )
+
+    predict_points("2025-26", as_of_gw=10)
+
+    assert called == []
