@@ -59,21 +59,32 @@ def add_rolling_identity_column(data: pl.DataFrame) -> pl.DataFrame:
     module exists to fix, just triggered by a missing identity rather than a
     shared display name.
 
-    ``element`` is unique within a season, so it is a sound fallback identity
-    for these rows, but ``element`` and ``player_code`` are drawn from
-    overlapping integer ranges, so naively coalescing them risks an
-    unmatched player colliding with an unrelated real ``player_code``. This
-    stores the identity as a string instead: a real ``player_code`` is
-    rendered as its bare digits, while a fallback is prefixed with
-    ``_FALLBACK_IDENTITY_PREFIX``, which starts with a non-digit character.
-    A digit-only string can never equal a string carrying a non-digit
-    prefix, so the two spaces cannot collide regardless of the underlying
-    integer values.
+    ``element`` is unique only *within* a season -- it is reused across
+    seasons -- so a fallback keyed on ``element`` alone would pool two
+    different players who both lack a ``player_code`` in different seasons
+    into one shared series the moment the window stops partitioning on
+    ``season`` (as it now does; see ``create_rolling_points_data``). The
+    fallback is therefore scoped to ``(season, element)``: it is a sound
+    identity for these rows because ``element`` is unique within a season,
+    and pinning it to that season means a fallback player never claims a
+    cross-season identity they have no real evidence for -- their window
+    simply restarts each season, which is the conservative behaviour given
+    the alternative is silently averaging one stranger's points into
+    another's history.
+
+    ``element`` and ``player_code`` are drawn from overlapping integer
+    ranges, so naively coalescing them risks an unmatched player colliding
+    with an unrelated real ``player_code``. This stores the identity as a
+    string instead: a real ``player_code`` is rendered as its bare digits,
+    while a fallback is prefixed with ``_FALLBACK_IDENTITY_PREFIX``, which
+    starts with a non-digit character. A digit-only string can never equal a
+    string carrying a non-digit prefix, so the two spaces cannot collide
+    regardless of the underlying integer or season values.
 
     Parameters
     ----------
     data : pl.DataFrame
-        Frame with ``player_code`` and ``element`` columns.
+        Frame with ``player_code``, ``element`` and ``season`` columns.
 
     Returns
     -------
@@ -84,7 +95,10 @@ def add_rolling_identity_column(data: pl.DataFrame) -> pl.DataFrame:
         pl.when(pl.col("player_code").is_not_null())
         .then(pl.col("player_code").cast(pl.Utf8))
         .otherwise(
-            pl.lit(_FALLBACK_IDENTITY_PREFIX) + pl.col("element").cast(pl.Utf8)
+            pl.lit(_FALLBACK_IDENTITY_PREFIX)
+            + pl.col("season")
+            + pl.lit("_")
+            + pl.col("element").cast(pl.Utf8)
         )
         .alias("rolling_identity")
     )

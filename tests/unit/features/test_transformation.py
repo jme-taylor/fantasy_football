@@ -573,6 +573,7 @@ def test_add_rolling_identity_column_gives_distinct_fallbacks_for_null_codes() -
     """
     data = pl.DataFrame(
         {
+            "season": ["2025-26", "2025-26", "2025-26"],
             "player_code": [None, None, 111],
             "element": [1, 2, 111],
         }
@@ -587,6 +588,32 @@ def test_add_rolling_identity_column_gives_distinct_fallbacks_for_null_codes() -
     # ...which cannot equal either fallback, even though element == 111 here.
     assert identities[0] != identities[2]
     assert identities[1] != identities[2]
+
+
+def test_add_rolling_identity_column_scopes_fallbacks_to_season() -> None:
+    """Two different null-player_code players sharing an element stay apart.
+
+    ``element`` is only unique *within* a season, so two unrelated players in
+    different seasons -- both missing a ``player_season`` row, and so both
+    with a null ``player_code`` -- can share the same ``element`` value. The
+    rolling window no longer partitions on ``season`` (it spans the summer
+    break), so a fallback keyed on ``element`` alone would silently pool
+    these two strangers' points together the moment the window widens. This
+    checks the fallback is scoped to ``(season, element)`` so that cannot
+    happen.
+    """
+    data = pl.DataFrame(
+        {
+            "season": ["2024-25", "2025-26"],
+            "player_code": [None, None],
+            "element": [1, 1],
+        }
+    )
+
+    result = add_rolling_identity_column(data)
+
+    identities = result["rolling_identity"].to_list()
+    assert identities[0] != identities[1]
 
 
 def test_create_rolling_points_data_separates_players_with_null_player_code(
