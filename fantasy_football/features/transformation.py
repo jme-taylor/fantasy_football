@@ -121,8 +121,10 @@ def create_rolling_average_column(
     data : pl.DataFrame
         The data to calculate the rolling average on.
     grouping_columns : list[str]
-        The columns to partition the window by. Include ``season`` to stop a
-        window spanning the summer break.
+        The columns to partition the window by. Omit ``season`` -- as the
+        production callers do -- to let a window span the summer break, so a
+        player carries form into a season before it has kicked off. Include
+        ``season`` only if a window must be confined to a single season.
     rolling_column : str
         The column to calculate the rolling average on.
     rolling_window : int
