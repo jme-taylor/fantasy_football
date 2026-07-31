@@ -95,6 +95,36 @@ def fixtures_to_team_rows(
     return pl.DataFrame(rows).cast(TEAM_FIXTURE.schema, strict=False)
 
 
+def season_from_kickoffs(kickoffs: list[datetime]) -> str:
+    """Infer the short-form season a set of kickoff times belongs to.
+
+    A Premier League season runs August to May. Anything from August
+    onwards belongs to the season starting that calendar year; anything
+    from January to July belongs to the season that started the year
+    before.
+
+    Parameters
+    ----------
+    kickoffs : list[datetime]
+        Naive UTC kickoff instants. Must not be empty.
+
+    Returns
+    -------
+    str
+        Short-form season string, e.g. ``"2025-26"``.
+
+    Raises
+    ------
+    ValueError
+        If ``kickoffs`` is empty.
+    """
+    if not kickoffs:
+        raise ValueError("Cannot infer a season from no kickoff times.")
+    earliest = min(kickoffs)
+    start_year = earliest.year if earliest.month >= 8 else earliest.year - 1
+    return f"{start_year}-{str(start_year + 1)[2:]}"
+
+
 def build_current_fixtures(season: str, api: FplAPI) -> pl.DataFrame:
     """Build ``team_fixture`` rows for the current season from the FPL API.
 
@@ -110,12 +140,26 @@ def build_current_fixtures(season: str, api: FplAPI) -> pl.DataFrame:
     -------
     pl.DataFrame
         Team-fixture rows in the canonical schema.
+
+    Raises
+    ------
+    ValueError
+        If the fixture payload's inferred season contradicts the label
+        passed in, indicating ``CURRENT_SEASON`` is stale.
     """
     teams_by_id = {team.id: team.name for team in api.get_teams()}
     fixtures: list[NormalisedFixture] = [
         (fixture.event, fixture.kickoff_time, fixture.team_h, fixture.team_a)
         for fixture in api.get_fixtures().fixtures
     ]
+    kickoffs = [_parse_kickoff(kickoff) for _, kickoff, _, _ in fixtures]
+    if kickoffs:
+        actual = season_from_kickoffs(kickoffs)
+        if actual != season:
+            raise ValueError(
+                f"FPL returned {actual} fixtures but they were about to be "
+                f"stored as {season}. CURRENT_SEASON is probably stale."
+            )
     return fixtures_to_team_rows(fixtures, teams_by_id, season)
 
 

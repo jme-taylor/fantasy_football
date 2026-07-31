@@ -1,6 +1,7 @@
 """Unit tests for fixture extraction adapters and transform."""
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import polars as pl
@@ -11,6 +12,7 @@ from fantasy_football.extraction.fixtures import (
     build_current_fixtures,
     fixtures_to_team_rows,
     load_fixtures,
+    season_from_kickoffs,
 )
 from fantasy_football.extraction.seasons import (
     DataSource,
@@ -23,6 +25,9 @@ from fantasy_football.fpl_types import (
 )
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.tables import TEAM_FIXTURE
+
+if TYPE_CHECKING:
+    import pytest_mock
 
 
 def test_transform_emits_two_rows_per_fixture() -> None:
@@ -338,3 +343,41 @@ def test_load_fixtures_skips_non_current_fci_season(
         assert TEAM_FIXTURE.seasons_present(conn) == {"2023-24"}
     finally:
         conn.close()
+
+
+def test_season_from_kickoffs_uses_august_boundary() -> None:
+    """A season runs August to May, so both months map to one label."""
+    kickoffs = [
+        datetime(2025, 8, 15, 19, 0),
+        datetime(2026, 5, 24, 15, 0),
+    ]
+    assert season_from_kickoffs(kickoffs) == "2025-26"
+
+
+def test_season_from_kickoffs_handles_july_as_prior_season() -> None:
+    """A July kickoff belongs to the season that started the year before."""
+    assert season_from_kickoffs([datetime(2026, 7, 5, 15, 0)]) == "2025-26"
+
+
+def test_build_current_fixtures_rejects_mismatched_season(
+    mocker: "pytest_mock.MockerFixture",
+) -> None:
+    """Writing next season's payload under this season's label must fail."""
+
+    class _Team:
+        def __init__(self, team_id: int, name: str) -> None:
+            self.id = team_id
+            self.name = name
+
+    class _Fixture:
+        event = 1
+        kickoff_time = "2026-08-21T19:00:00Z"
+        team_h = 1
+        team_a = 2
+
+    api = mocker.Mock()
+    api.get_teams.return_value = [_Team(1, "Arsenal"), _Team(2, "Chelsea")]
+    api.get_fixtures.return_value = mocker.Mock(fixtures=[_Fixture()])
+
+    with pytest.raises(ValueError, match="2026-27"):
+        build_current_fixtures("2025-26", api)
