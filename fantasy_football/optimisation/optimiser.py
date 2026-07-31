@@ -102,6 +102,18 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
     if merged.is_empty():
         # Pre-season: no gameweek has been played, so player_week has nothing
         # to price from. The FPL bootstrap snapshot carries the launch prices.
+        # This condition also fires mid-season if player_week is missing
+        # rows for gameweeks <= start_gw (a data-load gap), in which case the
+        # fallback quietly substitutes *current* snapshot prices for a *past*
+        # gameweek's prices -- hence the warning below.
+        logger.warning(
+            "No player_week rows for season=%s at or before start_gw=%d; "
+            "falling back to current snapshot prices from current_roster(). "
+            "If this is not pre-season GW1, prices may be stale relative to "
+            "the requested gameweek.",
+            season,
+            start_gw,
+        )
         roster = current_roster(season)
         return dict(
             zip(

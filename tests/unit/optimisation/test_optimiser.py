@@ -1,8 +1,9 @@
+import logging
+
 import polars as pl
 import pytest
 
 from fantasy_football.optimisation import optimiser as optimisation
-from fantasy_football.optimisation import optimiser as optimiser_module
 from fantasy_football.optimisation.optimiser import (
     GameweekPlan,
     Plan,
@@ -98,9 +99,14 @@ def test_load_prices_uses_latest_value_at_or_before_start_gw(
 
 
 def test_load_prices_falls_back_to_the_roster_before_a_season_starts(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """With no player_week rows, prices come from the snapshot roster."""
+    """With no player_week rows, prices come from the snapshot roster.
+
+    The fallback must also log a warning naming the season and start_gw, so
+    a surprising budget can be traced back to snapshot-derived prices after
+    the fact.
+    """
     _seed_player_week(
         tmp_path,
         monkeypatch,
@@ -111,7 +117,7 @@ def test_load_prices_falls_back_to_the_roster_before_a_season_starts(
         season="2025-26",
     )
     monkeypatch.setattr(
-        optimiser_module,
+        optimisation,
         "current_roster",
         lambda season: pl.DataFrame(
             {
@@ -125,15 +131,24 @@ def test_load_prices_falls_back_to_the_roster_before_a_season_starts(
         ),
     )
 
-    prices = _load_prices("2026-27", start_gw=1)
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.optimisation.optimiser"
+    ):
+        prices = _load_prices("2026-27", start_gw=1)
 
     assert prices == {"Bukayo Saka": 130, "Ryan Newman": 45}
+    assert any(
+        record.levelno == logging.WARNING
+        and "2026-27" in record.getMessage()
+        and "start_gw=1" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_load_prices_prefers_player_week_when_it_has_rows(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Mid-season the existing player_week path still wins."""
+    """Mid-season the existing player_week path still wins, silently."""
     _seed_player_week(
         tmp_path,
         monkeypatch,
@@ -143,7 +158,7 @@ def test_load_prices_prefers_player_week_when_it_has_rows(
         value=[55],
     )
     monkeypatch.setattr(
-        optimiser_module,
+        optimisation,
         "current_roster",
         lambda season: pl.DataFrame(
             {
@@ -157,9 +172,13 @@ def test_load_prices_prefers_player_week_when_it_has_rows(
         ),
     )
 
-    prices = _load_prices("2025-26", start_gw=10)
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.optimisation.optimiser"
+    ):
+        prices = _load_prices("2025-26", start_gw=10)
 
     assert prices == {"P1": 55}
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 from fantasy_football.optimisation.optimiser import (
