@@ -40,7 +40,9 @@ def duckdb_type(dtype: pl.DataType) -> str:
     try:
         return _DUCKDB_TYPES[dtype]
     except KeyError:
-        raise ValueError(f"No DuckDB type mapped for Polars dtype {dtype!r}") from None
+        raise ValueError(
+            f"No DuckDB type mapped for Polars dtype {dtype!r}"
+        ) from None
 
 
 @dataclass(frozen=True, eq=False)
