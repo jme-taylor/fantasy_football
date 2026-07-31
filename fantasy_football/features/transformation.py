@@ -195,6 +195,13 @@ def create_rolling_points_data(
     fall through to ``fill_missing_values_by_position``'s positional
     fallback than before that was added.
 
+    The window partitions on ``rolling_identity`` alone, so it spans the
+    summer break: a new season's opening gameweeks average in the tail of the
+    previous one. This is what gives a pre-season gameweek any form to draw
+    on at all, and it matches the cross-season rolling-minutes window. The
+    frame is sorted ``["season", "gw"]`` and season strings sort
+    chronologically, so within-partition row order is correct.
+
     Parameters
     ----------
     current_season : str
@@ -208,7 +215,7 @@ def create_rolling_points_data(
     rolling_column = rolling_column_name("total_points", rolling_window)
     gw_data = add_rolling_identity_column(gw_data)
     gw_data = create_rolling_average_column(
-        gw_data, ["rolling_identity", "season"], "total_points", rolling_window
+        gw_data, ["rolling_identity"], "total_points", rolling_window
     )
     gw_data = gw_data.drop("rolling_identity")
     gw_data = fill_missing_values_by_position(gw_data, rolling_column)
