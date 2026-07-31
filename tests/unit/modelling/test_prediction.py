@@ -8,7 +8,11 @@ import polars as pl
 import pytest
 
 from fantasy_football.modelling import prediction
-from fantasy_football.modelling.prediction import _baselines, predict_points
+from fantasy_football.modelling.prediction import (
+    _baselines,
+    _latest_rolling_by_code,
+    predict_points,
+)
 
 
 def _setup_artifacts(
@@ -68,6 +72,100 @@ def _baseline_elo() -> pl.DataFrame:
             "to_date": [date(2025, 12, 31)] * 3,
         }
     )
+
+
+def _two_season_rolling() -> pl.DataFrame:
+    """Rolling rows for one player spanning a season boundary."""
+    return pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26", "2026-27"],
+            "name": ["P1"] * 3,
+            "position": ["MID"] * 3,
+            "team": ["Arsenal"] * 3,
+            "element": [101, 101, 55],
+            "player_code": [999, 999, 999],
+            "gw": [37, 38, 1],
+            "total_points": [6, 8, 2],
+            "total_points_rolling_5": [4.0, 5.0, 3.0],
+        }
+    )
+
+
+def test_latest_rolling_by_code_uses_prior_season_when_current_is_empty() -> (
+    None
+):
+    """With no current-season rows, the baseline comes from last season."""
+    rolling = _two_season_rolling().filter(pl.col("season") == "2025-26")
+
+    result = _latest_rolling_by_code(rolling, "2026-27", None)
+
+    assert result.height == 1
+    assert result["player_code"].to_list() == [999]
+    assert result["baseline"].to_list() == [5.0]  # GW38, not GW37
+
+
+def test_latest_rolling_by_code_prefers_the_current_season() -> None:
+    """A current-season row wins over any prior-season row."""
+    result = _latest_rolling_by_code(_two_season_rolling(), "2026-27", None)
+
+    assert result["baseline"].to_list() == [3.0]
+
+
+def test_latest_rolling_by_code_respects_the_as_of_cutoff() -> None:
+    """as_of_gw excludes later current-season rows but keeps prior seasons."""
+    rolling = pl.concat(
+        [
+            _two_season_rolling(),
+            pl.DataFrame(
+                {
+                    "season": ["2026-27"],
+                    "name": ["P1"],
+                    "position": ["MID"],
+                    "team": ["Arsenal"],
+                    "element": [55],
+                    "player_code": [999],
+                    "gw": [5],
+                    "total_points": [9],
+                    "total_points_rolling_5": [7.0],
+                }
+            ),
+        ],
+        how="vertical",
+    )
+
+    result = _latest_rolling_by_code(rolling, "2026-27", as_of_gw=1)
+
+    assert result["baseline"].to_list() == [3.0]  # GW1, not the GW5 row
+
+
+def test_latest_rolling_by_code_drops_rows_with_no_player_code() -> None:
+    """A null player_code has no stable identity, so it is excluded."""
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26"],
+            "name": ["Unknown"],
+            "position": ["MID"],
+            "team": ["Arsenal"],
+            "element": [7],
+            "player_code": [None],
+            "gw": [38],
+            "total_points": [3],
+            "total_points_rolling_5": [3.0],
+        },
+        schema_overrides={"player_code": pl.Int64},
+    )
+
+    result = _latest_rolling_by_code(rolling, "2026-27", None)
+
+    assert result.is_empty()
+
+
+def test_baselines_without_a_roster_is_unchanged() -> None:
+    """Omitting roster preserves the pre-existing current-season behaviour."""
+    result = _baselines(_baseline_rolling(), "2025-26")
+
+    assert result["name"].to_list() == ["P1"]
+    assert result["baseline"].to_list() == [4.0]
 
 
 def test_predict_points_formula_correct(

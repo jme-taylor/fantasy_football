@@ -11,6 +11,7 @@ from fantasy_football.constants import (
 )
 from fantasy_football.features.transformation import (
     KNOWN_POSITIONS,
+    fill_missing_values_by_position,
     rolling_column_name,
 )
 from fantasy_football.modelling.models import MODELS_BY_POSITION
@@ -20,10 +21,60 @@ logger = logging.getLogger(__name__)
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 
 
-def _baselines(
-    rolling: pl.DataFrame, current_season: str, as_of_gw: int | None = None
+def _latest_rolling_by_code(
+    rolling: pl.DataFrame, current_season: str, as_of_gw: int | None
 ) -> pl.DataFrame:
-    """Return one row per player: latest current-season rolling value + team.
+    """Return each player's most recent rolling value, across all seasons.
+
+    Looking across seasons rather than within the current one is what makes a
+    pre-season prediction possible: before a ball is kicked the most recent
+    row a player has is last season's final gameweek. Mid-season this is a
+    no-op, because the most recent row is a current-season row.
+
+    Identity is ``player_code`` rather than ``name`` or ``element``, since
+    ``element`` is only unique within a season and display names collide.
+
+    Parameters
+    ----------
+    rolling : pl.DataFrame
+        The rolling points frame, carrying ``player_code`` and the rolling
+        column.
+    current_season : str
+        The season being predicted.
+    as_of_gw : int | None
+        When set, current-season rows after this gameweek are excluded, so a
+        backtest cannot see its own future. Prior seasons are always in
+        scope. When None, every row is eligible.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per ``player_code``, with a ``baseline`` column.
+    """
+    rolling_col = rolling_column_name("total_points", ROLLING_WINDOW)
+    eligible = rolling.filter(pl.col("player_code").is_not_null())
+    if as_of_gw is not None:
+        eligible = eligible.filter(
+            (pl.col("season") != current_season) | (pl.col("gw") <= as_of_gw)
+        )
+    if eligible.is_empty():
+        return pl.DataFrame(
+            schema={"player_code": pl.Int64, "baseline": pl.Float64}
+        )
+    return (
+        eligible.sort(["season", "gw"])
+        .group_by("player_code")
+        .agg(pl.col(rolling_col).last().alias("baseline"))
+    )
+
+
+def _baselines(
+    rolling: pl.DataFrame,
+    current_season: str,
+    as_of_gw: int | None = None,
+    roster: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Return one row per player: rolling baseline plus roster fields.
 
     Parameters
     ----------
@@ -34,14 +85,51 @@ def _baselines(
     as_of_gw : int | None, optional
         When set, restrict the baseline to each player's latest rolling row at
         or before this gameweek (leak-free for a past-window backtest). When
-        None, the latest current-season row is used. Defaults to None.
+        None, the latest row is used. Defaults to None.
+    roster : pl.DataFrame | None, optional
+        Who is in the league right now, with ``name``, ``position``, ``team``,
+        ``element`` and ``player_code``. When given, identity comes from here
+        and only form comes from ``rolling`` -- which is what lets a season
+        with no played gameweeks produce baselines at all. When None or empty,
+        identity falls back to the current season's rolling rows. Defaults to
+        None.
 
     Returns
     -------
     pl.DataFrame
-        The baselines DataFrame.
+        The baselines DataFrame, with columns ``name``, ``position``,
+        ``team``, ``element`` and ``baseline``.
     """
     rolling_col = rolling_column_name("total_points", ROLLING_WINDOW)
+    if roster is not None and not roster.is_empty():
+        latest = _latest_rolling_by_code(rolling, current_season, as_of_gw)
+        joined = roster.join(latest, on="player_code", how="left")
+        cold = sorted(
+            joined.filter(pl.col("baseline").is_null())["name"].to_list()
+        )
+        if cold:
+            logger.info(
+                "%d players have no prior rolling baseline and take the "
+                "positional average: %s",
+                len(cold),
+                cold,
+            )
+        filled = fill_missing_values_by_position(joined, "baseline")
+        unfilled = sorted(
+            filled.filter(pl.col("baseline").is_null())["name"].to_list()
+        )
+        if unfilled:
+            logger.warning(
+                "Dropping %d players with no baseline and no positional "
+                "average to fall back on: %s",
+                len(unfilled),
+                unfilled,
+            )
+            filled = filled.filter(pl.col("baseline").is_not_null())
+        return filled.select(
+            "name", "position", "team", "element", "baseline"
+        )
+
     current = rolling.filter(pl.col("season") == current_season)
     if as_of_gw is not None:
         current = current.filter(pl.col("gw") <= as_of_gw)
