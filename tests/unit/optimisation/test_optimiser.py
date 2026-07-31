@@ -2,6 +2,7 @@ import polars as pl
 import pytest
 
 from fantasy_football.optimisation import optimiser as optimisation
+from fantasy_football.optimisation import optimiser as optimiser_module
 from fantasy_football.optimisation.optimiser import (
     GameweekPlan,
     Plan,
@@ -94,6 +95,71 @@ def test_load_prices_uses_latest_value_at_or_before_start_gw(
     prices = _load_prices("2025-26", start_gw=10)
     assert prices["P1"] == 55  # GW10 value, not the later GW11=60
     assert prices["P2"] == 80
+
+
+def test_load_prices_falls_back_to_the_roster_before_a_season_starts(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no player_week rows, prices come from the snapshot roster."""
+    _seed_player_week(
+        tmp_path,
+        monkeypatch,
+        name=["P1"],
+        element=[1],
+        gw=[10],
+        value=[55],
+        season="2025-26",
+    )
+    monkeypatch.setattr(
+        optimiser_module,
+        "current_roster",
+        lambda season: pl.DataFrame(
+            {
+                "name": ["Bukayo Saka", "Ryan Newman"],
+                "position": ["MID", "DEF"],
+                "team": ["Arsenal", "Hull City"],
+                "element": [55, 56],
+                "player_code": [999, 1000],
+                "value": [130, 45],
+            }
+        ),
+    )
+
+    prices = _load_prices("2026-27", start_gw=1)
+
+    assert prices == {"Bukayo Saka": 130, "Ryan Newman": 45}
+
+
+def test_load_prices_prefers_player_week_when_it_has_rows(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mid-season the existing player_week path still wins."""
+    _seed_player_week(
+        tmp_path,
+        monkeypatch,
+        name=["P1"],
+        element=[1],
+        gw=[10],
+        value=[55],
+    )
+    monkeypatch.setattr(
+        optimiser_module,
+        "current_roster",
+        lambda season: pl.DataFrame(
+            {
+                "name": ["P1"],
+                "position": ["MID"],
+                "team": ["Arsenal"],
+                "element": [1],
+                "player_code": [999],
+                "value": [999],
+            }
+        ),
+    )
+
+    prices = _load_prices("2025-26", start_gw=10)
+
+    assert prices == {"P1": 55}
 
 
 from fantasy_football.optimisation.optimiser import (

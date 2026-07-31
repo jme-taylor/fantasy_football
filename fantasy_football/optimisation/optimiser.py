@@ -6,6 +6,7 @@ import pulp
 from pydantic import TypeAdapter
 
 from fantasy_football.constants import TRANSFORMED_DATA_FOLDER
+from fantasy_football.features.roster import current_roster
 from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
@@ -92,11 +93,23 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
     Returns
     -------
     dict[str, int]
-        Mapping of player name to price in tenths of a million.
+        Mapping of player name to price in tenths of a million. Falls back to
+        the latest snapshot capture when the season has no player-week rows.
     """
     merged = PLAYER_WEEK.load().filter(
         (pl.col("season") == season) & (pl.col("gw") <= start_gw)
     )
+    if merged.is_empty():
+        # Pre-season: no gameweek has been played, so player_week has nothing
+        # to price from. The FPL bootstrap snapshot carries the launch prices.
+        roster = current_roster(season)
+        return dict(
+            zip(
+                roster["name"].to_list(),
+                roster["value"].to_list(),
+                strict=True,
+            )
+        )
     latest_gw = merged.group_by("name").agg(pl.col("gw").max().alias("gw"))
     latest = merged.join(latest_gw, on=["name", "gw"], how="inner")
     return dict(
