@@ -9,6 +9,15 @@ like the played rows so the same feature code serves both.
 
 import polars as pl
 
+from fantasy_football.features.roster import latest_snapshot
+
+__all__ = [
+    "latest_snapshot",
+    "last_played_gw",
+    "build_forward_fixtures",
+    "forward_player_weeks",
+]
+
 # Columns a forward row needs to stand in for a player_week row.
 _WEEK_COLUMNS = [
     "season",
@@ -42,28 +51,6 @@ def last_played_gw(player_week: pl.DataFrame, season: str) -> int:
     if stored.is_empty():
         return 0
     return int(stored["gw"].max() or 0)
-
-
-def latest_snapshot(snapshot: pl.DataFrame, season: str) -> pl.DataFrame:
-    """Return the most recent capture for a season.
-
-    Parameters
-    ----------
-    snapshot : pl.DataFrame
-        Rows from ``PLAYER_SNAPSHOT.load()``.
-    season : str
-        The season to filter to.
-
-    Returns
-    -------
-    pl.DataFrame
-        The rows sharing the maximum ``captured_at``, or an empty frame.
-    """
-    seasonal = snapshot.filter(pl.col("season") == season)
-    if seasonal.is_empty():
-        return seasonal
-    newest = seasonal["captured_at"].max()
-    return seasonal.filter(pl.col("captured_at") == newest)
 
 
 def build_forward_fixtures(
