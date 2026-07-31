@@ -525,8 +525,14 @@ def test_get_production_model_raises_when_alias_missing() -> None:
             get_production_model()
 
 
+import duckdb  # noqa: E402
+import pytest_mock  # noqa: E402
+
 from fantasy_football.constants import CURRENT_SEASON  # noqa: E402
-from fantasy_football.modelling.minutes import backfill_minutes  # noqa: E402
+from fantasy_football.modelling.minutes import (
+    _score_and_store,  # noqa: E402
+    backfill_minutes,  # noqa: E402
+)
 from fantasy_football.storage.database import get_connection  # noqa: E402
 from fantasy_football.storage.tables import MINUTES_PREDICTION  # noqa: E402
 
@@ -621,6 +627,8 @@ def test_backfill_minutes_skips_historic_when_version_matches(
                     "p_sixty_plus": 1.0,
                     "expected_minutes": 999.0,
                     "model_version": "2",
+                    "prediction_kind": "backfill",
+                    "snapshot_captured_at": None,
                 }
             ]
         )
@@ -664,6 +672,8 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
                     "p_sixty_plus": 1.0,
                     "expected_minutes": 999.0,
                     "model_version": "2",
+                    "prediction_kind": "backfill",
+                    "snapshot_captured_at": None,
                 }
             ]
         )
@@ -683,6 +693,37 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
     historic = out.filter(pl.col("season") == "2024-25")
     # Sentinel overwritten by a fresh score.
     assert historic["expected_minutes"].to_list() != [999.0]
+
+
+def _model_frame_fixture(season: str = "2025-26") -> pl.DataFrame:
+    """Build a minimal model frame: identifiers plus every FEATURES column."""
+    rows = {
+        "season": [season, season],
+        "gw": [1, 1],
+        "element": [5, 6],
+        "opponent": [12, 12],
+    }
+    for feature in FEATURES:
+        rows[feature] = [1.0, 2.0] if feature != "position" else ["MID", "FWD"]
+    return pl.DataFrame(rows)
+
+
+def test_backfill_rows_are_stamped_as_backfill(
+    db: duckdb.DuckDBPyConnection, mocker: pytest_mock.MockerFixture
+) -> None:
+    """Backfilled rows must be distinguishable from forward forecasts."""
+    frame = _model_frame_fixture()
+    model = mocker.Mock()
+    model.predict_proba.return_value = np.tile(
+        [0.1, 0.2, 0.7], (frame.height, 1)
+    )
+    model.classes_ = MINUTES_BUCKETS
+
+    _score_and_store(db, frame, "2025-26", model, "3")
+
+    stored = MINUTES_PREDICTION.load(db)
+    assert set(stored["prediction_kind"].to_list()) == {"backfill"}
+    assert stored["snapshot_captured_at"].null_count() == stored.height
 
 
 def test_num_features_includes_history_and_cold_start() -> None:

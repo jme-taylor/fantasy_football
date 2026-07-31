@@ -62,6 +62,12 @@ BUCKET_PARTIAL = "1_to_59_minutes"
 BUCKET_SIXTY_PLUS = "60_minutes_plus"
 MINUTES_BUCKETS = [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
 
+# How a stored prediction was produced. Backfilled rows are in-sample --
+# the champion scored its own training seasons. Forward rows are genuine
+# out-of-sample forecasts for fixtures that had not been played.
+BACKFILL_KIND = "backfill"
+FORWARD_KIND = "forward"
+
 # Model inputs. The first block is contemporaneous -- everything knowable at
 # the deadline. The second reaches across the summer break through player_code
 # (see features/history.py), which is what lets the model say anything useful
@@ -618,14 +624,26 @@ def _score_and_store(
     model: Pipeline,
     version: str,
 ) -> None:
-    """Score one season's rows and upsert them, stamped with ``version``."""
+    """Score one season's rows and store them as backfill predictions.
+
+    Rows are stamped with ``prediction_kind=BACKFILL_KIND`` and a null
+    ``snapshot_captured_at``, then written via ``replace_partition``
+    scoped to this season's backfill partition, so forward rows for the
+    same season are left untouched.
+    """
     sub = model_frame.filter(pl.col("season") == season)
     if sub.is_empty():
         return
     scored = score_minutes(sub, model).with_columns(
-        model_version=pl.lit(version)
+        model_version=pl.lit(version),
+        prediction_kind=pl.lit(BACKFILL_KIND),
+        snapshot_captured_at=pl.lit(None, dtype=pl.Datetime("us")),
     )
-    MINUTES_PREDICTION.upsert_current(connection, scored, season)
+    MINUTES_PREDICTION.replace_partition(
+        connection,
+        scored,
+        equals={"season": season, "prediction_kind": BACKFILL_KIND},
+    )
 
 
 def backfill_minutes() -> None:
