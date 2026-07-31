@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -9,6 +10,7 @@ from fantasy_football.extraction.extractor import (
     DataExtractor,
     GitHubAPIClient,
     _build_player_match,
+    _collapse_double_gameweeks,
 )
 
 
@@ -459,6 +461,10 @@ def test_build_player_match_keeps_both_fixtures_of_a_dgw() -> None:
             "minutes": [90, 70],
             "total_points": [6, 2],
             "name": ["A", "A"],
+            "kickoff_time": [
+                "2023-08-11T19:00:00Z",
+                "2023-08-15T19:00:00Z",
+            ],
         }
     )
     result = _build_player_match(frame)
@@ -470,7 +476,169 @@ def test_build_player_match_keeps_both_fixtures_of_a_dgw() -> None:
         "is_home",
         "minutes",
         "total_points",
+        "kickoff_time",
     ]
     assert result.height == 2
     assert sorted(result["opponent"].to_list()) == [7, 12]
     assert sorted(result["minutes"].to_list()) == [70, 90]
+
+
+def test_build_player_match_carries_kickoff_time() -> None:
+    """Per-fixture rows keep the kickoff instant for chronological sorting."""
+    frame = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "gw": [1],
+            "element": [7],
+            "opponent_team": [3],
+            "was_home": [True],
+            "minutes": [90],
+            "total_points": [8],
+            "kickoff_time": ["2023-08-11T19:00:00Z"],
+        }
+    )
+
+    result = _build_player_match(frame)
+
+    assert "kickoff_time" in result.columns
+    assert result["kickoff_time"][0] == datetime(2023, 8, 11, 19, 0)
+
+
+def test_build_player_match_tolerates_blank_kickoff_time() -> None:
+    """A blank or null kickoff becomes a null, not an aborted load.
+
+    Vaastav emits blank ``kickoff_time`` for a handful of rows; a strict
+    parse would raise and take the whole ~150k-row historic load with it.
+    """
+    frame = pl.DataFrame(
+        {
+            "season": ["2023-24"] * 3,
+            "gw": [1, 2, 3],
+            "element": [7, 7, 7],
+            "opponent_team": [3, 4, 5],
+            "was_home": [True, False, True],
+            "minutes": [90, 45, 0],
+            "total_points": [8, 2, 0],
+            "kickoff_time": ["2023-08-11T19:00:00Z", "", None],
+        },
+        schema_overrides={"kickoff_time": pl.Utf8},
+    )
+
+    result = _build_player_match(frame)
+
+    assert result.height == 3
+    assert result["kickoff_time"].to_list() == [
+        datetime(2023, 8, 11, 19, 0),
+        None,
+        None,
+    ]
+
+
+def test_build_player_match_drops_verbatim_duplicate_rows() -> None:
+    """Vaastav repeats some fixture rows byte-for-byte; keep only one.
+
+    Regression: 2025-26's ``merged_gw.csv`` carries ten such rows, which
+    violated ``player_match``'s (season, gw, element, opponent) primary
+    key and aborted the whole historic load.
+    """
+    row = {
+        "season": "2025-26",
+        "gw": 1,
+        "element": 391,
+        "opponent_team": 4,
+        "was_home": False,
+        "minutes": 0,
+        "total_points": 0,
+        "kickoff_time": "2025-08-15T19:00:00Z",
+    }
+    frame = pl.DataFrame([row, row])
+
+    result = _build_player_match(frame)
+
+    assert result.height == 1
+    assert result.row(0, named=True)["opponent"] == 4
+
+
+def test_build_player_match_keeps_dgw_legs_that_share_a_gameweek() -> None:
+    """Two fixtures in one gameweek differ by opponent and must both stay."""
+    frame = pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26"],
+            "gw": [24, 24],
+            "element": [5, 5],
+            "opponent_team": [4, 9],
+            "was_home": [True, False],
+            "minutes": [90, 90],
+            "total_points": [6, 6],
+            "kickoff_time": [
+                "2026-02-01T15:00:00Z",
+                "2026-02-04T19:45:00Z",
+            ],
+        }
+    )
+
+    result = _build_player_match(frame)
+
+    assert result.height == 2
+    assert sorted(result["opponent"].to_list()) == [4, 9]
+
+
+def test_collapse_double_gameweeks_ignores_verbatim_duplicates() -> None:
+    """A repeated row must not double the summed minutes and points.
+
+    This is the silent half of the same defect: ``player_match`` fails
+    loudly on the duplicate key, but the player-week collapse simply
+    sums it, producing impossible totals such as 148 minutes.
+    """
+    row = {
+        "season": "2025-26",
+        "gw": 8,
+        "element": 100,
+        "opponent_team": 8,
+        "fixture": 71,
+        "bonus": 0,
+        "minutes": 74,
+        "total_points": 12,
+        "name": "Junior Kroupi",
+        "position": "FWD",
+        "team": "Bournemouth",
+        "round": 8,
+        "value": 45,
+    }
+    frame = pl.DataFrame([row, row])
+
+    result = _collapse_double_gameweeks(frame)
+
+    assert result.height == 1
+    collapsed = result.row(0, named=True)
+    assert collapsed["minutes"] == 74
+    assert collapsed["total_points"] == 12
+
+
+def test_collapse_double_gameweeks_still_sums_genuine_dgw_legs() -> None:
+    """Legs that differ by fixture are a real double gameweek: sum them."""
+    frame = pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26"],
+            "gw": [24, 24],
+            "element": [5, 5],
+            "opponent_team": [4, 9],
+            "fixture": [230, 241],
+            "bonus": [1, 2],
+            "minutes": [90, 75],
+            "total_points": [6, 8],
+            "name": ["DGW Player", "DGW Player"],
+            "position": ["MID", "MID"],
+            "team": ["Arsenal", "Arsenal"],
+            "round": [24, 24],
+            "value": [80, 80],
+        }
+    )
+
+    result = _collapse_double_gameweeks(frame)
+
+    assert result.height == 1
+    collapsed = result.row(0, named=True)
+    assert collapsed["minutes"] == 165
+    assert collapsed["total_points"] == 14
+    assert collapsed["bonus"] == 3

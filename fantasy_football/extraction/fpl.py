@@ -22,6 +22,7 @@ PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
     "is_home",
     "minutes",
     "total_points",
+    "kickoff_time",
 ]
 
 
@@ -133,6 +134,9 @@ class FplAPI:
                     now_cost=player.get("now_cost"),
                     team_id=player.get("team"),
                     element_type=player.get("element_type"),
+                    chance_of_playing_this_round=player.get(
+                        "chance_of_playing_this_round"
+                    ),
                 )
                 players.append(fpl_player)
             self._players = players
@@ -399,15 +403,24 @@ class FplAPI:
         Returns
         -------
         pl.DataFrame
-            Columns ``element, gw, opponent, is_home, minutes, total_points``;
-            empty (with that schema) when the player has no fixtures.
+            Columns ``element, gw, opponent, is_home, minutes, total_points,
+            kickoff_time``; empty (with that schema) when the player has no
+            fixtures.
         """
         url = f"{self.BASE_URL}element-summary/{element_id}/"
         history = requests.get(url).json()["history"]
         empty_schema = dict(
             zip(
                 PLAYER_MATCH_HISTORY_COLUMNS,
-                [pl.Int64, pl.Int64, pl.Int64, pl.Boolean, pl.Int64, pl.Int64],
+                [
+                    pl.Int64,
+                    pl.Int64,
+                    pl.Int64,
+                    pl.Boolean,
+                    pl.Int64,
+                    pl.Int64,
+                    pl.Datetime("us"),
+                ],
             )
         )
         if not history:
@@ -419,6 +432,13 @@ class FplAPI:
             pl.col("was_home").alias("is_home"),
             pl.col("minutes").cast(pl.Int64),
             pl.col("total_points").cast(pl.Int64),
+            # strict=False so a blank or malformed timestamp becomes a
+            # null rather than aborting the whole load.
+            pl.col("kickoff_time")
+            .str.replace("Z", "+00:00")
+            .str.to_datetime(time_zone="UTC", strict=False)
+            .dt.replace_time_zone(None)
+            .alias("kickoff_time"),
         )
         assert frame.columns == PLAYER_MATCH_HISTORY_COLUMNS
         return frame

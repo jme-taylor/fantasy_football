@@ -7,7 +7,6 @@ import requests
 
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fpl import FplAPI
-from fantasy_football.extraction.seasons import DataSource, source_for_season
 from fantasy_football.storage.tables import PLAYER_WEEK, TEAM_FIXTURE
 
 if TYPE_CHECKING:
@@ -95,6 +94,68 @@ def fixtures_to_team_rows(
     return pl.DataFrame(rows).cast(TEAM_FIXTURE.schema, strict=False)
 
 
+def season_from_kickoffs(kickoffs: list[datetime]) -> str:
+    """Infer the short-form season a set of kickoff times belongs to.
+
+    A Premier League season runs August to May. Anything from August
+    onwards belongs to the season starting that calendar year; anything
+    from January to July belongs to the season that started the year
+    before.
+
+    Parameters
+    ----------
+    kickoffs : list[datetime]
+        Naive UTC kickoff instants. Must not be empty.
+
+    Returns
+    -------
+    str
+        Short-form season string, e.g. ``"2025-26"``.
+
+    Raises
+    ------
+    ValueError
+        If ``kickoffs`` is empty.
+    """
+    if not kickoffs:
+        raise ValueError("Cannot infer a season from no kickoff times.")
+    earliest = min(kickoffs)
+    start_year = earliest.year if earliest.month >= 8 else earliest.year - 1
+    return f"{start_year}-{str(start_year + 1)[2:]}"
+
+
+def stored_season_is_valid(
+    connection: "DuckDBPyConnection", season: str
+) -> bool:
+    """Report whether a stored season's kickoff times match its label.
+
+    Presence alone is not proof of correctness: a season fetched from the
+    live API while ``CURRENT_SEASON`` was stale carries the *next*
+    season's fixtures under this season's label. Comparing the earliest
+    stored kickoff against the label catches that.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    season : str
+        Short-form season string to check.
+
+    Returns
+    -------
+    bool
+        True when the season has rows and they belong to it. False when
+        the season is absent or mislabelled.
+    """
+    stored = TEAM_FIXTURE.load(connection).filter(pl.col("season") == season)
+    if stored.is_empty():
+        return False
+    kickoffs = stored["kickoff_time"].drop_nulls().to_list()
+    if not kickoffs:
+        return False
+    return season_from_kickoffs(kickoffs) == season
+
+
 def build_current_fixtures(season: str, api: FplAPI) -> pl.DataFrame:
     """Build ``team_fixture`` rows for the current season from the FPL API.
 
@@ -110,12 +171,26 @@ def build_current_fixtures(season: str, api: FplAPI) -> pl.DataFrame:
     -------
     pl.DataFrame
         Team-fixture rows in the canonical schema.
+
+    Raises
+    ------
+    ValueError
+        If the fixture payload's inferred season contradicts the label
+        passed in, indicating ``CURRENT_SEASON`` is stale.
     """
     teams_by_id = {team.id: team.name for team in api.get_teams()}
     fixtures: list[NormalisedFixture] = [
         (fixture.event, fixture.kickoff_time, fixture.team_h, fixture.team_a)
         for fixture in api.get_fixtures().fixtures
     ]
+    kickoffs = [_parse_kickoff(kickoff) for _, kickoff, _, _ in fixtures]
+    if kickoffs:
+        actual = season_from_kickoffs(kickoffs)
+        if actual != season:
+            raise ValueError(
+                f"FPL returned {actual} fixtures but they were about to be "
+                f"stored as {season}. CURRENT_SEASON is probably stale."
+            )
     return fixtures_to_team_rows(fixtures, teams_by_id, season)
 
 
@@ -175,12 +250,14 @@ def load_fixtures(
     Two distinct behaviours run on every call:
 
     * **Historic seasons** — driven by the seasons present in ``player_week``.
-      Each season already in ``team_fixture`` is skipped (immutable, already
-      complete). For remaining seasons, Vaastav is the only supported historic
-      source; a non-current FCI-era season (beyond Vaastav's last season but
-      not the live season) has no kickoff source and is logged and skipped.  A
-      Vaastav HTTP error for a single season is also logged and skipped rather
-      than aborting the entire run.
+      A season is re-derived from Vaastav unless ``stored_season_is_valid``
+      confirms its stored kickoff times already match its label; presence
+      alone is not proof of correctness, since a season fetched while
+      ``CURRENT_SEASON`` was stale can carry the next season's fixtures
+      under this season's label. Vaastav still publishes ``fixtures.csv``
+      and ``teams.csv`` for every season it has, including ones beyond its
+      last season of *player* data; a season Vaastav genuinely lacks 404s
+      and is logged and skipped rather than aborting the entire run.
 
     * **Current season** — the live season is **always** re-fetched from the
       FPL API and upserted on every call, regardless of whether it already
@@ -202,17 +279,12 @@ def load_fixtures(
     """
     api = api or FplAPI()
     extractor = extractor or DataExtractor()
-    already = TEAM_FIXTURE.seasons_present(connection)
 
     # Season strings sort lexicographically in calendar order (e.g. "2023-24" < "2024-25").
     for season in sorted(PLAYER_WEEK.seasons_present(connection)):
-        if season in already or season == current_season:
+        if season == current_season:
             continue
-        if source_for_season(season) != DataSource.VAASTAV:
-            logger.warning(
-                "No fixture source for non-current FCI season %s; skipping.",
-                season,
-            )
+        if stored_season_is_valid(connection, season):
             continue
         try:
             frame = build_vaastav_fixtures(season, extractor)
@@ -223,7 +295,7 @@ def load_fixtures(
                 exc,
             )
             continue
-        TEAM_FIXTURE.write_immutable(connection, frame, season)
+        TEAM_FIXTURE.upsert_current(connection, frame, season)
 
     # Always refresh the current season (kickoff times and new gameweeks can
     # change), matching the player-week upsert behaviour.

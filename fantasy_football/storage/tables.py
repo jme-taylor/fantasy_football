@@ -117,6 +117,7 @@ PLAYER_MATCH = Table(
         "is_home": pl.Boolean,
         "minutes": pl.Int64,
         "total_points": pl.Int64,
+        "kickoff_time": pl.Datetime("us"),
     },
     primary_key=("season", "gw", "element", "opponent"),
     order_by=("season", "gw", "element", "opponent"),
@@ -134,6 +135,12 @@ PLAYER_AVAILABILITY = Table(
     order_by=("season", "gw", "element"),
 )
 
+# ``prediction_kind`` is part of the primary key, so the same
+# (season, gw, element, opponent) can hold both a ``backfill`` row and a
+# ``forward`` row. For the current season, where the two coexist, any
+# consumer that joins this table without filtering on ``prediction_kind``
+# fans its rows out 2x -- silently double-counting expected minutes.
+# Always filter to one kind before joining.
 MINUTES_PREDICTION = Table(
     name="minutes_prediction",
     schema={
@@ -146,9 +153,33 @@ MINUTES_PREDICTION = Table(
         "p_sixty_plus": pl.Float64,
         "expected_minutes": pl.Float64,
         "model_version": pl.Utf8,
+        "prediction_kind": pl.Utf8,
+        "snapshot_captured_at": pl.Datetime("us"),
     },
-    primary_key=("season", "gw", "element", "opponent"),
-    order_by=("season", "gw", "element", "opponent"),
+    primary_key=(
+        "season",
+        "gw",
+        "element",
+        "opponent",
+        "prediction_kind",
+    ),
+    order_by=("season", "gw", "element", "opponent", "prediction_kind"),
+)
+
+PLAYER_SNAPSHOT = Table(
+    name="player_snapshot",
+    schema={
+        "season": pl.Utf8,
+        "captured_at": pl.Datetime("us"),
+        "element": pl.Int64,
+        "value": pl.Int64,
+        "team": pl.Utf8,
+        "position": pl.Utf8,
+        "chance_of_playing_this_round": pl.Int64,
+    },
+    primary_key=("season", "captured_at", "element"),
+    order_by=("season", "captured_at", "element"),
+    normalise=gkp_to_gk,
 )
 
 PLAYER_SEASON = Table(
@@ -180,6 +211,7 @@ TABLES: tuple[Table, ...] = (
     PLAYER_AVAILABILITY,
     MINUTES_PREDICTION,
     PLAYER_SEASON,
+    PLAYER_SNAPSHOT,
 )
 
 

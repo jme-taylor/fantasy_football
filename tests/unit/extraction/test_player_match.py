@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -40,6 +41,7 @@ def test_load_current_season_player_match_concatenates_and_upserts(
                 "is_home": [True],
                 "minutes": [90],
                 "total_points": [4],
+                "kickoff_time": [datetime(2025, 8, 9, 15, 0)],
             }
         )
 

@@ -25,8 +25,13 @@ FPLCACHE_FIRST_SEASON = "2022-23"
 # worth resolving player identity for.
 EARLIEST_IDENTITY_SEASON = "2016-17"
 
-# Special season that isn't in the cleaned_merged_seasons.csv file, but is still needed for the data pipeline.
-VASTAAV_BRIDGE_SEASONS: list[str] = ["2024-25"]
+# Seasons that are complete but absent from cleaned_merged_seasons.csv, so
+# they have to be bridged in from Vaastav's per-season merged_gw.csv. Without
+# an entry here a completed season has no loader at all: the aggregate stops
+# at 2023-24 and the FCI loader only serves CURRENT_SEASON. A rebuild would
+# then silently drop the season, which flips every 2026-27 club to
+# "promoted" and reroutes prev_season_* features two seasons back.
+VASTAAV_BRIDGE_SEASONS: list[str] = ["2024-25", "2025-26"]
 
 # Prediction model tunables
 ROLLING_WINDOW: int = 5

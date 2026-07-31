@@ -17,7 +17,12 @@ from fantasy_football.extraction.player_identity import (
 from fantasy_football.extraction.player_match import (
     load_current_season_player_match,
 )
-from fantasy_football.extraction.seasons import DataSource, source_for_season
+from fantasy_football.extraction.seasons import (
+    DataSource,
+    previous_season,
+    source_for_season,
+)
+from fantasy_football.extraction.snapshot import load_player_snapshot
 from fantasy_football.features.elo import build_team_elo
 from fantasy_football.features.fixtures import build_fixtures_enriched
 from fantasy_football.features.transformation import create_rolling_points_data
@@ -26,6 +31,7 @@ from fantasy_football.modelling.evaluation import run_evaluation
 from fantasy_football.modelling.minutes import (
     backfill_minutes,
     run_minutes_model,
+    score_forward_minutes,
 )
 from fantasy_football.modelling.prediction import predict_points
 from fantasy_football.optimisation.optimiser import optimise_plan
@@ -35,6 +41,7 @@ from fantasy_football.optimisation.team_input import (
     resolve_names_to_ids,
 )
 from fantasy_football.storage.database import get_connection, reset_database
+from fantasy_football.storage.tables import PLAYER_WEEK, TEAM_FIXTURE
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -91,6 +98,48 @@ def load_player_match_data(
     current_loader(season, connection)
 
 
+def check_prior_season_loaded(
+    connection: "DuckDBPyConnection", season: str = CURRENT_SEASON
+) -> None:
+    """Assert the season before ``season`` survived ingestion.
+
+    The season immediately before the current one is the backbone of every
+    ``prev_season_*`` feature, of ``is_promoted_club``, and of the
+    cross-season rolling-minutes window. It has no loader of its own -- it
+    arrives either in the Vaastav historic aggregate or as a
+    ``VASTAAV_BRIDGE_SEASONS`` entry -- so a missing bridge entry drops it
+    silently on a rebuild rather than failing. This turns that into a loud
+    failure.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        Open connection to the database, after extraction has run.
+    season : str, optional
+        The current season. Defaults to ``CURRENT_SEASON``.
+
+    Raises
+    ------
+    RuntimeError
+        If the prior season is absent from ``player_week`` or
+        ``team_fixture``.
+    """
+    prior = previous_season(season)
+    missing = [
+        table.name
+        for table in (PLAYER_WEEK, TEAM_FIXTURE)
+        if prior not in table.seasons_present(connection)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Season {prior} (the season before {season}) is missing from "
+            f"{', '.join(missing)}. Nothing downstream is trustworthy "
+            f"without it: prev_season_* features reroute two seasons back "
+            f"and every club looks newly promoted. Add {prior!r} to "
+            f"VASTAAV_BRIDGE_SEASONS (or restore its loader) and re-run."
+        )
+
+
 def main(
     *,
     rebuild: bool = False,
@@ -115,7 +164,10 @@ def main(
         evaluation aborts the run. Defaults to False.
     """
     configure_logging()
-    connection = get_connection()
+    # A rebuild drops and recreates every table, so it is the cure for
+    # schema drift rather than a victim of it; skip the guard in that case
+    # or an out-of-date database file could never be rebuilt.
+    connection = get_connection(check_drift=not rebuild)
     try:
         if rebuild:
             reset_database(connection)
@@ -125,6 +177,8 @@ def main(
         load_player_match_data(CURRENT_SEASON, connection)
         load_player_availability_data(connection, CURRENT_SEASON)
         load_player_identity_data(connection, CURRENT_SEASON)
+        load_player_snapshot(CURRENT_SEASON, connection)
+        check_prior_season_loaded(connection, CURRENT_SEASON)
     finally:
         connection.close()
 
@@ -133,6 +187,7 @@ def main(
     build_team_elo()
     run_minutes_model()
     backfill_minutes()
+    score_forward_minutes()
     if evaluate:
         run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None
@@ -166,4 +221,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(rebuild=False, team_file="data/dummy_team.json")
+    main(rebuild=True)

@@ -5,7 +5,10 @@ import duckdb
 import polars as pl
 import pytest
 
-from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.database import (
+    check_schema_drift,
+    get_connection,
+)
 from fantasy_football.storage.tables import (
     MINUTES_PREDICTION,
     PLAYER_AVAILABILITY,
@@ -57,6 +60,62 @@ def test_get_connection_is_idempotent(tmp_path: Path) -> None:
     finally:
         second.close()
     assert count == 0
+
+
+def test_get_connection_raises_on_schema_drift(tmp_path: Path) -> None:
+    """A stored table missing a declared column fails loudly, not obscurely.
+
+    CREATE TABLE IF NOT EXISTS cannot add a column to an existing table, so
+    a spec change against an old database file would otherwise surface as a
+    DuckDB Binder Error on the first read.
+    """
+    db_path = tmp_path / "drift.duckdb"
+    connection = get_connection(db_path)
+    connection.execute(
+        "ALTER TABLE minutes_prediction DROP COLUMN snapshot_captured_at"
+    )
+    connection.close()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        get_connection(db_path).close()
+
+    message = str(excinfo.value)
+    assert "minutes_prediction" in message
+    assert "snapshot_captured_at" in message
+    assert "rebuild=True" in message
+
+
+def test_get_connection_skips_the_drift_check_for_a_rebuild(
+    tmp_path: Path,
+) -> None:
+    """A rebuild must be able to open a drifted database in order to fix it.
+
+    ``main(rebuild=True)`` opens a connection *before* dropping the tables,
+    so an unconditional guard would make a drifted database impossible to
+    rebuild -- the very remedy the error message recommends.
+    """
+    db_path = tmp_path / "drift.duckdb"
+    connection = get_connection(db_path)
+    connection.execute(
+        "ALTER TABLE minutes_prediction DROP COLUMN snapshot_captured_at"
+    )
+    connection.close()
+
+    connection = get_connection(db_path, check_drift=False)
+    try:
+        reset_database(connection)
+    finally:
+        connection.close()
+
+    # After the rebuild the guard is satisfied again.
+    get_connection(db_path).close()
+
+
+def test_check_schema_drift_passes_on_a_fresh_database(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Every declared column exists after a normal create, so nothing raises."""
+    check_schema_drift(db)
 
 
 def test_coerce_player_week_normalises_gkp_and_selects_columns() -> None:
@@ -396,6 +455,7 @@ def test_coerce_player_match_selects_and_pins_dtypes() -> None:
                 "is_home": True,
                 "minutes": 90,
                 "total_points": 6,
+                "kickoff_time": datetime(2024, 8, 10, 15, 0),
                 "extra": "ignored",
             }
         ]
@@ -422,6 +482,7 @@ def test_player_match_pk_disambiguates_double_gameweek(
                 "is_home": True,
                 "minutes": 90,
                 "total_points": 6,
+                "kickoff_time": datetime(2024, 8, 10, 15, 0),
             },
             {
                 "season": "2024-25",
@@ -431,6 +492,7 @@ def test_player_match_pk_disambiguates_double_gameweek(
                 "is_home": False,
                 "minutes": 70,
                 "total_points": 2,
+                "kickoff_time": datetime(2024, 8, 14, 19, 0),
             },
         ]
     )
@@ -456,6 +518,7 @@ def test_write_immutable_player_match_is_noop_when_present(
                 "is_home": True,
                 "minutes": 90,
                 "total_points": 3,
+                "kickoff_time": datetime(2023, 8, 11, 19, 0),
             }
         ]
     )
@@ -483,6 +546,7 @@ def test_load_player_match_round_trips_ordered(
                 "is_home": True,
                 "minutes": 45,
                 "total_points": 1,
+                "kickoff_time": datetime(2024, 8, 17, 15, 0),
             },
             {
                 "season": "2024-25",
@@ -492,6 +556,7 @@ def test_load_player_match_round_trips_ordered(
                 "is_home": False,
                 "minutes": 90,
                 "total_points": 5,
+                "kickoff_time": datetime(2024, 8, 10, 15, 0),
             },
         ]
     )
@@ -582,6 +647,8 @@ def test_coerce_minutes_prediction_selects_and_pins_dtypes() -> None:
                 "p_sixty_plus": 0.7,
                 "expected_minutes": 58.5,
                 "model_version": "3",
+                "prediction_kind": "backfill",
+                "snapshot_captured_at": None,
                 "extra": "ignored",
             }
         ]
@@ -611,6 +678,8 @@ def test_minutes_prediction_pk_disambiguates_double_gameweek(
                 "p_sixty_plus": 0.7,
                 "expected_minutes": 58.5,
                 "model_version": "3",
+                "prediction_kind": "backfill",
+                "snapshot_captured_at": None,
             },
             {
                 "season": "2024-25",
@@ -622,6 +691,8 @@ def test_minutes_prediction_pk_disambiguates_double_gameweek(
                 "p_sixty_plus": 0.4,
                 "expected_minutes": 39.0,
                 "model_version": "3",
+                "prediction_kind": "backfill",
+                "snapshot_captured_at": None,
             },
         ]
     )
@@ -649,6 +720,8 @@ def test_upsert_minutes_prediction_replaces_season(
                     "p_sixty_plus": 0.7,
                     "expected_minutes": exp,
                     "model_version": version,
+                    "prediction_kind": "backfill",
+                    "snapshot_captured_at": None,
                 }
             ]
         )
@@ -684,6 +757,8 @@ def test_minutes_prediction_versions_returns_distinct(
                     "p_sixty_plus": 0.7,
                     "expected_minutes": 58.5,
                     "model_version": version,
+                    "prediction_kind": "backfill",
+                    "snapshot_captured_at": None,
                 }
             ]
         )
@@ -719,6 +794,8 @@ def test_reset_database_drops_minutes_prediction_rows(
                     "p_sixty_plus": 0.7,
                     "expected_minutes": 58.5,
                     "model_version": "1",
+                    "prediction_kind": "backfill",
+                    "snapshot_captured_at": None,
                 }
             ]
         ),

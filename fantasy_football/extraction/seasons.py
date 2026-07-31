@@ -90,6 +90,23 @@ def seasons_in_range(first: str, last: str) -> list[str]:
     ]
 
 
+def previous_season(season: str) -> str:
+    """Return the short-form season immediately before ``season``.
+
+    Parameters
+    ----------
+    season : str
+        A short-form season string, e.g. ``"2026-27"``.
+
+    Returns
+    -------
+    str
+        The preceding short-form season, e.g. ``"2025-26"``.
+    """
+    start = int(season[:4]) - 1
+    return f"{start}-{str(start + 1)[2:]}"
+
+
 def source_for_season(season: str) -> DataSource:
     """Return the data source for a short-form season string.
 

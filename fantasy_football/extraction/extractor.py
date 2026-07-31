@@ -21,6 +21,42 @@ logger = logging.getLogger(__name__)
 RAW_DATA_FOLDER = DATA_FOLDER.joinpath("raw")
 
 
+def _drop_duplicate_rows(frame: pl.DataFrame, context: str) -> pl.DataFrame:
+    """Drop rows that are repeated verbatim in the source data.
+
+    Vaastav's exports occasionally carry a player's fixture row twice,
+    byte for byte -- 2025-26 has ten such rows. They are not double
+    gameweeks: a genuine second fixture differs by ``opponent_team`` and
+    ``fixture``, so it survives this filter. Left in, a duplicate breaks
+    ``player_match``'s primary key and silently doubles the summed
+    minutes in :func:`_collapse_double_gameweeks`.
+
+    Deduplication is on the whole row deliberately. Two rows sharing a
+    key but disagreeing on any value are a genuine conflict and are left
+    alone, to fail loudly downstream rather than be silently reconciled
+    here.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        Rows as read from the source.
+    context : str
+        Description of the source, used in the warning log.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``frame`` with exact duplicate rows removed, order preserved.
+    """
+    deduped = frame.unique(maintain_order=True)
+    dropped = frame.height - deduped.height
+    if dropped:
+        logger.warning(
+            "Dropped %d verbatim duplicate row(s) from %s", dropped, context
+        )
+    return deduped
+
+
 def _collapse_double_gameweeks(frame: pl.DataFrame) -> pl.DataFrame:
     """Collapse multi-fixture rows to one row per ``(season, gw, element)``.
 
@@ -28,6 +64,10 @@ def _collapse_double_gameweeks(frame: pl.DataFrame) -> pl.DataFrame:
     appears twice for the same player-gameweek. Sum the additive stats and keep
     a representative value for the descriptive columns, matching the
     one-row-per-player-gameweek shape the FCI adapter produces.
+
+    Verbatim duplicate rows are dropped first. Because this function sums
+    the additive stats, a repeated row would otherwise inflate them --
+    silently, and to impossible values such as 148 minutes in a match.
 
     Parameters
     ----------
@@ -40,6 +80,7 @@ def _collapse_double_gameweeks(frame: pl.DataFrame) -> pl.DataFrame:
     pl.DataFrame
         One row per ``(season, gw, element)``.
     """
+    frame = _drop_duplicate_rows(frame, "player-week source rows")
     return frame.group_by(["season", "gw", "element"]).agg(
         pl.col("bonus").sum(),
         pl.col("minutes").sum(),
@@ -59,19 +100,26 @@ def _build_player_match(frame: pl.DataFrame) -> pl.DataFrame:
     as two rows. Unlike ``_collapse_double_gameweeks`` this keeps both rows,
     renaming the source columns to the canonical player-match names.
 
+    Rows repeated verbatim in the source are dropped, since they would
+    otherwise violate ``player_match``'s ``(season, gw, element,
+    opponent)`` primary key. Deduplication runs on the selected columns:
+    the two legs of a real double gameweek differ by ``opponent`` and so
+    both survive, while two rows that reach the same key with different
+    stored values still collide and fail loudly.
+
     Parameters
     ----------
     frame : pl.DataFrame
         Per-fixture rows carrying ``season, gw, element, opponent_team,
-        was_home, minutes, total_points``.
+        was_home, minutes, total_points, kickoff_time``.
 
     Returns
     -------
     pl.DataFrame
         One row per fixture with columns ``season, gw, element, opponent,
-        is_home, minutes, total_points``.
+        is_home, minutes, total_points, kickoff_time``.
     """
-    return frame.select(
+    selected = frame.select(
         pl.col("season"),
         pl.col("gw"),
         pl.col("element"),
@@ -79,7 +127,16 @@ def _build_player_match(frame: pl.DataFrame) -> pl.DataFrame:
         pl.col("was_home").alias("is_home"),
         pl.col("minutes"),
         pl.col("total_points"),
+        # strict=False: Vaastav emits blank kickoff_time for a handful of
+        # rows, and one bad value in a ~150k-row CSV would otherwise abort
+        # the whole historic load. A bad value becomes a null instead.
+        pl.col("kickoff_time")
+        .str.replace("Z", "+00:00")
+        .str.to_datetime(time_zone="UTC", strict=False)
+        .dt.replace_time_zone(None)
+        .alias("kickoff_time"),
     )
+    return _drop_duplicate_rows(selected, "player-match source rows")
 
 
 def _historic_loaded(

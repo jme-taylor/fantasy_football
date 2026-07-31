@@ -6,6 +6,7 @@ import mlflow.sklearn
 import mlflow.tracking
 import numpy as np
 import polars as pl
+from mlflow.exceptions import MlflowException
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -24,6 +25,7 @@ from fantasy_football.constants import (
     MINUTES_REGISTERED_MODEL,
     MLFLOW_TRACKING_URI,
 )
+from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.features.availability import (
     add_chance_of_playing,
     add_games_played_this_season,
@@ -40,12 +42,19 @@ from fantasy_football.features.valuation import (
     add_positional_value_rank,
     add_team_value,
 )
+from fantasy_football.modelling.forward import (
+    build_forward_fixtures,
+    forward_player_weeks,
+    last_played_gw,
+    latest_snapshot,
+)
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.tables import (
     MINUTES_PREDICTION,
     PLAYER_AVAILABILITY,
     PLAYER_MATCH,
     PLAYER_SEASON,
+    PLAYER_SNAPSHOT,
     PLAYER_WEEK,
     TEAM_FIXTURE,
     minutes_prediction_versions,
@@ -61,6 +70,12 @@ BUCKET_ZERO = "0_minutes"
 BUCKET_PARTIAL = "1_to_59_minutes"
 BUCKET_SIXTY_PLUS = "60_minutes_plus"
 MINUTES_BUCKETS = [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
+
+# How a stored prediction was produced. Backfilled rows are in-sample --
+# the champion scored its own training seasons. Forward rows are genuine
+# out-of-sample forecasts for fixtures that had not been played.
+BACKFILL_KIND = "backfill"
+FORWARD_KIND = "forward"
 
 # Model inputs. The first block is contemporaneous -- everything knowable at
 # the deadline. The second reaches across the summer break through player_code
@@ -149,6 +164,7 @@ def build_feature_frame(
     player_match: pl.DataFrame,
     player_season: pl.DataFrame,
     team_fixture: pl.DataFrame,
+    forward_fixtures: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Build the model feature frame at the player-week grain.
 
@@ -171,6 +187,15 @@ def build_feature_frame(
     team_fixture : pl.DataFrame
         Fixture rows from :meth:`TEAM_FIXTURE.load`, used to detect promoted
         clubs.
+    forward_fixtures : pl.DataFrame | None
+        Optional match-grain rows for fixtures not yet played, with a null
+        ``minutes`` (``season``, ``gw``, ``element``, ``kickoff_time``,
+        ``minutes``). When given, they are appended to ``player_match`` to
+        form the stream :func:`add_rolling_minutes` scans, so a future
+        gameweek inherits the rolling window frozen at the player's last
+        played match instead of falling back to a null. This feeds *only*
+        the rolling-minutes window -- every other feature in this function
+        is still computed on the week grain exactly as before.
 
     Returns
     -------
@@ -182,7 +207,22 @@ def build_feature_frame(
     frame = add_positional_value_rank(frame)
     frame = add_chance_of_playing(frame, availability)
     frame = add_positional_availability(frame)
-    frame = add_rolling_minutes(frame)
+    match_stream = (
+        player_match
+        if forward_fixtures is None
+        else pl.concat(
+            [
+                player_match.select(
+                    ["season", "gw", "element", "kickoff_time", "minutes"]
+                ),
+                forward_fixtures.select(
+                    ["season", "gw", "element", "kickoff_time", "minutes"]
+                ),
+            ],
+            how="vertical",
+        )
+    )
+    frame = add_rolling_minutes(frame, match_stream, player_season)
     frame = add_games_played_this_season(frame)
     frame = add_history_features(frame, player_match, player_season)
     frame = frame.join(
@@ -523,24 +563,33 @@ def run_minutes_model() -> dict[str, float]:
     return agg
 
 
-def get_production_model() -> tuple[str, Any]:
-    """Return the version string carrying the production alias, or None.
+def get_production_model() -> tuple[str, Any] | None:
+    """Return the production-aliased version string and model, or None.
 
-    Looks up ``MINUTES_REGISTERED_MODEL@MINUTES_PRODUCTION_ALIAS`` in the MLflow
-    Model Registry. Returns ``None`` (without raising) when the registered model
-    or the alias does not exist yet — which is the normal state until the first
-    manual promotion in the MLflow UI.
+    Looks up ``MINUTES_REGISTERED_MODEL@MINUTES_PRODUCTION_ALIAS`` in the
+    MLflow Model Registry. Returns ``None`` (without raising) when the
+    registered model or the alias does not exist yet — which is the normal
+    state until the first manual promotion in the MLflow UI.
 
     Returns
     -------
-    str | None
-        The aliased model version, or ``None`` if no production alias is set.
+    tuple[str, Any] | None
+        The aliased model version and the loaded model, or ``None`` if no
+        production alias is set.
     """
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     client = mlflow.tracking.MlflowClient()
-    version = client.get_model_version_by_alias(
-        MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
-    )
+    try:
+        version = client.get_model_version_by_alias(
+            MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
+        )
+    except MlflowException:
+        logger.warning(
+            "No %s alias on %s; promote a version in the MLflow UI first.",
+            MINUTES_PRODUCTION_ALIAS,
+            MINUTES_REGISTERED_MODEL,
+        )
+        return None
     model = mlflow.sklearn.load_model(
         f"models:/{MINUTES_REGISTERED_MODEL}@{MINUTES_PRODUCTION_ALIAS}"
     )
@@ -593,14 +642,26 @@ def _score_and_store(
     model: Pipeline,
     version: str,
 ) -> None:
-    """Score one season's rows and upsert them, stamped with ``version``."""
+    """Score one season's rows and store them as backfill predictions.
+
+    Rows are stamped with ``prediction_kind=BACKFILL_KIND`` and a null
+    ``snapshot_captured_at``, then written via ``replace_partition``
+    scoped to this season's backfill partition, so forward rows for the
+    same season are left untouched.
+    """
     sub = model_frame.filter(pl.col("season") == season)
     if sub.is_empty():
         return
     scored = score_minutes(sub, model).with_columns(
-        model_version=pl.lit(version)
+        model_version=pl.lit(version),
+        prediction_kind=pl.lit(BACKFILL_KIND),
+        snapshot_captured_at=pl.lit(None, dtype=pl.Datetime("us")),
     )
-    MINUTES_PREDICTION.upsert_current(connection, scored, season)
+    MINUTES_PREDICTION.replace_partition(
+        connection,
+        scored,
+        equals={"season": season, "prediction_kind": BACKFILL_KIND},
+    )
 
 
 def backfill_minutes() -> None:
@@ -615,7 +676,10 @@ def backfill_minutes() -> None:
     Does nothing (logs a warning) when no ``production`` alias is set, which is
     the normal state until the first manual promotion in the MLflow UI.
     """
-    prod_version, model = get_production_model()
+    production = get_production_model()
+    if production is None:
+        return
+    prod_version, model = production
     model_frame = assemble_model_frame()
     all_seasons = set(model_frame["season"].unique().to_list())
     historic_seasons = sorted(all_seasons - {CURRENT_SEASON})
@@ -652,5 +716,148 @@ def backfill_minutes() -> None:
             logger.info(
                 f"Historic minutes predictions already at version {prod_version}; skipping.",
             )
+    finally:
+        connection.close()
+
+
+def warn_unidentified_snapshot(
+    snapshot: pl.DataFrame, player_season: pl.DataFrame, season: str
+) -> int:
+    """Log a warning for snapshot elements with no ``player_season`` row.
+
+    The FPL bootstrap typically carries more elements than ``player_season``
+    resolves identities for. An unmatched element gets a null
+    ``player_code``, so it drops out of the cross-season rolling stream and
+    reaches the model with null history, ``is_pl_newcomer=True`` and a null
+    ``age_years`` -- yet it still scores, median-imputed, and its stored
+    prediction is indistinguishable from a well-supported one. Making the
+    gap visible is the point; nothing is filtered out.
+
+    Parameters
+    ----------
+    snapshot : pl.DataFrame
+        One capture's rows, with ``element``.
+    player_season : pl.DataFrame
+        Identity rows with ``season``, ``element`` and ``player_code``.
+    season : str
+        The season being scored.
+
+    Returns
+    -------
+    int
+        The number of snapshot elements with no identity row.
+    """
+    identified = set(
+        player_season.filter(
+            (pl.col("season") == season) & pl.col("player_code").is_not_null()
+        )["element"].to_list()
+    )
+    elements = snapshot["element"].to_list()
+    missing = sorted({e for e in elements if e not in identified})
+    if missing:
+        logger.warning(
+            "%d of %d %s snapshot elements have no player_season row "
+            "(e.g. %s); they score with null history, is_pl_newcomer=True "
+            "and a null age_years.",
+            len(missing),
+            len(elements),
+            season,
+            missing[:10],
+        )
+    return len(missing)
+
+
+def score_forward_minutes() -> None:
+    """Score the production model over every unplayed fixture and store it.
+
+    Builds the feature frame from the latest player snapshot crossed with
+    the season's remaining fixtures, scores it, and writes the rows as
+    ``FORWARD_KIND``. Only gameweeks at or after the first unplayed one
+    are rewritten: once a gameweek kicks off its forecast is frozen, so
+    the out-of-sample record survives to be evaluated against the result.
+
+    Does nothing when no ``production`` alias is set, or when the season
+    has no snapshot or no remaining fixtures.
+
+    Returns
+    -------
+    None
+        Predictions are written to ``MINUTES_PREDICTION`` as a side effect.
+    """
+    production = get_production_model()
+    if production is None:
+        return
+    prod_version, model = production
+
+    connection = get_connection()
+    try:
+        snapshot = latest_snapshot(
+            PLAYER_SNAPSHOT.load(connection), CURRENT_SEASON
+        )
+        if snapshot.is_empty():
+            logger.warning(
+                "No player snapshot for %s; skipping forward scoring.",
+                CURRENT_SEASON,
+            )
+            return
+        captured_at = snapshot["captured_at"][0]
+
+        player_week = PLAYER_WEEK.load(connection)
+        player_season = PLAYER_SEASON.load(connection)
+        warn_unidentified_snapshot(snapshot, player_season, CURRENT_SEASON)
+        from_gw = last_played_gw(player_week, CURRENT_SEASON) + 1
+        team_name_to_id = {team.name: team.id for team in FplAPI().get_teams()}
+        forward_fixtures = build_forward_fixtures(
+            snapshot,
+            TEAM_FIXTURE.load(connection),
+            CURRENT_SEASON,
+            from_gw,
+            team_name_to_id,
+        )
+        if forward_fixtures.is_empty():
+            logger.info(
+                "No unplayed %s fixtures from gw %d; nothing to score.",
+                CURRENT_SEASON,
+                from_gw,
+            )
+            return
+
+        combined_weeks = pl.concat(
+            [player_week, forward_player_weeks(forward_fixtures)],
+            how="diagonal",
+        )
+        feature_frame = build_feature_frame(
+            combined_weeks,
+            PLAYER_AVAILABILITY.load(connection),
+            PLAYER_MATCH.load(connection),
+            player_season,
+            TEAM_FIXTURE.load(connection),
+            forward_fixtures=forward_fixtures,
+        )
+        model_frame = forward_fixtures.select(
+            ["season", "gw", "element", "opponent"]
+        ).join(feature_frame, on=["season", "gw", "element"], how="inner")
+
+        scored = score_minutes(model_frame, model).with_columns(
+            model_version=pl.lit(prod_version),
+            prediction_kind=pl.lit(FORWARD_KIND),
+            snapshot_captured_at=pl.lit(captured_at, dtype=pl.Datetime("us")),
+        )
+        MINUTES_PREDICTION.replace_partition(
+            connection,
+            scored,
+            equals={
+                "season": CURRENT_SEASON,
+                "prediction_kind": FORWARD_KIND,
+            },
+            gw_from=from_gw,
+        )
+        logger.info(
+            "Stored %d forward minutes rows for %s from gw %d at version %s",
+            scored.height,
+            CURRENT_SEASON,
+            from_gw,
+            prod_version,
+        )
     finally:
         connection.close()

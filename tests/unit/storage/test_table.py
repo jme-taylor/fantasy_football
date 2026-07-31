@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 from fantasy_football.storage.table import Table, duckdb_type
+from fantasy_football.storage.tables import MINUTES_PREDICTION
 
 WIDGET = Table(
     name="widget",
@@ -243,3 +244,83 @@ def test_seasons_present_reports_stored_seasons():
         assert WIDGET.seasons_present(connection) == {"2024-25"}
     finally:
         connection.close()
+
+
+def test_replace_partition_scopes_delete_to_predicates(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Replacing one partition must leave sibling partitions intact."""
+    existing = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 2,
+            "gw": [1, 1],
+            "element": [1, 2],
+            "opponent": [3, 3],
+            "p_zero": [0.1, 0.2],
+            "p_partial": [0.2, 0.2],
+            "p_sixty_plus": [0.7, 0.6],
+            "expected_minutes": [60.0, 55.0],
+            "model_version": ["1", "1"],
+            "prediction_kind": ["backfill", "forward"],
+            "snapshot_captured_at": [None, None],
+        }
+    )
+    MINUTES_PREDICTION.append(db, existing)
+
+    replacement = existing.filter(
+        pl.col("prediction_kind") == "forward"
+    ).with_columns(expected_minutes=pl.lit(10.0))
+    MINUTES_PREDICTION.replace_partition(
+        db,
+        replacement,
+        equals={"season": "2026-27", "prediction_kind": "forward"},
+    )
+
+    stored = MINUTES_PREDICTION.load(db)
+    by_kind = {
+        row["prediction_kind"]: row["expected_minutes"]
+        for row in stored.iter_rows(named=True)
+    }
+    assert by_kind["backfill"] == pytest.approx(60.0)
+    assert by_kind["forward"] == pytest.approx(10.0)
+
+
+def test_replace_partition_gw_from_preserves_earlier_gameweeks(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Frozen forward rows below the floor survive a rewrite."""
+    existing = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 2,
+            "gw": [1, 2],
+            "element": [1, 1],
+            "opponent": [3, 4],
+            "p_zero": [0.1, 0.1],
+            "p_partial": [0.2, 0.2],
+            "p_sixty_plus": [0.7, 0.7],
+            "expected_minutes": [60.0, 60.0],
+            "model_version": ["1", "1"],
+            "prediction_kind": ["forward", "forward"],
+            "snapshot_captured_at": [None, None],
+        }
+    )
+    MINUTES_PREDICTION.append(db, existing)
+
+    replacement = existing.filter(pl.col("gw") == 2).with_columns(
+        expected_minutes=pl.lit(5.0)
+    )
+    MINUTES_PREDICTION.replace_partition(
+        db,
+        replacement,
+        equals={"season": "2026-27", "prediction_kind": "forward"},
+        gw_from=2,
+    )
+
+    stored = MINUTES_PREDICTION.load(db)
+    by_gw = {
+        row["gw"]: row["expected_minutes"]
+        for row in stored.iter_rows(named=True)
+    }
+    # GW1 has kicked off; its forecast is frozen, not rewritten.
+    assert by_gw[1] == pytest.approx(60.0)
+    assert by_gw[2] == pytest.approx(5.0)
