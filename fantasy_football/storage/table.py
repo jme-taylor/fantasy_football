@@ -98,7 +98,7 @@ class Table:
         """Return the ``CREATE TABLE IF NOT EXISTS`` statement.
 
         Primary-key columns are declared NOT NULL; every other column is
-        nullable. This rule reproduces all six legacy DDL strings exactly.
+        nullable.
 
         Returns
         -------
