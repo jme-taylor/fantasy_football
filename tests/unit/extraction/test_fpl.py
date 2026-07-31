@@ -750,6 +750,7 @@ class TestFplAPI:
                     "was_home": True,
                     "minutes": 90,
                     "total_points": 6,
+                    "kickoff_time": "2023-08-11T19:00:00Z",
                 },
                 {
                     "element": 5,
@@ -758,6 +759,7 @@ class TestFplAPI:
                     "was_home": False,
                     "minutes": 70,
                     "total_points": 2,
+                    "kickoff_time": "2023-08-15T19:00:00Z",
                 },
             ]
         }
@@ -774,6 +776,7 @@ class TestFplAPI:
             "is_home",
             "minutes",
             "total_points",
+            "kickoff_time",
         ]
         assert result.height == 2
         assert result["gw"].to_list() == [1, 1]
@@ -785,6 +788,7 @@ class TestFplAPI:
             pl.Boolean,
             pl.Int64,
             pl.Int64,
+            pl.Datetime("us"),
         ]
 
     def test_get_player_match_history_empty_history(
@@ -807,6 +811,7 @@ class TestFplAPI:
             "is_home",
             "minutes",
             "total_points",
+            "kickoff_time",
         ]
         assert result.dtypes == [
             pl.Int64,
@@ -815,4 +820,5 @@ class TestFplAPI:
             pl.Boolean,
             pl.Int64,
             pl.Int64,
+            pl.Datetime("us"),
         ]

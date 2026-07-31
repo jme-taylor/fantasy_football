@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -459,6 +460,10 @@ def test_build_player_match_keeps_both_fixtures_of_a_dgw() -> None:
             "minutes": [90, 70],
             "total_points": [6, 2],
             "name": ["A", "A"],
+            "kickoff_time": [
+                "2023-08-11T19:00:00Z",
+                "2023-08-15T19:00:00Z",
+            ],
         }
     )
     result = _build_player_match(frame)
@@ -470,7 +475,29 @@ def test_build_player_match_keeps_both_fixtures_of_a_dgw() -> None:
         "is_home",
         "minutes",
         "total_points",
+        "kickoff_time",
     ]
     assert result.height == 2
     assert sorted(result["opponent"].to_list()) == [7, 12]
     assert sorted(result["minutes"].to_list()) == [70, 90]
+
+
+def test_build_player_match_carries_kickoff_time() -> None:
+    """Per-fixture rows keep the kickoff instant for chronological sorting."""
+    frame = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "gw": [1],
+            "element": [7],
+            "opponent_team": [3],
+            "was_home": [True],
+            "minutes": [90],
+            "total_points": [8],
+            "kickoff_time": ["2023-08-11T19:00:00Z"],
+        }
+    )
+
+    result = _build_player_match(frame)
+
+    assert "kickoff_time" in result.columns
+    assert result["kickoff_time"][0] == datetime(2023, 8, 11, 19, 0)

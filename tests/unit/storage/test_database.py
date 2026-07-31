@@ -396,6 +396,7 @@ def test_coerce_player_match_selects_and_pins_dtypes() -> None:
                 "is_home": True,
                 "minutes": 90,
                 "total_points": 6,
+                "kickoff_time": datetime(2024, 8, 10, 15, 0),
                 "extra": "ignored",
             }
         ]
@@ -422,6 +423,7 @@ def test_player_match_pk_disambiguates_double_gameweek(
                 "is_home": True,
                 "minutes": 90,
                 "total_points": 6,
+                "kickoff_time": datetime(2024, 8, 10, 15, 0),
             },
             {
                 "season": "2024-25",
@@ -431,6 +433,7 @@ def test_player_match_pk_disambiguates_double_gameweek(
                 "is_home": False,
                 "minutes": 70,
                 "total_points": 2,
+                "kickoff_time": datetime(2024, 8, 14, 19, 0),
             },
         ]
     )
@@ -456,6 +459,7 @@ def test_write_immutable_player_match_is_noop_when_present(
                 "is_home": True,
                 "minutes": 90,
                 "total_points": 3,
+                "kickoff_time": datetime(2023, 8, 11, 19, 0),
             }
         ]
     )
@@ -483,6 +487,7 @@ def test_load_player_match_round_trips_ordered(
                 "is_home": True,
                 "minutes": 45,
                 "total_points": 1,
+                "kickoff_time": datetime(2024, 8, 17, 15, 0),
             },
             {
                 "season": "2024-25",
@@ -492,6 +497,7 @@ def test_load_player_match_round_trips_ordered(
                 "is_home": False,
                 "minutes": 90,
                 "total_points": 5,
+                "kickoff_time": datetime(2024, 8, 10, 15, 0),
             },
         ]
     )

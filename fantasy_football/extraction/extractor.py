@@ -63,13 +63,13 @@ def _build_player_match(frame: pl.DataFrame) -> pl.DataFrame:
     ----------
     frame : pl.DataFrame
         Per-fixture rows carrying ``season, gw, element, opponent_team,
-        was_home, minutes, total_points``.
+        was_home, minutes, total_points, kickoff_time``.
 
     Returns
     -------
     pl.DataFrame
         One row per fixture with columns ``season, gw, element, opponent,
-        is_home, minutes, total_points``.
+        is_home, minutes, total_points, kickoff_time``.
     """
     return frame.select(
         pl.col("season"),
@@ -79,6 +79,11 @@ def _build_player_match(frame: pl.DataFrame) -> pl.DataFrame:
         pl.col("was_home").alias("is_home"),
         pl.col("minutes"),
         pl.col("total_points"),
+        pl.col("kickoff_time")
+        .str.replace("Z", "+00:00")
+        .str.to_datetime(time_zone="UTC")
+        .dt.replace_time_zone(None)
+        .alias("kickoff_time"),
     )
 
 
