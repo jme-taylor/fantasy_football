@@ -212,6 +212,27 @@ class Table:
             season,
         )
 
+    def append(
+        self,
+        connection: "duckdb.DuckDBPyConnection",
+        frame: pl.DataFrame,
+    ) -> None:
+        """Insert rows without deleting anything first.
+
+        For append-only tables where each write is a new partition of the
+        primary key rather than a correction of an existing one.
+
+        Parameters
+        ----------
+        connection : duckdb.DuckDBPyConnection
+            An open connection.
+        frame : pl.DataFrame
+            The rows to insert.
+        """
+        shaped = self.coerce(frame)
+        engine.insert_frame(connection, self.name, shaped)
+        logger.info("Appended %d %s rows", shaped.height, self.name)
+
     def upsert_current(
         self,
         connection: "duckdb.DuckDBPyConnection",

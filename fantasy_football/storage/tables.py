@@ -152,6 +152,22 @@ MINUTES_PREDICTION = Table(
     order_by=("season", "gw", "element", "opponent"),
 )
 
+PLAYER_SNAPSHOT = Table(
+    name="player_snapshot",
+    schema={
+        "season": pl.Utf8,
+        "captured_at": pl.Datetime("us"),
+        "element": pl.Int64,
+        "value": pl.Int64,
+        "team": pl.Utf8,
+        "position": pl.Utf8,
+        "chance_of_playing_this_round": pl.Int64,
+    },
+    primary_key=("season", "captured_at", "element"),
+    order_by=("season", "captured_at", "element"),
+    normalise=gkp_to_gk,
+)
+
 PLAYER_SEASON = Table(
     name="player_season",
     schema={
@@ -181,6 +197,7 @@ TABLES: tuple[Table, ...] = (
     PLAYER_AVAILABILITY,
     MINUTES_PREDICTION,
     PLAYER_SEASON,
+    PLAYER_SNAPSHOT,
 )
 
 

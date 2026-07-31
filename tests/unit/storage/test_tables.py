@@ -10,6 +10,7 @@ from fantasy_football.storage.tables import (
     PLAYER_AVAILABILITY,
     PLAYER_MATCH,
     PLAYER_SEASON,
+    PLAYER_SNAPSHOT,
     PLAYER_WEEK,
     TABLES,
     TEAM_FIXTURE,
@@ -105,6 +106,19 @@ CREATE TABLE IF NOT EXISTS player_season (
 )
 """
 
+_CREATE_PLAYER_SNAPSHOT_TABLE = """
+CREATE TABLE IF NOT EXISTS player_snapshot (
+    season VARCHAR NOT NULL,
+    captured_at TIMESTAMP NOT NULL,
+    element BIGINT NOT NULL,
+    value BIGINT,
+    team VARCHAR,
+    position VARCHAR,
+    chance_of_playing_this_round BIGINT,
+    PRIMARY KEY (season, captured_at, element)
+)
+"""
+
 # Each spec paired with the legacy DDL string it must reproduce.
 LEGACY_DDL = [
     (PLAYER_WEEK, _CREATE_TABLE),
@@ -113,6 +127,7 @@ LEGACY_DDL = [
     (PLAYER_AVAILABILITY, _CREATE_PLAYER_AVAILABILITY_TABLE),
     (MINUTES_PREDICTION, _CREATE_MINUTES_PREDICTION_TABLE),
     (PLAYER_SEASON, _CREATE_PLAYER_SEASON_TABLE),
+    (PLAYER_SNAPSHOT, _CREATE_PLAYER_SNAPSHOT_TABLE),
 ]
 
 
@@ -154,8 +169,8 @@ def test_generated_ddl_matches_legacy_ddl(table, legacy):
 
 
 def test_tables_tuple_covers_every_spec():
-    """``TABLES`` holds all six specs, so loops cannot miss one."""
-    assert len(TABLES) == 6
+    """``TABLES`` holds all seven specs, so loops cannot miss one."""
+    assert len(TABLES) == 7
     assert {t.name for t in TABLES} == {
         "player_week",
         "team_fixture",
@@ -163,6 +178,7 @@ def test_tables_tuple_covers_every_spec():
         "player_availability",
         "minutes_prediction",
         "player_season",
+        "player_snapshot",
     }
 
 
