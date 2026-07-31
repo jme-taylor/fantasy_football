@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+import duckdb
 import polars as pl
 import pytest
 import requests
@@ -13,10 +14,7 @@ from fantasy_football.extraction.fixtures import (
     fixtures_to_team_rows,
     load_fixtures,
     season_from_kickoffs,
-)
-from fantasy_football.extraction.seasons import (
-    DataSource,
-    source_for_season,
+    stored_season_is_valid,
 )
 from fantasy_football.fpl_types import (
     FplFixture,
@@ -28,6 +26,60 @@ from fantasy_football.storage.tables import TEAM_FIXTURE
 
 if TYPE_CHECKING:
     import pytest_mock
+
+
+def _fixture_rows(season: str, kickoff: datetime) -> pl.DataFrame:
+    """Build one minimal team_fixture row for a season.
+
+    Parameters
+    ----------
+    season : str
+        Short-form season label to store the row under.
+    kickoff : datetime
+        The kickoff instant for the row.
+
+    Returns
+    -------
+    pl.DataFrame
+        A single team-fixture row in the canonical schema.
+    """
+    return pl.DataFrame(
+        {
+            "season": [season],
+            "gw": [1],
+            "team": ["Arsenal"],
+            "is_home": [True],
+            "opposition": ["Chelsea"],
+            "kickoff_time": [kickoff],
+        }
+    ).cast(TEAM_FIXTURE.schema, strict=False)
+
+
+def test_stored_season_is_valid_accepts_matching_kickoffs(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """A season whose kickoffs fall inside its own window is valid."""
+    TEAM_FIXTURE.upsert_current(
+        db, _fixture_rows("2025-26", datetime(2025, 8, 15, 19, 0)), "2025-26"
+    )
+    assert stored_season_is_valid(db, "2025-26") is True
+
+
+def test_stored_season_is_valid_rejects_next_seasons_payload(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """The live 2025-26 corruption: 2026-27 kickoffs under a 2025-26 label."""
+    TEAM_FIXTURE.upsert_current(
+        db, _fixture_rows("2025-26", datetime(2026, 8, 21, 19, 0)), "2025-26"
+    )
+    assert stored_season_is_valid(db, "2025-26") is False
+
+
+def test_stored_season_is_valid_treats_absent_season_as_invalid(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """A season with no rows needs fetching, so it is not valid."""
+    assert stored_season_is_valid(db, "2025-26") is False
 
 
 def test_transform_emits_two_rows_per_fixture() -> None:
@@ -306,28 +358,33 @@ def test_load_fixtures_vaastav_fetch_failure_is_skipped(
         conn.close()
 
 
-def test_load_fixtures_skips_non_current_fci_season(
+def test_load_fixtures_repairs_mislabelled_stored_season(
     tmp_path, monkeypatch
 ) -> None:
-    """A non-current FCI-era season in player_week is warned about and skipped.
+    """A stored season with the wrong payload is re-derived, not skipped.
 
-    "2030-31" is beyond Vaastav's last season (2024-25) so it routes to FCI,
-    but it is not the current season ("2099-00"), so there is no fixture source
-    for it and it must be skipped.  "2023-24" is a Vaastav season and should
-    be loaded normally.  The current season "2099-00" is always upserted but
-    the empty frame contributes nothing.
+    "2025-26" is present in ``team_fixture`` but holds kickoffs that
+    actually belong to "2026-27" (the live corruption this task fixes).
+    Presence alone must not be treated as proof of correctness: Vaastav is
+    queried again and the corrected rows overwrite the bad ones.
     """
-    # Confirm routing up-front so the test is self-documenting.
-    assert source_for_season("2030-31") == DataSource.FCI
-
     conn = get_connection(tmp_path / "t.duckdb")
     try:
-        _seed_player_week(conn, ["2023-24", "2030-31"])
+        _seed_player_week(conn, ["2025-26"])
+        TEAM_FIXTURE.upsert_current(
+            conn,
+            fixtures_to_team_rows(
+                [(1, "2026-08-21T19:00:00Z", 1, 2)],
+                {1: "Arsenal", 2: "Chelsea"},
+                "2025-26",
+            ),
+            "2025-26",
+        )
 
         monkeypatch.setattr(
             "fantasy_football.extraction.fixtures.build_vaastav_fixtures",
             lambda season, extractor: fixtures_to_team_rows(
-                [(1, "2023-08-11T19:00:00Z", 1, 2)],
+                [(1, "2025-08-15T19:00:00Z", 1, 2)],
                 {1: "Arsenal", 2: "Chelsea"},
                 season,
             ),
@@ -339,8 +396,12 @@ def test_load_fixtures_skips_non_current_fci_season(
 
         load_fixtures(conn, "2099-00", api=MagicMock(), extractor=MagicMock())
 
-        # "2030-31" was skipped; "2099-00" is empty; only "2023-24" landed.
-        assert TEAM_FIXTURE.seasons_present(conn) == {"2023-24"}
+        repaired = TEAM_FIXTURE.load(conn).filter(
+            pl.col("season") == "2025-26"
+        )
+        assert repaired["kickoff_time"].unique().to_list() == [
+            datetime(2025, 8, 15, 19, 0)
+        ]
     finally:
         conn.close()
 
