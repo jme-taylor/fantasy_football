@@ -138,6 +138,33 @@ def test_latest_rolling_by_code_respects_the_as_of_cutoff() -> None:
     assert result["baseline"].to_list() == [3.0]  # GW1, not the GW5 row
 
 
+def test_latest_rolling_by_code_ignores_a_season_later_than_current() -> None:
+    """A row from a season after current_season never contributes a baseline.
+
+    Eligibility must be ordering-aware (season <= current_season), not just
+    equality-aware (season != current_season). Otherwise a future-season row
+    would sail straight through the as_of_gw filter unfiltered, since it
+    isn't equal to current_season.
+    """
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26", "2027-28"],
+            "name": ["P1", "P1"],
+            "position": ["MID", "MID"],
+            "team": ["Arsenal", "Arsenal"],
+            "element": [101, 9],
+            "player_code": [999, 999],
+            "gw": [38, 1],
+            "total_points": [8, 20],
+            "total_points_rolling_5": [5.0, 20.0],
+        }
+    )
+
+    result = _latest_rolling_by_code(rolling, "2026-27", as_of_gw=None)
+
+    assert result["baseline"].to_list() == [5.0]  # 2025-26, not 2027-28
+
+
 def test_latest_rolling_by_code_drops_rows_with_no_player_code() -> None:
     """A null player_code has no stable identity, so it is excluded."""
     rolling = pl.DataFrame(

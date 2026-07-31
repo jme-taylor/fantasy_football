@@ -44,15 +44,30 @@ def _latest_rolling_by_code(
     as_of_gw : int | None
         When set, current-season rows after this gameweek are excluded, so a
         backtest cannot see its own future. Prior seasons are always in
-        scope. When None, every row is eligible.
+        scope. When None, every row up to and including the current season
+        is eligible.
 
     Returns
     -------
     pl.DataFrame
         One row per ``player_code``, with a ``baseline`` column.
+
+    Notes
+    -----
+    Eligibility is always ordering-aware, not just equality-aware: a row from
+    any season later than ``current_season`` is excluded regardless of
+    ``as_of_gw``, since season strings sort chronologically
+    ("2025-26" < "2026-27") and a season that hasn't been reached yet can
+    never be a legitimate source for a baseline. This keeps the ``as_of_gw is
+    None`` path and the ``as_of_gw`` cutoff path consistent with each other:
+    both exclude the future, the cutoff just narrows it further within the
+    current season.
     """
     rolling_col = rolling_column_name("total_points", ROLLING_WINDOW)
-    eligible = rolling.filter(pl.col("player_code").is_not_null())
+    eligible = rolling.filter(
+        pl.col("player_code").is_not_null()
+        & (pl.col("season") <= current_season)
+    )
     if as_of_gw is not None:
         eligible = eligible.filter(
             (pl.col("season") != current_season) | (pl.col("gw") <= as_of_gw)
