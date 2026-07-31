@@ -134,6 +134,9 @@ class FplAPI:
                     now_cost=player.get("now_cost"),
                     team_id=player.get("team"),
                     element_type=player.get("element_type"),
+                    chance_of_playing_this_round=player.get(
+                        "chance_of_playing_this_round"
+                    ),
                 )
                 players.append(fpl_player)
             self._players = players

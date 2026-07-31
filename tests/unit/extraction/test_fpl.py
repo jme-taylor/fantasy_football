@@ -822,3 +822,33 @@ class TestFplAPI:
             pl.Int64,
             pl.Datetime("us"),
         ]
+
+    def test_get_players_carries_chance_of_playing(
+        self,
+        mocker: MockerFixture,
+    ) -> None:
+        """Bootstrap's injury field is the only 2026-27 availability signal."""
+        api = FplAPI()
+        mocker.patch.object(
+            api,
+            "get_bootstrap_data",
+            return_value={
+                "elements": [
+                    {
+                        "id": 1,
+                        "first_name": "Test",
+                        "second_name": "Player",
+                        "web_name": "Player",
+                        "selected_by_percent": "1.0",
+                        "now_cost": 50,
+                        "team": 1,
+                        "element_type": 3,
+                        "chance_of_playing_this_round": 75,
+                    }
+                ]
+            },
+        )
+
+        players = api.get_players()
+
+        assert players[0].chance_of_playing_this_round == 75

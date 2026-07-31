@@ -51,6 +51,9 @@ class FplPlayer:
         The ID of the team the player plays for
     element_type : int
         The player's position ID.
+    chance_of_playing_this_round : int | None
+        FPL's pre-deadline availability percentage, or None when the
+        player carries no injury doubt.
     """
 
     id: int
@@ -61,6 +64,7 @@ class FplPlayer:
     now_cost: int
     team_id: int
     element_type: int
+    chance_of_playing_this_round: int | None = None
 
 
 @dataclass(config=config, frozen=True)
