@@ -69,7 +69,12 @@ def add_rolling_minutes(
             coalesce=True,
         )
         .filter(pl.col("player_code").is_not_null())
-        .sort("kickoff_time")
+        # nulls_last=True: `strict=False` kickoff_time parsing means a
+        # malformed timestamp becomes null rather than aborting the load,
+        # so nulls are reachable here. A null must sort as the *most
+        # recent* match, never the earliest, or its minutes would leak
+        # backwards into every gameweek that actually precedes it.
+        .sort("kickoff_time", nulls_last=True)
         .with_row_index("_row")
     )
     # The frozen value an unplayed fixture inherits: the mean over the last
@@ -100,7 +105,7 @@ def add_rolling_minutes(
         .alias(output_column)
     )
     entering = stream.group_by(["season", "gw", "element"]).agg(
-        pl.col(output_column).sort_by("kickoff_time").first()
+        pl.col(output_column).sort_by("kickoff_time", nulls_last=True).first()
     )
     return data.join(
         entering, on=["season", "gw", "element"], how="left", coalesce=True

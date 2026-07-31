@@ -321,6 +321,48 @@ def test_rolling_minutes_played_rows_keep_shifted_window() -> None:
     assert by_gw[3] == pytest.approx(75.0)
 
 
+def test_rolling_minutes_null_kickoff_sorts_last() -> None:
+    """A null ``kickoff_time`` (from ``strict=False`` parsing) sorts last.
+
+    Polars' default ``nulls_last=False`` would put a null-kickoff match
+    at the *front* of the player's timeline, leaking its minutes
+    backwards into earlier gameweeks. GW3 here has a null kickoff and
+    must be treated as the most recent match, not the earliest -- so
+    GW1 (with no real prior match) stays null, and GW2/GW3 only ever
+    see minutes that genuinely precede them.
+    """
+    stream = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 3,
+            "gw": [1, 2, 3],
+            "element": [7] * 3,
+            "kickoff_time": [
+                datetime(2026, 8, 1, 15, 0),
+                datetime(2026, 8, 8, 15, 0),
+                None,
+            ],
+            "minutes": [60, 90, 45],
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+    codes = _codes([("2026-27", 7, 999)])
+    weeks = stream.select("season", "gw", "element")
+
+    result = add_rolling_minutes(weeks, stream, codes, rolling_window=5)
+    by_gw = {
+        row["gw"]: row["avg_minutes_rolling_5"]
+        for row in result.iter_rows(named=True)
+    }
+
+    # GW1 has no genuine prior match -- must stay null, not pick up
+    # GW3's 45 minutes just because GW3's kickoff parsed to null.
+    assert by_gw[1] is None
+    # GW2's only prior match is GW1 (60 minutes).
+    assert by_gw[2] == pytest.approx(60.0)
+    # GW3's prior matches are GW1 and GW2: (60 + 90) / 2 = 75.
+    assert by_gw[3] == pytest.approx(75.0)
+
+
 def test_add_chance_of_playing_joins_known_value() -> None:
     """A covered (season, gw, element) keeps its availability percentage."""
     data = pl.DataFrame(
