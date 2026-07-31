@@ -85,7 +85,9 @@ CREATE TABLE IF NOT EXISTS minutes_prediction (
     p_sixty_plus DOUBLE,
     expected_minutes DOUBLE,
     model_version VARCHAR,
-    PRIMARY KEY (season, gw, element, opponent)
+    prediction_kind VARCHAR NOT NULL,
+    snapshot_captured_at TIMESTAMP,
+    PRIMARY KEY (season, gw, element, opponent, prediction_kind)
 )
 """
 

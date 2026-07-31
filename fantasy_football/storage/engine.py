@@ -74,6 +74,34 @@ def delete_season(
     connection.execute(f"DELETE FROM {table_name} WHERE season = ?", [season])
 
 
+def delete_where(
+    connection: duckdb.DuckDBPyConnection,
+    table_name: str,
+    equals: dict[str, object],
+    gw_from: int | None = None,
+) -> None:
+    """Delete rows matching equality predicates and an optional gw floor.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    table_name : str
+        The table to delete from.
+    equals : dict[str, object]
+        Column-to-value equality predicates, combined with AND.
+    gw_from : int | None, optional
+        When given, also require ``gw >= gw_from``. Defaults to None.
+    """
+    clauses = [f"{column} = ?" for column in equals]
+    params: list[object] = list(equals.values())
+    if gw_from is not None:
+        clauses.append("gw >= ?")
+        params.append(gw_from)
+    where = " AND ".join(clauses)
+    connection.execute(f"DELETE FROM {table_name} WHERE {where}", params)
+
+
 def select(
     connection: duckdb.DuckDBPyConnection,
     table_name: str,

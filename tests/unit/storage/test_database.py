@@ -588,6 +588,8 @@ def test_coerce_minutes_prediction_selects_and_pins_dtypes() -> None:
                 "p_sixty_plus": 0.7,
                 "expected_minutes": 58.5,
                 "model_version": "3",
+                "prediction_kind": "backfill",
+                "snapshot_captured_at": None,
                 "extra": "ignored",
             }
         ]
@@ -617,6 +619,8 @@ def test_minutes_prediction_pk_disambiguates_double_gameweek(
                 "p_sixty_plus": 0.7,
                 "expected_minutes": 58.5,
                 "model_version": "3",
+                "prediction_kind": "backfill",
+                "snapshot_captured_at": None,
             },
             {
                 "season": "2024-25",
@@ -628,6 +632,8 @@ def test_minutes_prediction_pk_disambiguates_double_gameweek(
                 "p_sixty_plus": 0.4,
                 "expected_minutes": 39.0,
                 "model_version": "3",
+                "prediction_kind": "backfill",
+                "snapshot_captured_at": None,
             },
         ]
     )
@@ -655,6 +661,8 @@ def test_upsert_minutes_prediction_replaces_season(
                     "p_sixty_plus": 0.7,
                     "expected_minutes": exp,
                     "model_version": version,
+                    "prediction_kind": "backfill",
+                    "snapshot_captured_at": None,
                 }
             ]
         )
@@ -690,6 +698,8 @@ def test_minutes_prediction_versions_returns_distinct(
                     "p_sixty_plus": 0.7,
                     "expected_minutes": 58.5,
                     "model_version": version,
+                    "prediction_kind": "backfill",
+                    "snapshot_captured_at": None,
                 }
             ]
         )
@@ -725,6 +735,8 @@ def test_reset_database_drops_minutes_prediction_rows(
                     "p_sixty_plus": 0.7,
                     "expected_minutes": 58.5,
                     "model_version": "1",
+                    "prediction_kind": "backfill",
+                    "snapshot_captured_at": None,
                 }
             ]
         ),

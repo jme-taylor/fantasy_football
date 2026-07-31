@@ -147,9 +147,17 @@ MINUTES_PREDICTION = Table(
         "p_sixty_plus": pl.Float64,
         "expected_minutes": pl.Float64,
         "model_version": pl.Utf8,
+        "prediction_kind": pl.Utf8,
+        "snapshot_captured_at": pl.Datetime("us"),
     },
-    primary_key=("season", "gw", "element", "opponent"),
-    order_by=("season", "gw", "element", "opponent"),
+    primary_key=(
+        "season",
+        "gw",
+        "element",
+        "opponent",
+        "prediction_kind",
+    ),
+    order_by=("season", "gw", "element", "opponent", "prediction_kind"),
 )
 
 PLAYER_SNAPSHOT = Table(

@@ -233,6 +233,42 @@ class Table:
         engine.insert_frame(connection, self.name, shaped)
         logger.info("Appended %d %s rows", shaped.height, self.name)
 
+    def replace_partition(
+        self,
+        connection: "duckdb.DuckDBPyConnection",
+        frame: pl.DataFrame,
+        equals: dict[str, object],
+        gw_from: int | None = None,
+    ) -> None:
+        """Replace one partition's rows, leaving every other row alone.
+
+        Deletes rows matching every predicate in ``equals`` and, when
+        ``gw_from`` is given, ``gw >= gw_from``; then inserts ``frame``.
+        Rows below ``gw_from`` survive untouched, which is what lets a
+        forecast for an already-played gameweek stay frozen.
+
+        Parameters
+        ----------
+        connection : duckdb.DuckDBPyConnection
+            An open connection.
+        frame : pl.DataFrame
+            The replacement rows.
+        equals : dict[str, object]
+            Column-to-value equality predicates identifying the partition.
+        gw_from : int | None, optional
+            Lower gameweek bound on the delete. Defaults to None, meaning
+            the whole partition is replaced.
+        """
+        shaped = self.coerce(frame)
+        engine.delete_where(connection, self.name, equals, gw_from)
+        engine.insert_frame(connection, self.name, shaped)
+        logger.info(
+            "Replaced %d %s rows for %s",
+            shaped.height,
+            self.name,
+            equals,
+        )
+
     def upsert_current(
         self,
         connection: "duckdb.DuckDBPyConnection",
@@ -254,12 +290,4 @@ class Table:
         season : str
             The season being refreshed.
         """
-        shaped = self.coerce(frame)
-        engine.delete_season(connection, self.name, season)
-        engine.insert_frame(connection, self.name, shaped)
-        logger.info(
-            "Upserted %d %s rows for season %s",
-            shaped.height,
-            self.name,
-            season,
-        )
+        self.replace_partition(connection, frame, {"season": season})
