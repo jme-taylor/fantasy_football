@@ -37,8 +37,10 @@ def duckdb_type(dtype: pl.DataType) -> str:
     ValueError
         If the dtype has no mapping, rather than emitting invalid SQL.
     """
+    # Parametrised dtypes such as ``pl.Datetime("us")`` compare equal to
+    # their bare class but hash differently, so they would miss the dict.
     try:
-        return _DUCKDB_TYPES[dtype]
+        return _DUCKDB_TYPES[dtype.base_type()]
     except KeyError:
         raise ValueError(
             f"No DuckDB type mapped for Polars dtype {dtype!r}"
