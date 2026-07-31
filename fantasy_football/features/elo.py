@@ -23,8 +23,9 @@ _OUTPUT_FILE = "team_elo.csv"
 def normalize_elo_frame(raw: pd.DataFrame) -> pl.DataFrame:
     """Normalize a ClubElo-shaped pandas DataFrame to our polars schema.
 
-    Maps `Club` -> `team` using ``CLUBELO_TO_FPL``. Unknown clubs are dropped
-    with a logged warning.
+    Maps `Club` -> `team` using ``CLUBELO_TO_FPL``, emitting one row per FPL
+    alias so a club renamed between seasons resolves under either name.
+    Unknown clubs are dropped with a logged warning.
 
     Parameters
     ----------
@@ -53,12 +54,19 @@ def normalize_elo_frame(raw: pd.DataFrame) -> pl.DataFrame:
     for name in unknown:
         logger.warning("Unknown ClubElo team %r — dropping rows", name)
     df = df.filter(pl.col("club").is_in(list(known)))
+    alias_frame = pl.DataFrame(
+        {
+            "club": list(CLUBELO_TO_FPL),
+            "team": [CLUBELO_TO_FPL[club] for club in CLUBELO_TO_FPL],
+        },
+        schema={"club": pl.Utf8, "team": pl.List(pl.Utf8)},
+    ).explode("team")
     return (
         df.with_columns(
-            pl.col("club").replace(CLUBELO_TO_FPL).alias("team"),
             pl.col("from_date").str.strptime(pl.Date, "%Y-%m-%d"),
             pl.col("to_date").str.strptime(pl.Date, "%Y-%m-%d"),
         )
+        .join(alias_frame, on="club", how="inner")
         .filter(pl.col("to_date") >= ELO_HISTORY_START)
         .select("team", "elo", "from_date", "to_date")
     )

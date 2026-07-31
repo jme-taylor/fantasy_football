@@ -119,6 +119,80 @@ def test_normalize_elo_frame_drops_rows_before_history_start() -> None:
     assert sorted(result["elo"].to_list()) == [1900.0, 2000.0]
 
 
+def test_normalize_elo_frame_fans_out_multi_alias_clubs() -> None:
+    """A ClubElo club with two FPL names yields one row per alias."""
+    raw = _clubelo_df(
+        [
+            {
+                "Rank": 30.0,
+                "Club": "Ipswich",
+                "Country": "ENG",
+                "Level": 1,
+                "Elo": 1500.0,
+                "From": "2026-08-01",
+                "To": "2026-08-07",
+            },
+        ]
+    )
+
+    result = normalize_elo_frame(raw)
+
+    assert sorted(result["team"].to_list()) == ["Ipswich", "Ipswich Town"]
+    assert result["elo"].to_list() == [1500.0, 1500.0]
+
+
+def test_normalize_elo_frame_keeps_single_alias_clubs_at_one_row() -> None:
+    """A club with one FPL name is not duplicated by the alias explode."""
+    raw = _clubelo_df(
+        [
+            {
+                "Rank": 1.0,
+                "Club": "Arsenal",
+                "Country": "ENG",
+                "Level": 1,
+                "Elo": 2000.0,
+                "From": "2026-08-01",
+                "To": "2026-08-07",
+            },
+        ]
+    )
+
+    result = normalize_elo_frame(raw)
+
+    assert result.height == 1
+    assert result["team"].to_list() == ["Arsenal"]
+
+
+def test_normalize_elo_frame_maps_promoted_clubs() -> None:
+    """Coventry and Hull resolve to their 2026-27 FPL names."""
+    raw = _clubelo_df(
+        [
+            {
+                "Rank": 60.0,
+                "Club": "Coventry",
+                "Country": "ENG",
+                "Level": 1,
+                "Elo": 1450.0,
+                "From": "2026-08-01",
+                "To": "2026-08-07",
+            },
+            {
+                "Rank": 70.0,
+                "Club": "Hull",
+                "Country": "ENG",
+                "Level": 1,
+                "Elo": 1400.0,
+                "From": "2026-08-01",
+                "To": "2026-08-07",
+            },
+        ]
+    )
+
+    result = normalize_elo_frame(raw)
+
+    assert sorted(result["team"].to_list()) == ["Coventry City", "Hull City"]
+
+
 def test_build_team_elo_uses_cache_when_fresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -165,7 +239,7 @@ def test_build_team_elo_force_bypasses_cache(
     ).write_csv(cache)
     monkeypatch.setattr(elo, "TRANSFORMED_DATA_FOLDER", tmp_path)
     monkeypatch.setattr(elo, "CLUBELO_SCRAPE_NAMES", ["Arsenal"])
-    monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": "Arsenal"})
+    monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": ["Arsenal"]})
 
     class FakeClubElo:
         def scrape_team(self, team: str) -> pd.DataFrame:
@@ -213,7 +287,7 @@ def test_build_team_elo_falls_back_to_cache_on_scrape_failure(
 
     monkeypatch.setattr(elo, "TRANSFORMED_DATA_FOLDER", tmp_path)
     monkeypatch.setattr(elo, "CLUBELO_SCRAPE_NAMES", ["Arsenal"])
-    monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": "Arsenal"})
+    monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": ["Arsenal"]})
     monkeypatch.setattr(elo, "ELO_CACHE_TTL_HOURS", 24)
 
     class ExplodingClubElo:
@@ -241,7 +315,7 @@ def test_build_team_elo_scrape_failure_no_cache_raises(
     """Verify build_team_elo raises when scrape fails and no cache exists."""
     monkeypatch.setattr(elo, "TRANSFORMED_DATA_FOLDER", tmp_path)
     monkeypatch.setattr(elo, "CLUBELO_SCRAPE_NAMES", ["Arsenal"])
-    monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": "Arsenal"})
+    monkeypatch.setattr(elo, "CLUBELO_TO_FPL", {"Arsenal": ["Arsenal"]})
 
     class ExplodingClubElo:
         def scrape_team(self, team: str) -> pd.DataFrame:
