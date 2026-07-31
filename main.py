@@ -18,6 +18,7 @@ from fantasy_football.extraction.player_match import (
     load_current_season_player_match,
 )
 from fantasy_football.extraction.seasons import DataSource, source_for_season
+from fantasy_football.extraction.snapshot import load_player_snapshot
 from fantasy_football.features.elo import build_team_elo
 from fantasy_football.features.fixtures import build_fixtures_enriched
 from fantasy_football.features.transformation import create_rolling_points_data
@@ -26,6 +27,7 @@ from fantasy_football.modelling.evaluation import run_evaluation
 from fantasy_football.modelling.minutes import (
     backfill_minutes,
     run_minutes_model,
+    score_forward_minutes,
 )
 from fantasy_football.modelling.prediction import predict_points
 from fantasy_football.optimisation.optimiser import optimise_plan
@@ -125,6 +127,7 @@ def main(
         load_player_match_data(CURRENT_SEASON, connection)
         load_player_availability_data(connection, CURRENT_SEASON)
         load_player_identity_data(connection, CURRENT_SEASON)
+        load_player_snapshot(CURRENT_SEASON, connection)
     finally:
         connection.close()
 
@@ -133,6 +136,7 @@ def main(
     build_team_elo()
     run_minutes_model()
     backfill_minutes()
+    score_forward_minutes()
     if evaluate:
         run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None

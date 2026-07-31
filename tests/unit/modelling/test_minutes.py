@@ -3,7 +3,7 @@ from unittest import mock
 
 import numpy as np
 import polars as pl
-import pytest
+import pytest_mock
 from sklearn.pipeline import Pipeline
 
 from fantasy_football.constants import (
@@ -429,6 +429,7 @@ from mlflow.exceptions import MlflowException  # noqa: E402
 
 from fantasy_football.modelling.minutes import (  # noqa: E402
     get_production_model,
+    score_forward_minutes,
     score_minutes,
 )
 
@@ -507,26 +508,36 @@ def test_get_production_model_returns_version_and_model() -> None:
     assert model is stub_model
 
 
-def test_get_production_model_raises_when_alias_missing() -> None:
-    """A missing alias/registered model now propagates, not swallowed to None.
+def test_get_production_model_returns_none_without_an_alias(
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """The documented no-alias behaviour must actually hold."""
+    client = mocker.Mock()
+    client.get_model_version_by_alias.side_effect = MlflowException("no alias")
+    mocker.patch("mlflow.tracking.MlflowClient", return_value=client)
+    mocker.patch("mlflow.set_tracking_uri")
 
-    Callers (e.g. ``backfill_minutes``) are expected to let this fail loudly
-    rather than silently skip, so the exception must surface unchanged.
-    """
-    with mock.patch(
-        "fantasy_football.modelling.minutes.mlflow"
-    ) as mlflow_mock:
-        client = mlflow_mock.tracking.MlflowClient.return_value
-        client.get_model_version_by_alias.side_effect = MlflowException(
-            "no such alias"
-        )
+    assert get_production_model() is None
 
-        with pytest.raises(MlflowException):
-            get_production_model()
+
+def test_score_forward_minutes_noops_without_an_alias(
+    mocker: pytest_mock.MockerFixture,
+) -> None:
+    """No production model means no forward rows and no exception."""
+    mocker.patch(
+        "fantasy_football.modelling.minutes.get_production_model",
+        return_value=None,
+    )
+    assemble = mocker.patch(
+        "fantasy_football.modelling.minutes.assemble_model_frame"
+    )
+
+    score_forward_minutes()
+
+    assemble.assert_not_called()
 
 
 import duckdb  # noqa: E402
-import pytest_mock  # noqa: E402
 
 from fantasy_football.constants import CURRENT_SEASON  # noqa: E402
 from fantasy_football.modelling.minutes import (
