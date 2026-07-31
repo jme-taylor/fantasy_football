@@ -149,6 +149,7 @@ def build_feature_frame(
     player_match: pl.DataFrame,
     player_season: pl.DataFrame,
     team_fixture: pl.DataFrame,
+    forward_fixtures: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Build the model feature frame at the player-week grain.
 
@@ -171,6 +172,15 @@ def build_feature_frame(
     team_fixture : pl.DataFrame
         Fixture rows from :meth:`TEAM_FIXTURE.load`, used to detect promoted
         clubs.
+    forward_fixtures : pl.DataFrame | None
+        Optional match-grain rows for fixtures not yet played, with a null
+        ``minutes`` (``season``, ``gw``, ``element``, ``kickoff_time``,
+        ``minutes``). When given, they are appended to ``player_match`` to
+        form the stream :func:`add_rolling_minutes` scans, so a future
+        gameweek inherits the rolling window frozen at the player's last
+        played match instead of falling back to a null. This feeds *only*
+        the rolling-minutes window -- every other feature in this function
+        is still computed on the week grain exactly as before.
 
     Returns
     -------
@@ -182,7 +192,22 @@ def build_feature_frame(
     frame = add_positional_value_rank(frame)
     frame = add_chance_of_playing(frame, availability)
     frame = add_positional_availability(frame)
-    frame = add_rolling_minutes(frame)
+    match_stream = (
+        player_match
+        if forward_fixtures is None
+        else pl.concat(
+            [
+                player_match.select(
+                    ["season", "gw", "element", "kickoff_time", "minutes"]
+                ),
+                forward_fixtures.select(
+                    ["season", "gw", "element", "kickoff_time", "minutes"]
+                ),
+            ],
+            how="vertical",
+        )
+    )
+    frame = add_rolling_minutes(frame, match_stream, player_season)
     frame = add_games_played_this_season(frame)
     frame = add_history_features(frame, player_match, player_season)
     frame = frame.join(

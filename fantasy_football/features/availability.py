@@ -4,46 +4,77 @@ from fantasy_football.constants import FIT_THRESHOLD, ROLLING_WINDOW
 
 
 def add_rolling_minutes(
-    data: pl.DataFrame, rolling_window: int = ROLLING_WINDOW
+    data: pl.DataFrame,
+    match_stream: pl.DataFrame,
+    player_season: pl.DataFrame,
+    rolling_window: int = ROLLING_WINDOW,
 ) -> pl.DataFrame:
-    """Add each player's average minutes over their prior gameweeks.
+    """Add each player's average minutes over their last matches played.
 
-    For every ``(season, element)`` group the ``minutes`` column is averaged
-    over the previous ``rolling_window`` gameweeks. The current gameweek is
-    excluded (the window is shifted by one) so the feature only uses games
-    played before the gameweek being scored — this avoids leaking the current
-    week's minutes into a minutes/availability model.
+    The window is continuous across seasons and ordered by real kickoff
+    time, so a player's first match of a new season sees their final
+    matches of the previous one instead of a null. It is keyed on
+    ``player_code`` rather than ``element`` because FPL reassigns element
+    ids each season -- 841 ids map to more than one player -- so an
+    element-keyed window would silently merge different people.
 
-    The window partitions by ``season`` as well as ``element`` because FPL
-    reassigns ``element`` ids each season; partitioning by element alone would
-    pool different players and bleed minutes across the summer break. Rows
-    earlier than ``rolling_window`` use whatever prior games exist
-    (``min_periods=1``); a player's first game of a season has no prior data
-    and is therefore null.
+    Unplayed fixtures may appear in ``match_stream`` with a null
+    ``minutes``. ``rolling_mean`` ignores nulls under ``min_periods=1``,
+    so those rows inherit the window frozen at the last played match
+    rather than degrading it.
+
+    The window is computed at match grain, then reduced to one value per
+    ``(season, gw, element)`` by taking the earliest kickoff in that
+    gameweek -- the state entering it. Both legs of a double gameweek
+    therefore share a value.
 
     Parameters
     ----------
     data : pl.DataFrame
-        Player-week data containing ``season``, ``gw``, ``element`` and
+        Week-grain rows with ``season``, ``gw`` and ``element``.
+    match_stream : pl.DataFrame
+        Match-grain rows with ``season``, ``gw``, ``element``,
+        ``kickoff_time`` and ``minutes``. Unplayed fixtures carry a null
         ``minutes``.
+    player_season : pl.DataFrame
+        Identity rows with ``season``, ``element`` and ``player_code``.
     rolling_window : int
-        Number of prior gameweeks to average over (defaults to
-        ``ROLLING_WINDOW``).
+        Number of prior matches to average over. Defaults to
+        ``ROLLING_WINDOW``.
 
     Returns
     -------
     pl.DataFrame
-        The original dataframe with an ``avg_minutes_rolling_{rolling_window}``
-        column added.
-
+        ``data`` with an ``avg_minutes_rolling_{rolling_window}`` column
+        added. Rows whose player has no ``player_code``, or no prior
+        match, keep a null.
     """
     output_column = f"avg_minutes_rolling_{rolling_window}"
-    return data.sort(["season", "gw"]).with_columns(
+    stream = (
+        match_stream.select(
+            ["season", "gw", "element", "kickoff_time", "minutes"]
+        )
+        .join(
+            player_season.select(["season", "element", "player_code"]),
+            on=["season", "element"],
+            how="left",
+            coalesce=True,
+        )
+        .filter(pl.col("player_code").is_not_null())
+        .sort("kickoff_time")
+    )
+    stream = stream.with_columns(
         pl.col("minutes")
         .shift(1)
         .rolling_mean(window_size=rolling_window, min_periods=1)
-        .over(["season", "element"])
+        .over("player_code")
         .alias(output_column)
+    )
+    entering = stream.group_by(["season", "gw", "element"]).agg(
+        pl.col(output_column).sort_by("kickoff_time").first()
+    )
+    return data.join(
+        entering, on=["season", "gw", "element"], how="left", coalesce=True
     )
 
 

@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from unittest import mock
 
 import numpy as np
@@ -77,13 +77,15 @@ def _history_player_match() -> pl.DataFrame:
     """Player-match rows for the history-feature join.
 
     Distinct from the match-level ``player_match`` frame used by
-    ``build_model_frame``.
+    ``build_model_frame``. Also doubles as the rolling-minutes match
+    stream inside ``build_feature_frame``, so it carries ``kickoff_time``.
     """
     return pl.DataFrame(
         {
             "season": ["2022-23"] * 3,
             "gw": [1, 1, 1],
             "element": [1, 2, 3],
+            "kickoff_time": [datetime(2022, 8, 6, 15, 0)] * 3,
             "minutes": [90, 0, 45],
             "total_points": [6, 0, 2],
         }
@@ -710,8 +712,6 @@ def test_num_features_includes_history_and_cold_start() -> None:
 
 def test_build_feature_frame_emits_every_declared_feature() -> None:
     """Every name in FEATURES exists as a column on the built frame."""
-    from datetime import datetime
-
     from fantasy_football.modelling.minutes import (
         FEATURES,
         build_feature_frame,
@@ -742,6 +742,10 @@ def test_build_feature_frame_emits_every_declared_feature() -> None:
             "gw": [1, 2],
             "element": [10, 10],
             "opponent": [3, 4],
+            "kickoff_time": [
+                datetime(2023, 8, 12, 15, 0),
+                datetime(2023, 8, 19, 15, 0),
+            ],
             "minutes": [90, 80],
             "total_points": [8, 5],
         }

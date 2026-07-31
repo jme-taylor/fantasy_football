@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 import polars as pl
 import pytest
 
@@ -7,6 +9,28 @@ from fantasy_football.features.availability import (
     add_positional_availability,
     add_rolling_minutes,
 )
+
+
+def _codes(pairs: list[tuple[str, int, int]]) -> pl.DataFrame:
+    """Build a minimal player_season identity frame.
+
+    Parameters
+    ----------
+    pairs : list[tuple[str, int, int]]
+        ``(season, element, player_code)`` triples.
+
+    Returns
+    -------
+    pl.DataFrame
+        Identity rows with ``season``, ``element`` and ``player_code``.
+    """
+    return pl.DataFrame(
+        {
+            "season": [p[0] for p in pairs],
+            "element": [p[1] for p in pairs],
+            "player_code": [p[2] for p in pairs],
+        }
+    )
 
 
 @pytest.fixture
@@ -28,11 +52,48 @@ def sample_minutes_data() -> pl.DataFrame:
     )
 
 
+@pytest.fixture
+def sample_match_stream(sample_minutes_data: pl.DataFrame) -> pl.DataFrame:
+    """Match-grain view of ``sample_minutes_data`` with kickoff times added.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``sample_minutes_data`` with a ``kickoff_time`` column, one week
+        apart and in the same order as ``gw``.
+    """
+    n = sample_minutes_data.height
+    return sample_minutes_data.with_columns(
+        kickoff_time=pl.Series(
+            [datetime(2020, 8, 1) + timedelta(weeks=i) for i in range(n)]
+        )
+    )
+
+
+@pytest.fixture
+def sample_player_season() -> pl.DataFrame:
+    """Identity frame mapping element 1 to player_code 1 in 2020-21.
+
+    Returns
+    -------
+    pl.DataFrame
+        A single ``(season, element, player_code)`` row.
+    """
+    return _codes([("2020-21", 1, 1)])
+
+
 def test_add_rolling_minutes_averages_prior_games(
     sample_minutes_data: pl.DataFrame,
+    sample_match_stream: pl.DataFrame,
+    sample_player_season: pl.DataFrame,
 ) -> None:
     """The window averages prior gameweeks and excludes the current one."""
-    result = add_rolling_minutes(sample_minutes_data, rolling_window=3)
+    result = add_rolling_minutes(
+        sample_minutes_data,
+        sample_match_stream,
+        sample_player_season,
+        rolling_window=3,
+    )
 
     by_gw = {
         row["gw"]: row["avg_minutes_rolling_3"]
@@ -46,9 +107,16 @@ def test_add_rolling_minutes_averages_prior_games(
 
 def test_add_rolling_minutes_null_for_first_game(
     sample_minutes_data: pl.DataFrame,
+    sample_match_stream: pl.DataFrame,
+    sample_player_season: pl.DataFrame,
 ) -> None:
     """A player's first game of a season has no prior data, so it is null."""
-    result = add_rolling_minutes(sample_minutes_data, rolling_window=3)
+    result = add_rolling_minutes(
+        sample_minutes_data,
+        sample_match_stream,
+        sample_player_season,
+        rolling_window=3,
+    )
 
     gw1 = result.filter(pl.col("gw") == 1)
     assert gw1.get_column("avg_minutes_rolling_3").item() is None
@@ -56,9 +124,16 @@ def test_add_rolling_minutes_null_for_first_game(
 
 def test_add_rolling_minutes_partial_window(
     sample_minutes_data: pl.DataFrame,
+    sample_match_stream: pl.DataFrame,
+    sample_player_season: pl.DataFrame,
 ) -> None:
     """Before the window fills, the average uses whatever prior games exist."""
-    result = add_rolling_minutes(sample_minutes_data, rolling_window=3)
+    result = add_rolling_minutes(
+        sample_minutes_data,
+        sample_match_stream,
+        sample_player_season,
+        rolling_window=3,
+    )
 
     by_gw = {
         row["gw"]: row["avg_minutes_rolling_3"]
@@ -70,31 +145,110 @@ def test_add_rolling_minutes_partial_window(
     assert by_gw[3] == pytest.approx(75.0)
 
 
-def test_add_rolling_minutes_does_not_bleed_across_seasons() -> None:
-    """The window resets each season and never mixes two players' minutes.
-
-    The same ``element`` id refers to different players in different seasons,
-    so the rolling window must partition by ``(season, element)``.
-    """
-    data = pl.DataFrame(
+def test_rolling_minutes_reaches_across_the_season_boundary() -> None:
+    """GW1 of a new season uses last season's final matches, not null."""
+    stream = pl.DataFrame(
         {
-            "season": ["2020-21", "2020-21", "2021-22", "2021-22"],
-            "gw": [1, 2, 1, 2],
-            "element": [1, 1, 1, 1],
-            "minutes": [90, 90, 0, 30],
-        }
+            "season": ["2025-26"] * 3 + ["2026-27"],
+            "gw": [36, 37, 38, 1],
+            "element": [10, 10, 10, 55],
+            "kickoff_time": [
+                datetime(2026, 5, 3, 14, 0),
+                datetime(2026, 5, 10, 14, 0),
+                datetime(2026, 5, 17, 14, 0),
+                datetime(2026, 8, 21, 19, 0),
+            ],
+            "minutes": [90, 60, 30, None],
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+    # Same person: element 10 in 2025-26 becomes element 55 in 2026-27.
+    codes = _codes([("2025-26", 10, 999), ("2026-27", 55, 999)])
+    weeks = pl.DataFrame({"season": ["2026-27"], "gw": [1], "element": [55]})
+
+    result = add_rolling_minutes(weeks, stream, codes, rolling_window=5)
+
+    # (90 + 60 + 30) / 3 = 60.0 — carried across the summer break.
+    assert result["avg_minutes_rolling_5"][0] == pytest.approx(60.0)
+
+
+def test_rolling_minutes_does_not_pool_reused_element_ids() -> None:
+    """841 element ids map to 2+ players; they must never be merged."""
+    stream = pl.DataFrame(
+        {
+            "season": ["2025-26", "2026-27"],
+            "gw": [38, 1],
+            "element": [10, 10],
+            "kickoff_time": [
+                datetime(2026, 5, 17, 14, 0),
+                datetime(2026, 8, 21, 19, 0),
+            ],
+            "minutes": [90, None],
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+    # Different people who happen to share element id 10.
+    codes = _codes([("2025-26", 10, 111), ("2026-27", 10, 222)])
+    weeks = pl.DataFrame({"season": ["2026-27"], "gw": [1], "element": [10]})
+
+    result = add_rolling_minutes(weeks, stream, codes, rolling_window=5)
+
+    assert result["avg_minutes_rolling_5"][0] is None
+
+
+def test_rolling_minutes_orders_by_kickoff_not_gameweek() -> None:
+    """A rescheduled fixture sorts by when it was played, not its gw."""
+    stream = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 3,
+            "gw": [5, 3, 6],
+            "element": [1] * 3,
+            # GW3 was postponed and played after GW5.
+            "kickoff_time": [
+                datetime(2026, 9, 12, 14, 0),
+                datetime(2026, 9, 20, 14, 0),
+                datetime(2026, 9, 26, 14, 0),
+            ],
+            "minutes": [90, 0, None],
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+    codes = _codes([("2026-27", 1, 777)])
+    weeks = pl.DataFrame({"season": ["2026-27"], "gw": [6], "element": [1]})
+
+    result = add_rolling_minutes(weeks, stream, codes, rolling_window=5)
+
+    # Both prior matches count regardless of gw order: (90 + 0) / 2 = 45.0
+    assert result["avg_minutes_rolling_5"][0] == pytest.approx(45.0)
+
+
+def test_rolling_minutes_excludes_null_player_codes() -> None:
+    """Null codes must be dropped, never pooled into one partition."""
+    stream = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 2,
+            "gw": [1, 1],
+            "element": [1, 2],
+            "kickoff_time": [datetime(2026, 8, 21, 19, 0)] * 2,
+            "minutes": [90, 45],
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+    codes = pl.DataFrame(
+        {
+            "season": ["2026-27", "2026-27"],
+            "element": [1, 2],
+            "player_code": [None, None],
+        },
+        schema_overrides={"player_code": pl.Int64},
+    )
+    weeks = pl.DataFrame(
+        {"season": ["2026-27"] * 2, "gw": [1, 1], "element": [1, 2]}
     )
 
-    result = add_rolling_minutes(data, rolling_window=3)
+    result = add_rolling_minutes(weeks, stream, codes, rolling_window=5)
 
-    by_key = {
-        (row["season"], row["gw"]): row["avg_minutes_rolling_3"]
-        for row in result.iter_rows(named=True)
-    }
-    # 2021-22 GW1 is a fresh season: no prior data despite 2020-21 rows.
-    assert by_key[("2021-22", 1)] is None
-    # 2021-22 GW2 averages only 2021-22 GW1 (0), not last season's 90s.
-    assert by_key[("2021-22", 2)] == pytest.approx(0.0)
+    assert result["avg_minutes_rolling_5"].null_count() == 2
 
 
 def test_add_chance_of_playing_joins_known_value() -> None:
