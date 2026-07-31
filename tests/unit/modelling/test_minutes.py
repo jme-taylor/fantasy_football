@@ -545,7 +545,12 @@ from fantasy_football.modelling.minutes import (
     backfill_minutes,  # noqa: E402
 )
 from fantasy_football.storage.database import get_connection  # noqa: E402
-from fantasy_football.storage.tables import MINUTES_PREDICTION  # noqa: E402
+from fantasy_football.storage.tables import (  # noqa: E402
+    MINUTES_PREDICTION,
+    PLAYER_SNAPSHOT,
+    PLAYER_WEEK,
+    TEAM_FIXTURE,
+)
 
 
 class _ConstantModel:
@@ -704,6 +709,129 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
     historic = out.filter(pl.col("season") == "2024-25")
     # Sentinel overwritten by a fresh score.
     assert historic["expected_minutes"].to_list() != [999.0]
+
+
+def test_score_forward_minutes_freezes_already_played_gameweeks(
+    tmp_path, mocker: pytest_mock.MockerFixture
+) -> None:
+    """A played gameweek's stored forecast survives a fresh forward score.
+
+    GW1 has been played (player_week has a row for it), so
+    ``from_gw = last_played_gw + 1 == 2``. A forward row is pre-seeded at
+    GW1 -- below that floor -- as a sentinel. If ``replace_partition``
+    were called without ``gw_from`` (or with the wrong value), the delete
+    would remove every stored forward row for the season before
+    inserting only the fresh GW2 rows, destroying the GW1 sentinel. This
+    test fails under that regression and passes only when the freeze
+    rule is actually honoured.
+    """
+    db_path = tmp_path / "forward.duckdb"
+    connection = get_connection(db_path)
+    try:
+        PLAYER_WEEK.append(
+            connection,
+            pl.DataFrame(
+                {
+                    "season": [CURRENT_SEASON],
+                    "gw": [1],
+                    "element": [5],
+                    "name": ["Test Player"],
+                    "position": ["MID"],
+                    "team": ["Arsenal"],
+                    "bonus": [0],
+                    "minutes": [90],
+                    "round": [1],
+                    "total_points": [6],
+                    "value": [100],
+                }
+            ),
+        )
+        TEAM_FIXTURE.append(
+            connection,
+            pl.DataFrame(
+                {
+                    "season": [CURRENT_SEASON, CURRENT_SEASON],
+                    "gw": [1, 2],
+                    "team": ["Arsenal", "Arsenal"],
+                    "is_home": [True, False],
+                    "opposition": ["Everton", "Chelsea"],
+                    "kickoff_time": [
+                        datetime(2026, 8, 15, 15, 0),
+                        datetime(2026, 8, 22, 15, 0),
+                    ],
+                }
+            ),
+        )
+        PLAYER_SNAPSHOT.append(
+            connection,
+            pl.DataFrame(
+                {
+                    "season": [CURRENT_SEASON],
+                    "captured_at": [datetime(2026, 8, 20, 9, 0)],
+                    "element": [5],
+                    "value": [100],
+                    "team": ["Arsenal"],
+                    "position": ["MID"],
+                    "chance_of_playing_this_round": [100],
+                }
+            ),
+        )
+        # Sentinel: a forward row already stored for GW1 -- below the
+        # floor -- must survive untouched.
+        MINUTES_PREDICTION.append(
+            connection,
+            pl.DataFrame(
+                {
+                    "season": [CURRENT_SEASON],
+                    "gw": [1],
+                    "element": [5],
+                    "opponent": [8],
+                    "p_zero": [0.0],
+                    "p_partial": [0.0],
+                    "p_sixty_plus": [1.0],
+                    "expected_minutes": [999.0],
+                    "model_version": ["1"],
+                    "prediction_kind": ["forward"],
+                    "snapshot_captured_at": [datetime(2026, 8, 13, 9, 0)],
+                }
+            ),
+        )
+    finally:
+        connection.close()
+
+    chelsea = SimpleNamespace(id=8, code=8, name="Chelsea", short_name="CHE")
+    everton = SimpleNamespace(id=7, code=7, name="Everton", short_name="EVE")
+    mocker.patch(
+        "fantasy_football.modelling.minutes.get_production_model",
+        return_value=("2", _ConstantModel()),
+    )
+    mocker.patch(
+        "fantasy_football.modelling.minutes.get_connection",
+        side_effect=lambda: get_connection(db_path),
+    )
+    fpl_api = mocker.Mock()
+    fpl_api.get_teams.return_value = [chelsea, everton]
+    mocker.patch(
+        "fantasy_football.modelling.minutes.FplAPI", return_value=fpl_api
+    )
+
+    score_forward_minutes()
+
+    conn = get_connection(db_path)
+    try:
+        out = MINUTES_PREDICTION.load(conn)
+    finally:
+        conn.close()
+
+    gw1 = out.filter(pl.col("gw") == 1)
+    # The sentinel below the floor was never touched.
+    assert gw1["expected_minutes"].to_list() == [999.0]
+    assert gw1["model_version"].to_list() == ["1"]
+    # GW2 -- the unplayed fixture -- was freshly scored.
+    gw2 = out.filter(pl.col("gw") == 2)
+    assert gw2.height == 1
+    assert gw2["model_version"].to_list() == ["2"]
+    assert gw2["prediction_kind"].to_list() == ["forward"]
 
 
 def _model_frame_fixture(season: str = "2025-26") -> pl.DataFrame:

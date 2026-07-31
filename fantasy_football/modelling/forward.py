@@ -18,6 +18,7 @@ _WEEK_COLUMNS = [
     "team",
     "value",
     "minutes",
+    "chance_of_playing_this_round",
 ]
 
 

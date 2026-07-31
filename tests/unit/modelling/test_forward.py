@@ -158,6 +158,31 @@ def test_forward_player_weeks_collapses_double_gameweeks(
     assert weeks.select(["season", "gw", "element"]).is_unique().all()
 
 
+def test_forward_player_weeks_carries_chance_of_playing_through(
+    snapshot: pl.DataFrame, fixtures: pl.DataFrame
+) -> None:
+    """The snapshot's injury signal survives to the week grain.
+
+    It is the only injury signal available for an unplayed fixture, since
+    ``player_availability`` (fplcache) has no rows for a season still being
+    played -- so it must not be dropped in the match-to-week reduction.
+    """
+    ids = {"Chelsea": 7, "Everton": 8, "Fulham": 9}
+    forward = build_forward_fixtures(
+        snapshot, fixtures, "2026-27", from_gw=1, team_name_to_id=ids
+    )
+
+    weeks = forward_player_weeks(forward)
+
+    assert "chance_of_playing_this_round" in weeks.columns
+    by_element = {
+        row["element"]: row["chance_of_playing_this_round"]
+        for row in weeks.filter(pl.col("gw") == 1).iter_rows(named=True)
+    }
+    assert by_element[1] == 100
+    assert by_element[2] == 75
+
+
 def test_forward_player_weeks_keeps_the_earliest_kickoff_leg() -> None:
     """On a double, the surviving row is the earlier-kickoff fixture.
 

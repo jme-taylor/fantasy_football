@@ -83,15 +83,20 @@ def add_chance_of_playing(
 ) -> pl.DataFrame:
     """Join FPL's point-in-time ``chance_of_playing_this_round`` onto the data.
 
-    Left-joins the per-``(season, gw, element)`` availability frame onto
-    ``data``. Rows with no availability record (a gameweek fplcache did not
-    cover) default to ``100`` — the same convention as a ``null`` chance, which
+    ``data`` may already carry a ``chance_of_playing_this_round`` column --
+    the player snapshot's copy, injected onto synthetic forward rows since
+    ``player_availability`` (fplcache) has no rows for a season still being
+    played. When present and non-null, that value wins. Otherwise the
+    per-``(season, gw, element)`` availability frame is joined in. Rows with
+    neither (a gameweek fplcache did not cover, and no snapshot value)
+    default to ``100`` — the same convention as a ``null`` chance, which
     means the player carried no injury doubt.
 
     Parameters
     ----------
     data : pl.DataFrame
-        Player data containing ``season``, ``gw`` and ``element``.
+        Player data containing ``season``, ``gw`` and ``element``, and
+        optionally an existing ``chance_of_playing_this_round`` column.
     availability : pl.DataFrame
         Availability rows with ``season``, ``gw``, ``element`` and
         ``chance_of_playing_this_round`` (e.g. from
@@ -100,8 +105,14 @@ def add_chance_of_playing(
     Returns
     -------
     pl.DataFrame
-        ``data`` with a ``chance_of_playing_this_round`` column added.
+        ``data`` with a ``chance_of_playing_this_round`` column added
+        (or overwritten, coalesced as described above).
     """
+    has_existing = "chance_of_playing_this_round" in data.columns
+    if has_existing:
+        data = data.rename(
+            {"chance_of_playing_this_round": "_snapshot_chance"}
+        )
     joined = data.join(
         availability.select(
             ["season", "gw", "element", "chance_of_playing_this_round"]
@@ -110,6 +121,12 @@ def add_chance_of_playing(
         how="left",
         coalesce=True,
     )
+    if has_existing:
+        joined = joined.with_columns(
+            pl.col("_snapshot_chance")
+            .fill_null(pl.col("chance_of_playing_this_round"))
+            .alias("chance_of_playing_this_round")
+        ).drop("_snapshot_chance")
     return joined.with_columns(
         pl.col("chance_of_playing_this_round").fill_null(100)
     )

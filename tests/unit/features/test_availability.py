@@ -323,6 +323,87 @@ def test_add_chance_of_playing_mixed_rows_no_fan_out_or_key_leak() -> None:
     assert "element_right" not in result.columns
 
 
+def test_add_chance_of_playing_prefers_existing_non_null_value() -> None:
+    """A non-null snapshot value on the incoming frame wins over the join.
+
+    Forward rows carry the player snapshot's own
+    ``chance_of_playing_this_round`` -- the only injury signal available
+    for a season still being played, since ``player_availability``
+    (fplcache) has no rows for it yet. That value must not be clobbered
+    by a stale or absent availability-table join.
+    """
+    data = pl.DataFrame(
+        {
+            "season": ["2026-27"],
+            "gw": [2],
+            "element": [10],
+            "chance_of_playing_this_round": [50],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2026-27"],
+            "gw": [2],
+            "element": [10],
+            "chance_of_playing_this_round": [100],
+        }
+    )
+
+    result = add_chance_of_playing(data, availability)
+
+    assert result["chance_of_playing_this_round"].to_list() == [50]
+
+
+def test_add_chance_of_playing_falls_back_to_join_when_existing_is_null() -> (
+    None
+):
+    """A null existing value still uses the availability join, not 100."""
+    data = pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "element": [10],
+            "chance_of_playing_this_round": [None],
+        },
+        schema_overrides={"chance_of_playing_this_round": pl.Int64},
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "element": [10],
+            "chance_of_playing_this_round": [25],
+        }
+    )
+
+    result = add_chance_of_playing(data, availability)
+
+    assert result["chance_of_playing_this_round"].to_list() == [25]
+
+
+def test_add_chance_of_playing_no_existing_column_behaves_as_before() -> None:
+    """Absent the column entirely, behaviour is unchanged: join then default."""
+    data = pl.DataFrame(
+        {
+            "season": ["2022-23", "2022-23"],
+            "gw": [1, 2],
+            "element": [10, 99],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "element": [10],
+            "chance_of_playing_this_round": [25],
+        }
+    )
+
+    result = add_chance_of_playing(data, availability)
+
+    assert result["chance_of_playing_this_round"].to_list() == [25, 100]
+
+
 @pytest.fixture
 def sample_positional_data() -> pl.DataFrame:
     """One club+position group at a single gameweek, with mixed fitness.
