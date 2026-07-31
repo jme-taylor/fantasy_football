@@ -13,11 +13,7 @@ from typing import TYPE_CHECKING
 from fantasy_football.constants import CURRENT_SEASON, FPLCACHE_FIRST_SEASON
 from fantasy_football.extraction.fplcache import FplCacheExtractor
 from fantasy_football.extraction.seasons import seasons_in_range
-from fantasy_football.storage.database import (
-    player_availability_seasons_present,
-    upsert_current_player_availability,
-    write_immutable_player_availability,
-)
+from fantasy_football.storage.tables import PLAYER_AVAILABILITY
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -42,7 +38,7 @@ def load_player_availability_data(
         fplcache extractor. Defaults to a new ``FplCacheExtractor``.
     """
     extractor = extractor or FplCacheExtractor()
-    present = player_availability_seasons_present(connection)
+    present = PLAYER_AVAILABILITY.seasons_present(connection)
     for season in seasons_in_range(FPLCACHE_FIRST_SEASON, current_season):
         if season != current_season and season in present:
             logger.info(
@@ -53,6 +49,6 @@ def load_player_availability_data(
             continue
         frame = extractor.build_player_chance_of_playing(season)
         if season == current_season:
-            upsert_current_player_availability(connection, frame, season)
+            PLAYER_AVAILABILITY.upsert_current(connection, frame, season)
         else:
-            write_immutable_player_availability(connection, frame, season)
+            PLAYER_AVAILABILITY.write_immutable(connection, frame, season)

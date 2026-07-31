@@ -30,6 +30,31 @@ _CHANCE_OF_PLAYING_SCHEMA: dict[str, pl.DataType] = {
 }
 
 
+def _season_window(season: str) -> tuple[datetime, datetime]:
+    """Return the earliest and latest plausible deadline for a season.
+
+    A Premier League season's gameweek deadlines fall between June of its
+    start year and the end of June in its end year. The window is
+    deliberately wide: it exists to catch a whole-season mismatch, not to
+    validate individual fixtures.
+
+    Parameters
+    ----------
+    season : str
+        Short-form season string, e.g. ``"2026-27"``.
+
+    Returns
+    -------
+    tuple[datetime, datetime]
+        Inclusive ``(start, end)`` bounds in UTC.
+    """
+    start_year = int(season[:4])
+    return (
+        datetime(start_year, 6, 1, tzinfo=timezone.utc),
+        datetime(start_year + 1, 7, 1, tzinfo=timezone.utc),
+    )
+
+
 class FplCacheExtractor:
     """Resolve each gameweek's player->team_code map from fplcache snapshots."""
 
@@ -241,18 +266,77 @@ class FplCacheExtractor:
         -------
         dict[int, datetime]
             ``{event_id: deadline_time}`` for the season.
+
+        Raises
+        ------
+        ValueError
+            If the resolved deadlines fall outside ``season``'s own window,
+            meaning the snapshot belongs to a different season.
         """
         try:
             path = self._snapshot_path_for(self._season_probe_datetime(season))
         except ValueError:
             path = self._latest_snapshot_path()
         snapshot = self._read_snapshot(path)
-        return {
+        deadlines = {
             event["id"]: datetime.fromisoformat(
                 event["deadline_time"].replace("Z", "+00:00")
             )
             for event in snapshot["events"]
         }
+        start, end = _season_window(season)
+        outside = [
+            gw
+            for gw, deadline in deadlines.items()
+            if not start <= deadline <= end
+        ]
+        if outside:
+            raise ValueError(
+                f"Snapshot {path} does not hold {season} deadlines: "
+                f"gameweeks {sorted(outside)} fall outside "
+                f"{start.date()}..{end.date()}. The fplcache fallback "
+                f"probably returned a different season's events."
+            )
+        return deadlines
+
+    def played_gameweeks(
+        self,
+        season: str,
+        gameweeks: list[int],
+        now: datetime | None = None,
+    ) -> list[int]:
+        """Return the gameweeks whose deadline has already passed.
+
+        FCI creates all 38 gameweek folders before a season kicks off, so the
+        folder list alone says nothing about what has been played. A passed
+        deadline is the cheap first test: it needs only the deadline map, so
+        callers can narrow the gameweek list before downloading any CSV.
+
+        Gameweeks missing from the season's deadline map are excluded — FCI
+        occasionally lists a folder FPL's ``events`` array does not carry.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2026-27"``.
+        gameweeks : list[int]
+            Candidate gameweek numbers.
+        now : datetime | None, optional
+            Timezone-aware instant to compare deadlines against. Defaults to
+            the current UTC time.
+
+        Returns
+        -------
+        list[int]
+            Ascending gameweek numbers whose deadline is at or before ``now``.
+        """
+        moment = now or datetime.now(timezone.utc)
+        deadlines = self.season_event_deadlines(season)
+        return sorted(
+            gw
+            for gw in gameweeks
+            if gw in deadlines and deadlines[gw] <= moment
+        )
 
     def build_player_chance_of_playing(
         self, season: str, gameweeks: list[int] | None = None
@@ -312,3 +396,61 @@ class FplCacheExtractor:
         if not frames:
             return pl.DataFrame(schema=_CHANCE_OF_PLAYING_SCHEMA)
         return pl.concat(frames, how="vertical")
+
+    def build_player_bio(self, season: str) -> pl.DataFrame:
+        """Read static player bio fields from the season's GW1 snapshot.
+
+        These fields exist only in the fplcache bootstrap snapshots (2022-23
+        onwards); neither Vaastav's earlier files nor FCI's ``players.csv``
+        carry ``birth_date``. GW1 is used because every registered player is
+        present at the season's start.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2025-26"``.
+
+        Returns
+        -------
+        pl.DataFrame
+            One row per ``element`` with ``birth_date``, ``region`` and
+            ``team_join_date``. Empty when the season has no GW1 snapshot yet.
+        """
+        empty = pl.DataFrame(
+            schema={
+                "element": pl.Int64,
+                "birth_date": pl.Date,
+                "region": pl.Int64,
+                "team_join_date": pl.Date,
+            }
+        )
+        deadlines = self.season_event_deadlines(season)
+        try:
+            path = self._snapshot_path_for(deadlines[1])
+        except (KeyError, ValueError):
+            logger.warning(
+                "No fplcache snapshot for %s GW1; no bio data available.",
+                season,
+            )
+            return empty
+
+        elements = self._read_snapshot(path)["elements"]
+        return pl.DataFrame(
+            {
+                "element": [e["id"] for e in elements],
+                "birth_date": [e.get("birth_date") for e in elements],
+                "region": [e.get("region") for e in elements],
+                "team_join_date": [e.get("team_join_date") for e in elements],
+            },
+            schema={
+                "element": pl.Int64,
+                "birth_date": pl.Utf8,
+                "region": pl.Int64,
+                "team_join_date": pl.Utf8,
+            },
+        ).with_columns(
+            pl.col("birth_date").str.to_date(format="%Y-%m-%d", strict=False),
+            pl.col("team_join_date").str.to_date(
+                format="%Y-%m-%d", strict=False
+            ),
+        )

@@ -303,3 +303,39 @@ def test_positional_availability_null_chance_counts_as_fit() -> None:
     }
     # Element 2 sees element 1 as a fit rival because null is treated as fit.
     assert by_element[2] == 1
+
+
+def test_add_games_played_excludes_the_current_gameweek() -> None:
+    """A player's first gameweek has zero prior games, the second has one."""
+    from fantasy_football.features.availability import (
+        add_games_played_this_season,
+    )
+
+    data = pl.DataFrame(
+        {
+            "season": ["2023-24"] * 3,
+            "gw": [1, 2, 3],
+            "element": [10, 10, 10],
+        }
+    )
+    result = add_games_played_this_season(data).sort("gw")
+
+    assert result["games_played_this_season"].to_list() == [0, 1, 2]
+
+
+def test_add_games_played_resets_each_season() -> None:
+    """The count restarts at zero in a new season."""
+    from fantasy_football.features.availability import (
+        add_games_played_this_season,
+    )
+
+    data = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24", "2024-25"],
+            "gw": [1, 2, 1],
+            "element": [10, 10, 55],
+        }
+    )
+    result = add_games_played_this_season(data).sort(["season", "gw"])
+
+    assert result["games_played_this_season"].to_list() == [0, 1, 0]

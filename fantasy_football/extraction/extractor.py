@@ -9,12 +9,7 @@ import requests
 from dotenv import load_dotenv
 
 from fantasy_football.constants import DATA_FOLDER, VASTAAV_BRIDGE_SEASONS
-from fantasy_football.storage.database import (
-    player_match_seasons_present,
-    seasons_present,
-    write_immutable_player_match,
-    write_immutable_season,
-)
+from fantasy_football.storage.tables import PLAYER_MATCH, PLAYER_WEEK
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -292,7 +287,24 @@ class DataExtractor:
         url = self.api_client.get_raw_file_url(file_path)
         response = requests.get(url)
         response.raise_for_status()
-        return pl.read_csv(io.BytesIO(response.content))
+        return pl.read_csv(
+            io.BytesIO(response.content), infer_schema_length=10000
+        )
+
+    def read_players_raw(self, season: str) -> pl.DataFrame:
+        """Download a season's ``players_raw.csv`` from the Vaastav repo.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2023-24"``.
+
+        Returns
+        -------
+        pl.DataFrame
+            The parsed file, one row per registered player.
+        """
+        return self._read_csv(f"data/{season}/players_raw.csv")
 
     def load_immutable_seasons(
         self,
@@ -321,7 +333,7 @@ class DataExtractor:
             if bridge_seasons is not None
             else VASTAAV_BRIDGE_SEASONS
         )
-        present = seasons_present(connection)
+        present = PLAYER_WEEK.seasons_present(connection)
 
         for season in seasons:
             if season in present:
@@ -331,7 +343,7 @@ class DataExtractor:
                 pl.lit(season).alias("season")
             )
             shaped = _collapse_double_gameweeks(shaped)
-            write_immutable_season(connection, shaped, season)
+            PLAYER_WEEK.write_immutable(connection, shaped, season)
 
         if not _historic_loaded(present, current_season, seasons):
             aggregate = self._read_csv(self.HISTORIC_FILE).rename(
@@ -340,7 +352,7 @@ class DataExtractor:
             aggregate = _collapse_double_gameweeks(aggregate)
             for season in sorted(aggregate["season"].unique().to_list()):
                 slice_ = aggregate.filter(pl.col("season") == season)
-                write_immutable_season(connection, slice_, season)
+                PLAYER_WEEK.write_immutable(connection, slice_, season)
 
     def load_immutable_player_match_seasons(
         self,
@@ -368,7 +380,7 @@ class DataExtractor:
             if bridge_seasons is not None
             else VASTAAV_BRIDGE_SEASONS
         )
-        present = player_match_seasons_present(connection)
+        present = PLAYER_MATCH.seasons_present(connection)
 
         for season in seasons:
             if season in present:
@@ -377,7 +389,7 @@ class DataExtractor:
             shaped = bridge.rename({"GW": "gw"}).with_columns(
                 pl.lit(season).alias("season")
             )
-            write_immutable_player_match(
+            PLAYER_MATCH.write_immutable(
                 connection, _build_player_match(shaped), season
             )
 
@@ -387,6 +399,6 @@ class DataExtractor:
             )
             for season in sorted(aggregate["season"].unique().to_list()):
                 slice_ = aggregate.filter(pl.col("season") == season)
-                write_immutable_player_match(
+                PLAYER_MATCH.write_immutable(
                     connection, _build_player_match(slice_), season
                 )

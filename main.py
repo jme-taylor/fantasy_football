@@ -11,6 +11,9 @@ from fantasy_football.extraction.availability import (
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fci import FciExtractor
 from fantasy_football.extraction.fixtures import load_fixtures
+from fantasy_football.extraction.player_identity import (
+    load_player_identity_data,
+)
 from fantasy_football.extraction.player_match import (
     load_current_season_player_match,
 )
@@ -37,35 +40,6 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
-
-
-def train_minutes_model() -> None:
-    """Train and score the minutes model, never letting it block the plan.
-
-    The minutes model runs on every data refresh, but a modelling failure must
-    not abort prediction and optimisation, so any exception is logged and
-    swallowed.
-    """
-    try:
-        run_minutes_model()
-    except Exception:  # noqa: BLE001 - modelling must never block the plan
-        logger.exception(
-            "Minutes model training/scoring failed; continuing without it."
-        )
-
-
-def run_minutes_backfill() -> None:
-    """Backfill minutes predictions from the production model, non-fatally.
-
-    Loads the ``production``-aliased model and persists per-match predictions
-    (version-gated: historic seasons only re-scored on a version change). A
-    missing alias or any failure is logged and swallowed so it never blocks
-    prediction and optimisation.
-    """
-    try:
-        backfill_minutes()
-    except Exception:  # noqa: BLE001 - modelling must never block the plan
-        logger.exception("Minutes backfill failed; continuing without it.")
 
 
 def update_current_season(
@@ -150,14 +124,15 @@ def main(
         load_fixtures(connection, CURRENT_SEASON)
         load_player_match_data(CURRENT_SEASON, connection)
         load_player_availability_data(connection, CURRENT_SEASON)
+        load_player_identity_data(connection, CURRENT_SEASON)
     finally:
         connection.close()
 
     create_rolling_points_data(CURRENT_SEASON)
     build_fixtures_enriched(CURRENT_SEASON)
     build_team_elo()
-    train_minutes_model()
-    run_minutes_backfill()
+    run_minutes_model()
+    backfill_minutes()
     if evaluate:
         run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None

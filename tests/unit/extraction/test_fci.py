@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import polars as pl
 import pytest
 from pytest_mock import MockerFixture
@@ -247,15 +249,84 @@ def test_fetch_season_frames_raises_when_no_gameweeks(
         extractor.fetch_season_frames("2025-2026")
 
 
+def test_fetch_season_frames_uses_supplied_gameweeks(
+    mocker: MockerFixture,
+) -> None:
+    """An explicit gameweek list is used instead of calling list_gameweeks.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    listed = mocker.patch.object(
+        extractor, "list_gameweeks", return_value=[1, 2, 3]
+    )
+
+    def fake_read_csv(path: str) -> pl.DataFrame:
+        """Return a minimally-shaped frame for whichever file is asked for.
+
+        Parameters
+        ----------
+        path : str
+            Repo-relative CSV path.
+
+        Returns
+        -------
+        pl.DataFrame
+            A one-row frame carrying the columns the adapter selects.
+        """
+        if "player_gameweek_stats" in path:
+            return pl.DataFrame(
+                {
+                    "id": [1],
+                    "first_name": ["David"],
+                    "second_name": ["Raya"],
+                    "now_cost": [6.0],
+                    "event_points": [6],
+                    "bonus": [1],
+                }
+            )
+        if "playermatchstats" in path:
+            return pl.DataFrame(
+                {
+                    "player_id": [1],
+                    "minutes_played": [90],
+                    "match_id": ["26-27-prem-arsenal-vs-chelsea"],
+                }
+            )
+        return pl.DataFrame(
+            {"player_id": [1], "position": ["Goalkeeper"], "team_code": [3]}
+        )
+
+    read = mocker.patch.object(
+        extractor, "_read_csv", side_effect=fake_read_csv
+    )
+
+    extractor.fetch_season_frames("2026-2027", gameweeks=[2])
+
+    listed.assert_not_called()
+    paths = [call.args[0] for call in read.call_args_list]
+    assert any("GW2/player_gameweek_stats.csv" in p for p in paths)
+    assert not any("GW1/" in p for p in paths)
+    assert not any("GW3/" in p for p in paths)
+
+
 def test_build_current_season_merged_gw_upserts_to_db(
     mocker: MockerFixture, tmp_path
 ) -> None:
-    """End-to-end build upserts player-week rows readable via load_player_week."""
-    from fantasy_football.storage.database import (
-        PLAYER_WEEK_COLUMNS,
-        get_connection,
-        load_player_week,
-    )
+    """Build upserts player-week rows.
+
+    Readable back via ``PLAYER_WEEK.load``.
+    """
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     extractor = FciExtractor(
         api_client=GitHubAPIClient(
@@ -277,15 +348,18 @@ def test_build_current_season_merged_gw_upserts_to_db(
         return_value=PLAYER_GW_TEAM,
     )
     mocker.patch.object(extractor, "list_gameweeks", return_value=[1, 2])
+    mocker.patch.object(
+        extractor.fpl_cache, "played_gameweeks", return_value=[1, 2]
+    )
 
     connection = get_connection(tmp_path / "t.duckdb")
     try:
         extractor.build_current_season_merged_gw("2025-26", connection)
-        stored = load_player_week(connection)
+        stored = PLAYER_WEEK.load(connection)
     finally:
         connection.close()
 
-    assert stored.columns == PLAYER_WEEK_COLUMNS
+    assert stored.columns == PLAYER_WEEK.columns
     assert stored.height == 4
     assert stored["season"].unique().to_list() == ["2025-26"]
 
@@ -367,3 +441,325 @@ def test_fetch_season_frames_drops_inconsistent_unused_columns(
     # bonus drifts Int64/Float64 across gameweeks but is normalised to Int64.
     assert snapshots.schema["bonus"] == pl.Int64
     assert matchstats.height == 4
+
+
+def _preseason_extractor(mocker: MockerFixture) -> FciExtractor:
+    """Build an extractor whose season has 38 folders but nothing played.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+
+    Returns
+    -------
+    FciExtractor
+        Extractor with FCI and fplcache calls stubbed.
+    """
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    mocker.patch.object(
+        extractor, "list_gameweeks", return_value=list(range(1, 39))
+    )
+    mocker.patch.object(
+        extractor.fpl_cache, "played_gameweeks", return_value=[]
+    )
+    return extractor
+
+
+def test_build_current_season_ingests_nothing_before_season_starts(
+    mocker: MockerFixture, tmp_path
+) -> None:
+    """Pre-season: no rows are written and the database is left untouched.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    tmp_path : pathlib.Path
+        Pytest temporary directory fixture.
+    """
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
+
+    extractor = _preseason_extractor(mocker)
+    fetch = mocker.patch.object(extractor, "fetch_season_frames")
+    build_team = mocker.patch.object(
+        extractor.fpl_cache, "build_player_gw_team"
+    )
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        result = extractor.build_current_season_merged_gw(
+            "2026-27", connection
+        )
+        stored = PLAYER_WEEK.load(connection)
+    finally:
+        connection.close()
+
+    assert result.height == 0
+    assert stored.height == 0
+    fetch.assert_not_called()
+    build_team.assert_not_called()
+
+
+def test_build_current_season_does_not_wipe_existing_rows(
+    mocker: MockerFixture, tmp_path
+) -> None:
+    """A no-op run must not delete rows a previous run stored.
+
+    ``PLAYER_WEEK.upsert_current`` is delete-then-insert, so calling it with an
+    empty frame would blank the season. It must be skipped entirely.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    tmp_path : pathlib.Path
+        Pytest temporary directory fixture.
+    """
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
+
+    merged = build_merged_gw(
+        SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
+    )
+    seeded = merged.rename({"GW": "gw"}).with_columns(
+        pl.lit("2026-27").alias("season")
+    )
+
+    extractor = _preseason_extractor(mocker)
+    mocker.patch.object(extractor, "fetch_season_frames")
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        PLAYER_WEEK.upsert_current(connection, seeded, "2026-27")
+        extractor.build_current_season_merged_gw("2026-27", connection)
+        stored = PLAYER_WEEK.load(connection)
+    finally:
+        connection.close()
+
+    assert stored.height == 4
+
+
+def test_build_current_season_does_not_wipe_rows_when_no_prem_matches(
+    mocker: MockerFixture, tmp_path
+) -> None:
+    """A non-empty candidate list with no prem matches leaves rows intact.
+
+    Deadlines can pass for gameweeks FCI has not populated with Premier
+    League match data yet. ``_gameweeks_with_prem_matches`` then returns an
+    empty list even though ``played_gameweeks`` was non-empty, and that
+    second early return must also skip ``PLAYER_WEEK.upsert_current`` rather
+    than wiping the season with an empty frame.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    tmp_path : pathlib.Path
+        Pytest temporary directory fixture.
+    """
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
+
+    merged = build_merged_gw(
+        SNAPSHOTS, MATCHSTATS, PLAYERS, PLAYER_GW_TEAM, TEAM_CODE_TO_NAME
+    )
+    seeded = merged.rename({"GW": "gw"}).with_columns(
+        pl.lit("2026-27").alias("season")
+    )
+
+    non_prem_matchstats = pl.DataFrame(
+        {
+            "gw": [1, 2],
+            "player_id": [1, 1],
+            "match_id": [
+                "26-27-fa-cup-arsenal-vs-chelsea",
+                "26-27-fa-cup-arsenal-vs-chelsea",
+            ],
+            "minutes_played": [90, 90],
+        },
+        schema_overrides={"gw": pl.Int32},
+    )
+
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    mocker.patch.object(extractor, "list_gameweeks", return_value=[1, 2])
+    mocker.patch.object(
+        extractor.fpl_cache, "played_gameweeks", return_value=[1, 2]
+    )
+    mocker.patch.object(
+        extractor,
+        "fetch_season_frames",
+        return_value=(SNAPSHOTS, non_prem_matchstats, PLAYERS),
+    )
+    build_team = mocker.patch.object(
+        extractor.fpl_cache, "build_player_gw_team"
+    )
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        PLAYER_WEEK.upsert_current(connection, seeded, "2026-27")
+        extractor.build_current_season_merged_gw("2026-27", connection)
+        stored = PLAYER_WEEK.load(connection)
+    finally:
+        connection.close()
+
+    assert stored.height == 4
+    build_team.assert_not_called()
+
+
+def test_build_current_season_drops_gameweeks_with_no_match_rows(
+    mocker: MockerFixture, tmp_path
+) -> None:
+    """A deadline-passed gameweek FCI has not populated yet is excluded.
+
+    GW2's snapshot rows exist but no Premier League match rows back them, so
+    they must not become player-week rows.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    tmp_path : pathlib.Path
+        Pytest temporary directory fixture.
+    """
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
+
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    gw1_only = MATCHSTATS.filter(pl.col("gw") == 1)
+    mocker.patch.object(extractor, "list_gameweeks", return_value=[1, 2])
+    mocker.patch.object(
+        extractor.fpl_cache, "played_gameweeks", return_value=[1, 2]
+    )
+    mocker.patch.object(
+        extractor,
+        "fetch_season_frames",
+        return_value=(SNAPSHOTS, gw1_only, PLAYERS),
+    )
+    mocker.patch.object(
+        extractor, "_team_code_to_name", return_value=TEAM_CODE_TO_NAME
+    )
+    build_team = mocker.patch.object(
+        extractor.fpl_cache,
+        "build_player_gw_team",
+        return_value=PLAYER_GW_TEAM.filter(pl.col("gw") == 1),
+    )
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        extractor.build_current_season_merged_gw("2026-27", connection)
+        stored = PLAYER_WEEK.load(connection)
+    finally:
+        connection.close()
+
+    assert stored["gw"].unique().to_list() == [1]
+    assert stored.height == 2
+    assert build_team.call_args.args[1] == [1]
+
+
+def test_build_current_season_excludes_non_prem_only_gameweeks(
+    mocker: MockerFixture, tmp_path
+) -> None:
+    """A gameweek whose only match rows are cup ties is not ingested.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    tmp_path : pathlib.Path
+        Pytest temporary directory fixture.
+    """
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
+
+    cup_only = pl.DataFrame(
+        {
+            "gw": [2],
+            "player_id": [1],
+            "match_id": ["26-27-fa-cup-arsenal-vs-chelsea"],
+            "minutes_played": [90],
+        },
+        schema_overrides={"gw": pl.Int32},
+    )
+    matchstats = pl.concat(
+        [MATCHSTATS.filter(pl.col("gw") == 1), cup_only], how="vertical"
+    )
+
+    extractor = FciExtractor(
+        api_client=GitHubAPIClient(
+            api_key="k", owner="o", repo="r", branch="main"
+        ),
+        fpl_api=mocker.Mock(),
+    )
+    mocker.patch.object(extractor, "list_gameweeks", return_value=[1, 2])
+    mocker.patch.object(
+        extractor.fpl_cache, "played_gameweeks", return_value=[1, 2]
+    )
+    mocker.patch.object(
+        extractor,
+        "fetch_season_frames",
+        return_value=(SNAPSHOTS, matchstats, PLAYERS),
+    )
+    mocker.patch.object(
+        extractor, "_team_code_to_name", return_value=TEAM_CODE_TO_NAME
+    )
+    mocker.patch.object(
+        extractor.fpl_cache,
+        "build_player_gw_team",
+        return_value=PLAYER_GW_TEAM.filter(pl.col("gw") == 1),
+    )
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        extractor.build_current_season_merged_gw("2026-27", connection)
+        stored = PLAYER_WEEK.load(connection)
+    finally:
+        connection.close()
+
+    assert stored["gw"].unique().to_list() == [1]
+
+
+def test_build_current_season_passes_now_to_played_gameweeks(
+    mocker: MockerFixture, tmp_path
+) -> None:
+    """An injected ``now`` reaches the deadline filter.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    tmp_path : pathlib.Path
+        Pytest temporary directory fixture.
+    """
+    from fantasy_football.storage.database import get_connection
+
+    extractor = _preseason_extractor(mocker)
+    played = extractor.fpl_cache.played_gameweeks
+    mocker.patch.object(extractor, "fetch_season_frames")
+    now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+
+    connection = get_connection(tmp_path / "t.duckdb")
+    try:
+        extractor.build_current_season_merged_gw(
+            "2026-27", connection, now=now
+        )
+    finally:
+        connection.close()
+
+    assert played.call_args.kwargs["now"] == now

@@ -1,7 +1,9 @@
+from datetime import date
 from unittest import mock
 
 import numpy as np
 import polars as pl
+import pytest
 from sklearn.pipeline import Pipeline
 
 from fantasy_football.constants import (
@@ -71,9 +73,55 @@ def _availability() -> pl.DataFrame:
     )
 
 
+def _history_player_match() -> pl.DataFrame:
+    """Player-match rows for the history-feature join.
+
+    Distinct from the match-level ``player_match`` frame used by
+    ``build_model_frame``.
+    """
+    return pl.DataFrame(
+        {
+            "season": ["2022-23"] * 3,
+            "gw": [1, 1, 1],
+            "element": [1, 2, 3],
+            "minutes": [90, 0, 45],
+            "total_points": [6, 0, 2],
+        }
+    )
+
+
+def _player_season() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": ["2022-23"] * 3,
+            "element": [1, 2, 3],
+            "player_code": [101, 102, 103],
+            "birth_date": [date(1995, 1, 1)] * 3,
+            "team_join_date": [date(2020, 1, 1)] * 3,
+        },
+        schema_overrides={"birth_date": pl.Date, "team_join_date": pl.Date},
+    )
+
+
+def _team_fixture() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "season": ["2022-23"],
+            "gw": [1],
+            "team": ["Arsenal"],
+        }
+    )
+
+
 def test_build_feature_frame_has_one_row_per_player_week() -> None:
     """Feature frame keeps the player-week grain and the feature columns."""
-    frame = build_feature_frame(_player_week(), _availability())
+    frame = build_feature_frame(
+        _player_week(),
+        _availability(),
+        _history_player_match(),
+        _player_season(),
+        _team_fixture(),
+    )
 
     assert frame.height == 3
     for column in ["season", "gw", "element", "position", *FEATURES]:
@@ -89,7 +137,13 @@ def test_build_feature_frame_has_one_row_per_player_week() -> None:
 
 def test_build_model_frame_joins_features_onto_matches() -> None:
     """Match rows get features by (season, gw, element) and a bucket target."""
-    feature_frame = build_feature_frame(_player_week(), _availability())
+    feature_frame = build_feature_frame(
+        _player_week(),
+        _availability(),
+        _history_player_match(),
+        _player_season(),
+        _team_fixture(),
+    )
     player_match = pl.DataFrame(
         {
             "season": ["2022-23"] * 3,
@@ -175,7 +229,18 @@ def test_make_pipeline_fits_and_predicts_proba() -> None:
             "chance_of_playing_this_round": rng.choice([0, 75, 100], n),
             "fit_rivals_same_pos": rng.integers(0, 4, n),
             "fit_rivals_ahead": rng.integers(0, 4, n),
+            "avg_minutes_rolling_5": rng.random(n) * 90,
+            "games_played_this_season": rng.integers(0, 10, n),
+            "prev_season_minutes": rng.integers(0, 3000, n),
+            "prev_season_start_rate": rng.random(n),
+            "prev_season_points_per_start": rng.random(n) * 6,
+            "pl_seasons_played": rng.integers(0, 5, n),
+            "seasons_since_last_pl": rng.integers(0, 3, n),
+            "age_years": rng.random(n) * 15 + 17,
+            "days_since_team_join": rng.random(n) * 3000,
             "position": rng.choice(["GK", "DEF", "MID", "FWD"], n),
+            "is_pl_newcomer": rng.integers(0, 2, n),
+            "is_promoted_club": rng.integers(0, 2, n),
             "minutes_bucket": rng.choice(MINUTES_BUCKETS, n),
         }
     )
@@ -216,7 +281,18 @@ def _synthetic_model_df(
                     "chance_of_playing_this_round": 100,
                     "fit_rivals_same_pos": rank - 1,
                     "fit_rivals_ahead": rank - 1,
+                    "avg_minutes_rolling_5": float(rng.random() * 90),
+                    "games_played_this_season": int(rng.integers(0, 10)),
+                    "prev_season_minutes": int(rng.integers(0, 3000)),
+                    "prev_season_start_rate": float(rng.random()),
+                    "prev_season_points_per_start": float(rng.random() * 6),
+                    "pl_seasons_played": int(rng.integers(0, 5)),
+                    "seasons_since_last_pl": int(rng.integers(0, 3)),
+                    "age_years": float(rng.random() * 15 + 17),
+                    "days_since_team_join": float(rng.random() * 3000),
                     "position": rng.choice(["DEF", "MID", "FWD"]),
+                    "is_pl_newcomer": int(rng.integers(0, 2)),
+                    "is_promoted_club": int(rng.integers(0, 2)),
                     "minutes": minutes,
                     "minutes_bucket": bucket,
                 }
@@ -281,26 +357,15 @@ def test_run_minutes_model_logs_to_mlflow() -> None:
     )
 
 
-def test_run_minutes_model_returns_empty_when_one_season() -> None:
-    """With a single season there are no folds; returns {} without MLflow."""
-    df = _synthetic_model_df(["2022-23"])
-
-    with (
-        mock.patch(
-            "fantasy_football.modelling.minutes.assemble_model_frame",
-            return_value=df,
-        ),
-        mock.patch("fantasy_football.modelling.minutes.mlflow") as mlflow_mock,
-    ):
-        agg = run_minutes_model()
-
-    assert agg == {}
-    mlflow_mock.start_run.assert_not_called()
-
-
 def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
     """A DGW (two opponents same gw/element) produces two model-frame rows."""
-    feature_frame = build_feature_frame(_player_week(), _availability())
+    feature_frame = build_feature_frame(
+        _player_week(),
+        _availability(),
+        _history_player_match(),
+        _player_season(),
+        _team_fixture(),
+    )
 
     # Element 1 plays twice in GW1 (opponents 10 and 20 — a double gameweek).
     player_match = pl.DataFrame(
@@ -330,7 +395,13 @@ def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
 
 def test_build_model_frame_carries_opponent_for_match_grain() -> None:
     """Opponent survives the join so predictions key by match on a DGW."""
-    feature_frame = build_feature_frame(_player_week(), _availability())
+    feature_frame = build_feature_frame(
+        _player_week(),
+        _availability(),
+        _history_player_match(),
+        _player_season(),
+        _team_fixture(),
+    )
     player_match = pl.DataFrame(
         {
             "season": ["2022-23", "2022-23"],
@@ -355,7 +426,7 @@ from types import SimpleNamespace  # noqa: E402
 from mlflow.exceptions import MlflowException  # noqa: E402
 
 from fantasy_football.modelling.minutes import (  # noqa: E402
-    production_model_version,
+    get_production_model,
     score_minutes,
 )
 
@@ -417,8 +488,9 @@ def test_score_minutes_missing_class_gives_zero_column() -> None:
     assert out["expected_minutes"].to_list() == [0.7 * 75]
 
 
-def test_production_model_version_returns_version() -> None:
-    """production_model_version returns the aliased version string."""
+def test_get_production_model_returns_version_and_model() -> None:
+    """get_production_model returns the aliased version string and model."""
+    stub_model = _StubModel([BUCKET_ZERO], np.array([[1.0]]))
     with mock.patch(
         "fantasy_football.modelling.minutes.mlflow"
     ) as mlflow_mock:
@@ -426,13 +498,19 @@ def test_production_model_version_returns_version() -> None:
         client.get_model_version_by_alias.return_value = SimpleNamespace(
             version="7"
         )
-        version = production_model_version()
+        mlflow_mock.sklearn.load_model.return_value = stub_model
+        version, model = get_production_model()
 
     assert version == "7"
+    assert model is stub_model
 
 
-def test_production_model_version_none_when_missing() -> None:
-    """A missing alias/registered model yields None, not an error."""
+def test_get_production_model_raises_when_alias_missing() -> None:
+    """A missing alias/registered model now propagates, not swallowed to None.
+
+    Callers (e.g. ``backfill_minutes``) are expected to let this fail loudly
+    rather than silently skip, so the exception must surface unchanged.
+    """
     with mock.patch(
         "fantasy_football.modelling.minutes.mlflow"
     ) as mlflow_mock:
@@ -440,18 +518,15 @@ def test_production_model_version_none_when_missing() -> None:
         client.get_model_version_by_alias.side_effect = MlflowException(
             "no such alias"
         )
-        version = production_model_version()
 
-    assert version is None
+        with pytest.raises(MlflowException):
+            get_production_model()
 
 
 from fantasy_football.constants import CURRENT_SEASON  # noqa: E402
 from fantasy_football.modelling.minutes import backfill_minutes  # noqa: E402
-from fantasy_football.storage.database import (  # noqa: E402
-    get_connection,
-    load_minutes_prediction,
-    upsert_minutes_prediction,
-)
+from fantasy_football.storage.database import get_connection  # noqa: E402
+from fantasy_football.storage.tables import MINUTES_PREDICTION  # noqa: E402
 
 
 class _ConstantModel:
@@ -491,8 +566,8 @@ def _patched_backfill(tmp_path, prod_version, db_name="bf.duckdb"):
     return (
         db_path,
         mock.patch(
-            "fantasy_football.modelling.minutes.production_model_version",
-            return_value=prod_version,
+            "fantasy_football.modelling.minutes.get_production_model",
+            return_value=(prod_version, _ConstantModel()),
         ),
         mock.patch(
             "fantasy_football.modelling.minutes.assemble_model_frame",
@@ -502,40 +577,20 @@ def _patched_backfill(tmp_path, prod_version, db_name="bf.duckdb"):
             "fantasy_football.modelling.minutes.get_connection",
             side_effect=lambda: get_connection(db_path),
         ),
-        mock.patch(
-            "fantasy_football.modelling.minutes.mlflow.sklearn.load_model",
-            return_value=_ConstantModel(),
-        ),
     )
-
-
-def test_backfill_minutes_noop_without_production_alias(tmp_path) -> None:
-    """With no production alias the backfill writes nothing and never loads."""
-    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
-        tmp_path, prod_version=None
-    )
-    with p_ver, p_frame, p_conn, p_load as load_mock:
-        backfill_minutes()
-
-    load_mock.assert_not_called()
-    conn = get_connection(db_path)
-    try:
-        assert load_minutes_prediction(conn).height == 0
-    finally:
-        conn.close()
 
 
 def test_backfill_minutes_populates_all_seasons_when_empty(tmp_path) -> None:
     """First backfill scores every season and stamps the production version."""
-    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+    db_path, p_ver, p_frame, p_conn = _patched_backfill(
         tmp_path, prod_version="2"
     )
-    with p_ver, p_frame, p_conn, p_load:
+    with p_ver, p_frame, p_conn:
         backfill_minutes()
 
     conn = get_connection(db_path)
     try:
-        out = load_minutes_prediction(conn)
+        out = MINUTES_PREDICTION.load(conn)
     finally:
         conn.close()
     assert set(out["season"].to_list()) == {"2024-25", CURRENT_SEASON}
@@ -546,7 +601,7 @@ def test_backfill_minutes_skips_historic_when_version_matches(
     tmp_path,
 ) -> None:
     """Matching version leaves historic rows untouched, refreshes current."""
-    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+    db_path, p_ver, p_frame, p_conn = _patched_backfill(
         tmp_path, prod_version="2"
     )
     # Pre-seed historic season with a sentinel expected_minutes at version 2.
@@ -567,16 +622,16 @@ def test_backfill_minutes_skips_historic_when_version_matches(
                 }
             ]
         )
-        upsert_minutes_prediction(seed_conn, seeded, "2024-25")
+        MINUTES_PREDICTION.upsert_current(seed_conn, seeded, "2024-25")
     finally:
         seed_conn.close()
 
-    with p_ver, p_frame, p_conn, p_load:
+    with p_ver, p_frame, p_conn:
         backfill_minutes()
 
     conn = get_connection(db_path)
     try:
-        out = load_minutes_prediction(conn)
+        out = MINUTES_PREDICTION.load(conn)
     finally:
         conn.close()
     historic = out.filter(pl.col("season") == "2024-25")
@@ -590,7 +645,7 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
     tmp_path,
 ) -> None:
     """A new production version triggers a full historic rewrite."""
-    db_path, p_ver, p_frame, p_conn, p_load = _patched_backfill(
+    db_path, p_ver, p_frame, p_conn = _patched_backfill(
         tmp_path, prod_version="3"
     )
     seed_conn = get_connection(db_path)
@@ -610,19 +665,111 @@ def test_backfill_minutes_rebuilds_historic_on_version_change(
                 }
             ]
         )
-        upsert_minutes_prediction(seed_conn, seeded, "2024-25")
+        MINUTES_PREDICTION.upsert_current(seed_conn, seeded, "2024-25")
     finally:
         seed_conn.close()
 
-    with p_ver, p_frame, p_conn, p_load:
+    with p_ver, p_frame, p_conn:
         backfill_minutes()
 
     conn = get_connection(db_path)
     try:
-        out = load_minutes_prediction(conn)
+        out = MINUTES_PREDICTION.load(conn)
     finally:
         conn.close()
     assert set(out["model_version"].to_list()) == {"3"}
     historic = out.filter(pl.col("season") == "2024-25")
     # Sentinel overwritten by a fresh score.
     assert historic["expected_minutes"].to_list() != [999.0]
+
+
+def test_num_features_includes_history_and_cold_start() -> None:
+    """The history block is actually wired into the model's feature list."""
+    from fantasy_football.features.history import (
+        COLD_START_FEATURES,
+        HISTORY_FEATURES,
+    )
+    from fantasy_football.modelling.minutes import NUM_FEATURES
+
+    # is_pl_newcomer and is_promoted_club are booleans that live in
+    # BOOL_FEATURES instead (passthrough, not median-imputed/scaled) -- see
+    # make_pipeline. days_since_team_join is deliberately excluded from the
+    # model (see the comment on NUM_FEATURES): it is 100% null in most
+    # training seasons and null for every 2026-27 row. Every other
+    # history/cold-start feature is continuous and must land in NUM_FEATURES.
+    excluded = {"is_pl_newcomer", "is_promoted_club", "days_since_team_join"}
+    for feature in HISTORY_FEATURES + COLD_START_FEATURES:
+        if feature in excluded:
+            continue
+        assert feature in NUM_FEATURES, f"{feature} missing from NUM_FEATURES"
+
+    assert "days_since_team_join" not in NUM_FEATURES
+    assert "avg_minutes_rolling_5" in NUM_FEATURES
+    assert "games_played_this_season" in NUM_FEATURES
+
+
+def test_build_feature_frame_emits_every_declared_feature() -> None:
+    """Every name in FEATURES exists as a column on the built frame."""
+    from datetime import datetime
+
+    from fantasy_football.modelling.minutes import (
+        FEATURES,
+        build_feature_frame,
+    )
+
+    player_week = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 2],
+            "element": [10, 10],
+            "position": ["MID", "MID"],
+            "team": ["Liverpool", "Liverpool"],
+            "value": [125, 125],
+            "minutes": [90, 80],
+        }
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 2],
+            "element": [10, 10],
+            "chance_of_playing_this_round": [100, 100],
+        }
+    )
+    player_match = pl.DataFrame(
+        {
+            "season": ["2023-24", "2023-24"],
+            "gw": [1, 2],
+            "element": [10, 10],
+            "opponent": [3, 4],
+            "minutes": [90, 80],
+            "total_points": [8, 5],
+        }
+    )
+    player_season = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "element": [10],
+            "player_code": [111],
+            "birth_date": [date(1992, 6, 15)],
+            "team_join_date": [date(2017, 7, 1)],
+        },
+        schema_overrides={"birth_date": pl.Date, "team_join_date": pl.Date},
+    )
+    team_fixture = pl.DataFrame(
+        {
+            "season": ["2023-24"],
+            "gw": [1],
+            "team": ["Liverpool"],
+            "is_home": [True],
+            "opposition": ["Arsenal"],
+            "kickoff_time": [datetime(2023, 8, 12, 15, 0)],
+        }
+    )
+
+    out = build_feature_frame(
+        player_week, availability, player_match, player_season, team_fixture
+    )
+
+    for feature in FEATURES:
+        assert feature in out.columns, f"{feature} missing from feature frame"

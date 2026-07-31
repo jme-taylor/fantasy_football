@@ -63,7 +63,8 @@ def add_chance_of_playing(
         Player data containing ``season``, ``gw`` and ``element``.
     availability : pl.DataFrame
         Availability rows with ``season``, ``gw``, ``element`` and
-        ``chance_of_playing_this_round`` (e.g. from ``load_player_availability``).
+        ``chance_of_playing_this_round`` (e.g. from
+        ``PLAYER_AVAILABILITY.load()``).
 
     Returns
     -------
@@ -157,3 +158,31 @@ def add_positional_availability(
         per_value, on=partition + ["value"], how="left", coalesce=True
     )
     return data.drop("_fit")
+
+
+def add_games_played_this_season(data: pl.DataFrame) -> pl.DataFrame:
+    """Count each player's prior gameweeks within the current season.
+
+    Shifted by one so the current gameweek is excluded, matching
+    :func:`add_rolling_minutes`. This is the column that lets a model learn when
+    to stop leaning on last season's history: it is 0 at GW1 and grows from
+    there.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Player data containing ``season``, ``gw`` and ``element``.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``data`` with an integer ``games_played_this_season`` column added.
+    """
+    return data.sort(["season", "gw"]).with_columns(
+        pl.col("gw")
+        .cum_count()
+        .over(["season", "element"])
+        .sub(1)
+        .cast(pl.Int64)
+        .alias("games_played_this_season")
+    )

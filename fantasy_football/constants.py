@@ -12,7 +12,7 @@ MLFLOW_DB_PATH = MODELS_FOLDER.joinpath("mlflow.db")
 DATABASE_PATH = DATA_FOLDER.joinpath("fantasy_football.duckdb")
 
 FPL_ID = "7515957"
-CURRENT_SEASON = "2025-26"
+CURRENT_SEASON = "2026-27"
 
 # Data ingestion stop date
 VASTAAV_LAST_SEASON = "2024-2025"
@@ -20,6 +20,10 @@ FPL_CORE_INSIGHTS_FIRST_SEASON = "2025-2026"
 # Earliest season with Randdalf/fplcache bootstrap snapshots (Aug 2022),
 # the source of point-in-time chance_of_playing_this_round.
 FPLCACHE_FIRST_SEASON = "2022-23"
+
+# Earliest season with player-week data, and therefore the earliest season
+# worth resolving player identity for.
+EARLIEST_IDENTITY_SEASON = "2016-17"
 
 # Special season that isn't in the cleaned_merged_seasons.csv file, but is still needed for the data pipeline.
 VASTAAV_BRIDGE_SEASONS: list[str] = ["2024-25"]

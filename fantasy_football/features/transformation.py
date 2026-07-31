@@ -3,13 +3,20 @@ import logging
 import polars as pl
 
 from fantasy_football.constants import DATA_FOLDER, ROLLING_WINDOW
-from fantasy_football.storage.database import load_player_week
+from fantasy_football.storage.tables import PLAYER_SEASON, PLAYER_WEEK
 
 logger = logging.getLogger(__name__)
 
 TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 
 KNOWN_POSITIONS: tuple[str, ...] = ("GK", "DEF", "MID", "FWD")
+
+# Prefix used to build a fallback rolling-window identity for rows with a
+# null player_code. It must contain a non-digit character: a real
+# player_code is rendered as bare digits, so a string starting with a
+# non-digit character can never equal one, no matter how the two integer
+# ranges overlap.
+_FALLBACK_IDENTITY_PREFIX = "no_player_code_element_"
 
 
 def rolling_column_name(rolling_column: str, rolling_window: int) -> str:
@@ -18,39 +25,90 @@ def rolling_column_name(rolling_column: str, rolling_window: int) -> str:
 
 
 def load_gw_data() -> pl.DataFrame:
-    """Load all player-week data across every season from the database.
+    """Load all player-week data across every season, with ``player_code``.
 
-    Reads the entire ``player_week`` table — historic, bridge, and current
-    seasons — which the extraction step populated. Positions are already
+    Reads the entire ``player_week`` table and left-joins the ``player_season``
+    identity dimension, so downstream windows can partition on a key that is
+    stable across seasons rather than on the display name. Positions are already
     normalised (``GKP`` collapsed to ``GK``) at write time.
 
     Returns
     -------
     pl.DataFrame
-        One row per (player, gameweek) for all seasons, with a ``season`` and
-        ``gw`` column.
+        One row per (player, gameweek) for all seasons, with ``season``, ``gw``
+        and ``player_code`` columns.
     """
-    return load_player_week()
+    return PLAYER_WEEK.load().join(
+        PLAYER_SEASON.load().select(["season", "element", "player_code"]),
+        on=["season", "element"],
+        how="left",
+        coalesce=True,
+    )
+
+
+def add_rolling_identity_column(data: pl.DataFrame) -> pl.DataFrame:
+    """Add a collision-safe identity key for the rolling-points window.
+
+    ``player_code`` is nullable: a row whose ``(season, element)`` has no
+    matching ``player_season`` row -- for example because
+    ``load_player_identity_data`` caught a failed source fetch and skipped
+    that season -- keeps a null ``player_code``. Polars pools every null
+    value in a ``.over()`` partition into a single group, so grouping the
+    rolling window directly on ``player_code`` would silently merge every
+    such player in a season into one shared series -- the same bug this
+    module exists to fix, just triggered by a missing identity rather than a
+    shared display name.
+
+    ``element`` is unique within a season, so it is a sound fallback identity
+    for these rows, but ``element`` and ``player_code`` are drawn from
+    overlapping integer ranges, so naively coalescing them risks an
+    unmatched player colliding with an unrelated real ``player_code``. This
+    stores the identity as a string instead: a real ``player_code`` is
+    rendered as its bare digits, while a fallback is prefixed with
+    ``_FALLBACK_IDENTITY_PREFIX``, which starts with a non-digit character.
+    A digit-only string can never equal a string carrying a non-digit
+    prefix, so the two spaces cannot collide regardless of the underlying
+    integer values.
+
+    Parameters
+    ----------
+    data : pl.DataFrame
+        Frame with ``player_code`` and ``element`` columns.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``data`` with a ``rolling_identity`` string column added.
+    """
+    return data.with_columns(
+        pl.when(pl.col("player_code").is_not_null())
+        .then(pl.col("player_code").cast(pl.Utf8))
+        .otherwise(
+            pl.lit(_FALLBACK_IDENTITY_PREFIX) + pl.col("element").cast(pl.Utf8)
+        )
+        .alias("rolling_identity")
+    )
 
 
 def create_rolling_average_column(
     data: pl.DataFrame,
-    grouping_column: str,
+    grouping_columns: list[str],
     rolling_column: str,
     rolling_window: int,
 ) -> pl.DataFrame:
     """Create a rolling average column over a given window size.
 
-    This function takes the `grouping_column` and calculates the rolling
-    average of the `rolling_column` over a window size of `rolling_window`.
-    It does this on a dataframe that is sorted by season and gameweek.
+    The frame is sorted by season and gameweek, then ``rolling_column`` is
+    averaged over ``rolling_window`` rows within each ``grouping_columns``
+    partition.
 
     Parameters
     ----------
     data : pl.DataFrame
         The data to calculate the rolling average on.
-    grouping_column : str
-        The column to group by.
+    grouping_columns : list[str]
+        The columns to partition the window by. Include ``season`` to stop a
+        window spanning the summer break.
     rolling_column : str
         The column to calculate the rolling average on.
     rolling_window : int
@@ -67,8 +125,8 @@ def create_rolling_average_column(
     )
     data = data.sort(["season", "gw"]).with_columns(
         pl.col(rolling_column)
-        .rolling_mean(window_size=rolling_window)
-        .over(pl.col(grouping_column))
+        .rolling_mean(window_size=rolling_window, min_periods=1)
+        .over(grouping_columns)
         .alias(rolling_average_column_name)
     )
     return data
@@ -131,6 +189,12 @@ def create_rolling_points_data(
     anything, but writes the data to a CSV file in the transformed data folder
     named "rolling_points.csv".
 
+    The rolling window uses ``min_periods=1``, so a row with fewer than
+    ``rolling_window`` prior games in its partition gets a genuine (if thin)
+    average over whatever exists rather than a null -- meaning fewer rows
+    fall through to ``fill_missing_values_by_position``'s positional
+    fallback than before that was added.
+
     Parameters
     ----------
     current_season : str
@@ -142,9 +206,11 @@ def create_rolling_points_data(
     """
     gw_data = load_gw_data()
     rolling_column = rolling_column_name("total_points", rolling_window)
+    gw_data = add_rolling_identity_column(gw_data)
     gw_data = create_rolling_average_column(
-        gw_data, "name", "total_points", rolling_window
+        gw_data, ["rolling_identity", "season"], "total_points", rolling_window
     )
+    gw_data = gw_data.drop("rolling_identity")
     gw_data = fill_missing_values_by_position(gw_data, rolling_column)
     TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
     gw_data.write_csv(TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"))

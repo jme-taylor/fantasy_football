@@ -1,12 +1,11 @@
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import mlflow
 import mlflow.sklearn
 import mlflow.tracking
 import numpy as np
 import polars as pl
-from mlflow.exceptions import MlflowException
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -27,20 +26,29 @@ from fantasy_football.constants import (
 )
 from fantasy_football.features.availability import (
     add_chance_of_playing,
+    add_games_played_this_season,
     add_positional_availability,
+    add_rolling_minutes,
+)
+from fantasy_football.features.history import (
+    COLD_START_FEATURES,
+    HISTORY_FEATURES,
+    add_cold_start_features,
+    add_history_features,
 )
 from fantasy_football.features.valuation import (
     add_positional_value_rank,
     add_team_value,
 )
-from fantasy_football.storage.database import (
-    get_connection,
-    load_player_availability,
-    load_player_match,
-    load_player_week,
-    minutes_prediction_seasons_present,
+from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.tables import (
+    MINUTES_PREDICTION,
+    PLAYER_AVAILABILITY,
+    PLAYER_MATCH,
+    PLAYER_SEASON,
+    PLAYER_WEEK,
+    TEAM_FIXTURE,
     minutes_prediction_versions,
-    upsert_minutes_prediction,
 )
 
 if TYPE_CHECKING:
@@ -54,7 +62,10 @@ BUCKET_PARTIAL = "1_to_59_minutes"
 BUCKET_SIXTY_PLUS = "60_minutes_plus"
 MINUTES_BUCKETS = [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
 
-# Model inputs.
+# Model inputs. The first block is contemporaneous -- everything knowable at
+# the deadline. The second reaches across the summer break through player_code
+# (see features/history.py), which is what lets the model say anything useful
+# at GW1 of a new season, before any in-season evidence exists.
 NUM_FEATURES = [
     "value",
     "value_share_of_team",
@@ -63,21 +74,41 @@ NUM_FEATURES = [
     "chance_of_playing_this_round",
     "fit_rivals_same_pos",
     "fit_rivals_ahead",
+    "avg_minutes_rolling_5",
+    "games_played_this_season",
+    "prev_season_minutes",
+    "prev_season_start_rate",
+    "prev_season_points_per_start",
+    "pl_seasons_played",
+    "seasons_since_last_pl",
+    "age_years",
+    # days_since_team_join is deliberately excluded: FPL only began publishing
+    # team_join_date around 2024 and FCI's players.csv does not carry it at
+    # all, so it is 100% null in 6 of 8 training seasons and 564/564 null in
+    # 2026-27 -- the season this work exists to serve. Its non-nullness
+    # correlates almost perfectly with season membership, so the
+    # median-imputed column risked acting as a season proxy in train_final.
+    # It is still produced by add_cold_start_features and kept in
+    # player_season; re-add it here once FPL's coverage reaches further back.
 ]
 CAT_FEATURES = ["position"]
-FEATURES = NUM_FEATURES + CAT_FEATURES
+BOOL_FEATURES = ["is_pl_newcomer", "is_promoted_club"]
+FEATURES = NUM_FEATURES + CAT_FEATURES + BOOL_FEATURES
+
+# HISTORY_FEATURES and COLD_START_FEATURES are imported (rather than only used
+# in features/history.py) so this assertion catches drift between this
+# module's feature list and the features module the moment either changes.
+# days_since_team_join is deliberately excluded from the model (see the
+# comment on NUM_FEATURES above), so it is the one column carved out here.
+assert set(HISTORY_FEATURES) | set(COLD_START_FEATURES) - {
+    "days_since_team_join"
+} <= set(NUM_FEATURES) | set(BOOL_FEATURES)
 
 # Representative minutes per bucket, for the expected-minutes leverage metric.
 MINUTE_MIDPOINTS = {
     BUCKET_ZERO: 0.0,
     BUCKET_PARTIAL: 30.0,
     BUCKET_SIXTY_PLUS: 75.0,
-}
-# FPL appearance points: 0 for no game, 1 for <60 mins, 2 for 60+.
-APPEARANCE_POINTS = {
-    BUCKET_ZERO: 0.0,
-    BUCKET_PARTIAL: 1.0,
-    BUCKET_SIXTY_PLUS: 2.0,
 }
 
 
@@ -113,38 +144,65 @@ def create_minutes_bucket(
 
 
 def build_feature_frame(
-    player_week: pl.DataFrame, availability: pl.DataFrame
+    player_week: pl.DataFrame,
+    availability: pl.DataFrame,
+    player_match: pl.DataFrame,
+    player_season: pl.DataFrame,
+    team_fixture: pl.DataFrame,
 ) -> pl.DataFrame:
     """Build the model feature frame at the player-week grain.
 
-    Value features (``value_share_of_team``, ``pos_value_rank``,
-    ``players_same_pos``) and availability features
-    (``chance_of_playing_this_round``, ``fit_rivals_same_pos``,
-    ``fit_rivals_ahead``) are computed once per ``(season, gw, element)`` so the
-    per-gameweek counts are correct, then narrowed to the columns the model
-    consumes plus the join keys and ``position``.
+    Contemporaneous features (value share, positional rank, chance of playing,
+    fit rivals) are computed per ``(season, gw, element)`` so the per-gameweek
+    counts are correct. History features join through ``player_code`` to reach
+    prior seasons, and cold-start features stand in for players who have none.
 
     Parameters
     ----------
     player_week : pl.DataFrame
-        Player-week rows from :func:`load_player_week` (``season``, ``gw``,
-        ``element``, ``position``, ``team``, ``value`` and more).
+        Player-week rows from :meth:`PLAYER_WEEK.load`.
     availability : pl.DataFrame
-        Availability rows from :func:`load_player_availability`.
+        Availability rows from :meth:`PLAYER_AVAILABILITY.load`.
+    player_match : pl.DataFrame
+        Per-fixture rows from :meth:`PLAYER_MATCH.load`, used for prior-season
+        aggregates that must not be distorted by double gameweeks.
+    player_season : pl.DataFrame
+        Identity rows from :meth:`PLAYER_SEASON.load`.
+    team_fixture : pl.DataFrame
+        Fixture rows from :meth:`TEAM_FIXTURE.load`, used to detect promoted
+        clubs.
 
     Returns
     -------
     pl.DataFrame
         One row per ``(season, gw, element)`` with ``position`` and every
-        column in ``NUM_FEATURES``.
+        column in ``NUM_FEATURES`` and ``BOOL_FEATURES``.
     """
     frame = add_team_value(player_week)
     frame = add_positional_value_rank(frame)
     frame = add_chance_of_playing(frame, availability)
     frame = add_positional_availability(frame)
-    return frame.select(["season", "gw", "element", "position", *NUM_FEATURES])
+    frame = add_rolling_minutes(frame)
+    frame = add_games_played_this_season(frame)
+    frame = add_history_features(frame, player_match, player_season)
+    frame = frame.join(
+        player_season.select(
+            ["season", "element", "birth_date", "team_join_date"]
+        ),
+        on=["season", "element"],
+        how="left",
+        coalesce=True,
+    )
+    frame = add_cold_start_features(frame, team_fixture)
+    frame = frame.with_columns(
+        [pl.col(column).cast(pl.Int8) for column in BOOL_FEATURES]
+    )
+    return frame.select(
+        ["season", "gw", "element", "position", *NUM_FEATURES, *BOOL_FEATURES]
+    )
 
 
+# TODO (JT): Work out a cleaner way to do this (feature store?)
 def build_model_frame(
     player_match: pl.DataFrame, feature_frame: pl.DataFrame
 ) -> pl.DataFrame:
@@ -157,7 +215,7 @@ def build_model_frame(
     Parameters
     ----------
     player_match : pl.DataFrame
-        Match rows from :func:`load_player_match` (``season``, ``gw``,
+        Match rows from :meth:`PLAYER_MATCH.load` (``season``, ``gw``,
         ``element``, ``minutes`` and more).
     feature_frame : pl.DataFrame
         Output of :func:`build_feature_frame`.
@@ -182,7 +240,9 @@ def build_model_frame(
             "opponent",
             "minutes",
             "minutes_bucket",
-            *FEATURES,
+            *NUM_FEATURES,
+            *CAT_FEATURES,
+            *BOOL_FEATURES,
         ]
     )
 
@@ -195,17 +255,25 @@ def assemble_model_frame() -> pl.DataFrame:
     pl.DataFrame
         The match-level model frame from :func:`build_model_frame`.
     """
+    player_match = PLAYER_MATCH.load()
     feature_frame = build_feature_frame(
-        load_player_week(), load_player_availability()
+        PLAYER_WEEK.load(),
+        PLAYER_AVAILABILITY.load(),
+        player_match,
+        PLAYER_SEASON.load(),
+        TEAM_FIXTURE.load(),
     )
-    return build_model_frame(load_player_match(), feature_frame)
+    return build_model_frame(player_match, feature_frame)
 
 
 def make_pipeline() -> Pipeline:
     """Build the logistic-regression pipeline.
 
     Numeric features are median-imputed then standardised; the categorical
-    ``position`` is one-hot encoded. All preprocessing lives inside the pipeline
+    ``position`` is one-hot encoded; the boolean ``BOOL_FEATURES`` pass straight
+    through untouched -- they are cast to ``Int8`` and never null by the time
+    they reach the pipeline (see :func:`build_feature_frame`), so they need
+    neither imputation nor scaling. All preprocessing lives inside the pipeline
     so it is refit per CV fold on train data only.
 
     Returns
@@ -226,6 +294,7 @@ def make_pipeline() -> Pipeline:
                 NUM_FEATURES,
             ),
             ("cat", OneHotEncoder(handle_unknown="ignore"), CAT_FEATURES),
+            ("bool", "passthrough", BOOL_FEATURES),
         ]
     )
     return Pipeline(
@@ -266,6 +335,8 @@ def _boundary_column(
     return np.zeros(proba.shape[0])
 
 
+# TODO (JT): Make a boundary metrics dataclass as output type
+# TODO (JT): Go through the metrics and make sure they make sense
 def boundary_metrics(
     y_true_bucket: list[str],
     proba: np.ndarray,
@@ -318,13 +389,6 @@ def boundary_metrics(
         + p_60 * MINUTE_MIDPOINTS[BUCKET_SIXTY_PLUS]
     )
     out["e_min_mae"] = float(np.mean(np.abs(expected_minutes - minutes)))
-
-    expected_app = (
-        p_partial * APPEARANCE_POINTS[BUCKET_PARTIAL]
-        + p_60 * APPEARANCE_POINTS[BUCKET_SIXTY_PLUS]
-    )
-    true_app = np.where(minutes >= 60, 2.0, np.where(minutes > 0, 1.0, 0.0))
-    out["e_app_mae"] = float(np.mean(np.abs(expected_app - true_app)))
 
     return out
 
@@ -412,23 +476,20 @@ def run_minutes_model() -> dict[str, float]:
     Assembles the model frame, scores it with expanding-window CV, fits the
     final pipeline on all seasons, and logs run params, per-fold metrics
     (stepped), aggregate mean/std metrics and the fitted model to the
-    ``MINUTES_EXPERIMENT`` experiment. With fewer than two seasons there are no
-    folds, so the function logs a warning and returns an empty dict.
+    ``MINUTES_EXPERIMENT`` experiment. With fewer than two seasons
+    :func:`season_folds` produces no folds, so ``per_fold`` and ``agg`` are
+    both empty and no CV metrics are logged, but the run still fits and
+    registers the final model.
 
     Returns
     -------
     dict[str, float]
         The aggregate metrics (``{metric}_mean`` / ``{metric}_std``), or an
-        empty dict when there is too little data to evaluate.
+        empty dict when there is too little data to cross-validate.
     """
     model_df = assemble_model_frame()
     seasons = model_df["season"].unique().to_list()
     folds = season_folds(seasons)
-    if not folds:
-        logger.warning(
-            f"Need at least two seasons to evaluate the minutes model; found {len(seasons)}. Skipping."
-        )
-        return {}
 
     per_fold, agg = cross_validate(model_df, folds)
     final_model = train_final(model_df)
@@ -436,6 +497,7 @@ def run_minutes_model() -> dict[str, float]:
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(MINUTES_EXPERIMENT)
     with mlflow.start_run():
+        # TODO (JT: Don't have magic strings here
         mlflow.log_params(
             {
                 "model": "logistic_regression",
@@ -449,17 +511,19 @@ def run_minutes_model() -> dict[str, float]:
             for key, value in fold_metrics.items():
                 mlflow.log_metric(key, value, step=step)
         mlflow.log_metrics(agg)
+        # TODO (JT): Add auto alias promotion if the metrics are good enough
         mlflow.sklearn.log_model(
             final_model,
             name="model",
             registered_model_name=MINUTES_REGISTERED_MODEL,
         )
 
+    # TODO (JT: Don't logg the agg, just show the model ID
     logger.info("Minutes model logged to MLflow: %s", agg)
     return agg
 
 
-def production_model_version() -> str | None:
+def get_production_model() -> tuple[str, Any]:
     """Return the version string carrying the production alias, or None.
 
     Looks up ``MINUTES_REGISTERED_MODEL@MINUTES_PRODUCTION_ALIAS`` in the MLflow
@@ -474,13 +538,13 @@ def production_model_version() -> str | None:
     """
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     client = mlflow.tracking.MlflowClient()
-    try:
-        version = client.get_model_version_by_alias(
-            MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
-        )
-    except MlflowException:
-        return None
-    return version.version
+    version = client.get_model_version_by_alias(
+        MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
+    )
+    model = mlflow.sklearn.load_model(
+        f"models:/{MINUTES_REGISTERED_MODEL}@{MINUTES_PRODUCTION_ALIAS}"
+    )
+    return version.version, model
 
 
 def score_minutes(frame: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
@@ -536,7 +600,7 @@ def _score_and_store(
     scored = score_minutes(sub, model).with_columns(
         model_version=pl.lit(version)
     )
-    upsert_minutes_prediction(connection, scored, season)
+    MINUTES_PREDICTION.upsert_current(connection, scored, season)
 
 
 def backfill_minutes() -> None:
@@ -551,22 +615,13 @@ def backfill_minutes() -> None:
     Does nothing (logs a warning) when no ``production`` alias is set, which is
     the normal state until the first manual promotion in the MLflow UI.
     """
-    prod_version = production_model_version()
-    if prod_version is None:
-        logger.warning(
-            f"No '{MINUTES_PRODUCTION_ALIAS}' alias on registered model {MINUTES_REGISTERED_MODEL}; skipping minutes backfill. "
-            "Promote a version in the MLflow UI to enable it.",
-        )
-        return
-
-    model = mlflow.sklearn.load_model(
-        f"models:/{MINUTES_REGISTERED_MODEL}@{MINUTES_PRODUCTION_ALIAS}"
-    )
+    prod_version, model = get_production_model()
     model_frame = assemble_model_frame()
     all_seasons = set(model_frame["season"].unique().to_list())
     historic_seasons = sorted(all_seasons - {CURRENT_SEASON})
 
     connection = get_connection()
+    # TODO(JT): Can you do this with a context manager?
     try:
         # The current season is always refreshed — new gameweeks each run.
         _score_and_store(
@@ -577,7 +632,7 @@ def backfill_minutes() -> None:
         stored_versions = minutes_prediction_versions(
             connection, seasons=historic_seasons
         )
-        stored_seasons = minutes_prediction_seasons_present(connection) & set(
+        stored_seasons = MINUTES_PREDICTION.seasons_present(connection) & set(
             historic_seasons
         )
         historic_needs_rebuild = bool(historic_seasons) and (

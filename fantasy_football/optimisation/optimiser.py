@@ -11,7 +11,7 @@ from fantasy_football.fpl_types import (
     PlayerGameweekExpectedPoints,
 )
 from fantasy_football.optimisation.plan_report import write_plan_report
-from fantasy_football.storage.database import load_player_week
+from fantasy_football.storage.tables import PLAYER_WEEK
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
     dict[str, int]
         Mapping of player name to price in tenths of a million.
     """
-    merged = load_player_week().filter(
+    merged = PLAYER_WEEK.load().filter(
         (pl.col("season") == season) & (pl.col("gw") <= start_gw)
     )
     latest_gw = merged.group_by("name").agg(pl.col("gw").max().alias("gw"))

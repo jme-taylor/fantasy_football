@@ -8,13 +8,7 @@ import requests
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.extraction.seasons import DataSource, source_for_season
-from fantasy_football.storage.database import (
-    TEAM_FIXTURE_SCHEMA,
-    fixture_seasons_present,
-    seasons_present,
-    upsert_current_fixtures,
-    write_immutable_fixtures,
-)
+from fantasy_football.storage.tables import PLAYER_WEEK, TEAM_FIXTURE
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -63,7 +57,7 @@ def fixtures_to_team_rows(
     -------
     pl.DataFrame
         One row per team per fixture, columns and dtypes per
-        ``TEAM_FIXTURE_SCHEMA``. Double gameweeks naturally produce two rows
+        ``TEAM_FIXTURE.schema``. Double gameweeks naturally produce two rows
         for the affected team.
 
     Raises
@@ -97,8 +91,8 @@ def fixtures_to_team_rows(
             }
         )
     if not rows:
-        return pl.DataFrame(schema=TEAM_FIXTURE_SCHEMA)
-    return pl.DataFrame(rows).cast(TEAM_FIXTURE_SCHEMA, strict=False)
+        return pl.DataFrame(schema=TEAM_FIXTURE.schema)
+    return pl.DataFrame(rows).cast(TEAM_FIXTURE.schema, strict=False)
 
 
 def build_current_fixtures(season: str, api: FplAPI) -> pl.DataFrame:
@@ -208,10 +202,10 @@ def load_fixtures(
     """
     api = api or FplAPI()
     extractor = extractor or DataExtractor()
-    already = fixture_seasons_present(connection)
+    already = TEAM_FIXTURE.seasons_present(connection)
 
     # Season strings sort lexicographically in calendar order (e.g. "2023-24" < "2024-25").
-    for season in sorted(seasons_present(connection)):
+    for season in sorted(PLAYER_WEEK.seasons_present(connection)):
         if season in already or season == current_season:
             continue
         if source_for_season(season) != DataSource.VAASTAV:
@@ -229,9 +223,9 @@ def load_fixtures(
                 exc,
             )
             continue
-        write_immutable_fixtures(connection, frame, season)
+        TEAM_FIXTURE.write_immutable(connection, frame, season)
 
     # Always refresh the current season (kickoff times and new gameweeks can
     # change), matching the player-week upsert behaviour.
     frame = build_current_fixtures(current_season, api)
-    upsert_current_fixtures(connection, frame, current_season)
+    TEAM_FIXTURE.upsert_current(connection, frame, current_season)

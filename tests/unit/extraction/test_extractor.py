@@ -245,10 +245,8 @@ def test_load_immutable_seasons_loads_aggregate_and_bridge(
     mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path
 ) -> None:
     """Aggregate (split by season) and bridge seasons are inserted once."""
-    from fantasy_football.storage.database import (
-        get_connection,
-        seasons_present,
-    )
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     aggregate = pl.DataFrame(
         {
@@ -292,7 +290,7 @@ def test_load_immutable_seasons_loads_aggregate_and_bridge(
         mock_data_extractor.load_immutable_seasons(
             connection, "2025-26", bridge_seasons=["2024-25"]
         )
-        present = seasons_present(connection)
+        present = PLAYER_WEEK.seasons_present(connection)
     finally:
         connection.close()
 
@@ -303,10 +301,8 @@ def test_load_immutable_seasons_skips_when_already_present(
     mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path
 ) -> None:
     """With historic + bridge already stored, no downloads happen."""
-    from fantasy_football.storage.database import (
-        get_connection,
-        write_immutable_season,
-    )
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     seeded = pl.DataFrame(
         {
@@ -327,10 +323,10 @@ def test_load_immutable_seasons_skips_when_already_present(
 
     connection = get_connection(tmp_path / "t.duckdb")
     try:
-        write_immutable_season(
+        PLAYER_WEEK.write_immutable(
             connection, seeded.filter(pl.col("season") == "2020-21"), "2020-21"
         )
-        write_immutable_season(
+        PLAYER_WEEK.write_immutable(
             connection, seeded.filter(pl.col("season") == "2024-25"), "2024-25"
         )
         mock_data_extractor.load_immutable_seasons(
@@ -392,11 +388,8 @@ def test_load_immutable_seasons_collapses_double_gameweeks(
     mocker: MockerFixture, mock_data_extractor: DataExtractor, tmp_path
 ) -> None:
     """A player's two fixture-rows in a double gameweek collapse to one row."""
-    from fantasy_football.storage.database import (
-        get_connection,
-        load_player_week,
-        write_immutable_season,
-    )
+    from fantasy_football.storage.database import get_connection
+    from fantasy_football.storage.tables import PLAYER_WEEK
 
     # Bridge season merged_gw with a double gameweek: element 5 plays twice in
     # GW24 (two fixture rows, same season/gw/element).
@@ -435,11 +428,11 @@ def test_load_immutable_seasons_collapses_double_gameweeks(
                 "value": [40],
             }
         )
-        write_immutable_season(connection, seed, "2019-20")
+        PLAYER_WEEK.write_immutable(connection, seed, "2019-20")
         mock_data_extractor.load_immutable_seasons(
             connection, "2025-26", bridge_seasons=["2024-25"]
         )
-        result = load_player_week(connection)
+        result = PLAYER_WEEK.load(connection)
     finally:
         connection.close()
 

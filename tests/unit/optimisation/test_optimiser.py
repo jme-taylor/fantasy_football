@@ -8,10 +8,8 @@ from fantasy_football.optimisation.optimiser import (
     _load_prices,
 )
 from fantasy_football.storage import database
-from fantasy_football.storage.database import (
-    get_connection,
-    upsert_current_season,
-)
+from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.tables import PLAYER_WEEK
 
 
 def test_plan_to_frame_has_one_row_per_gameweek() -> None:
@@ -76,7 +74,7 @@ def _seed_player_week(
     monkeypatch.setattr(database, "DATABASE_PATH", db_path)
     connection = get_connection(db_path)
     try:
-        upsert_current_season(connection, frame, season)
+        PLAYER_WEEK.upsert_current(connection, frame, season)
     finally:
         connection.close()
 
