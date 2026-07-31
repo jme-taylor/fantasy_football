@@ -1,12 +1,3 @@
-"""Prior-season features, joined across seasons through ``player_code``.
-
-FPL reassigns ``element`` ids each season, so any feature that reaches back
-past the summer break has to go through the stable ``player_code`` in the
-``player_season`` dimension. Everything here describes seasons strictly before
-the row's own season, so none of it leaks: a completed season is entirely in
-the past relative to every gameweek of the season being scored.
-"""
-
 import polars as pl
 
 # Columns add_history_features appends, in the order it appends them.

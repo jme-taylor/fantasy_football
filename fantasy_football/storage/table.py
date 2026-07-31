@@ -1,11 +1,3 @@
-"""Engine-agnostic table descriptors.
-
-A ``Table`` declares everything the storage layer needs to know about one
-stored table: its name, its column order and dtypes, its primary key, its
-sort order, and any per-table quirks. Operations are expressed against
-this declaration rather than hand-written per table.
-"""
-
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass

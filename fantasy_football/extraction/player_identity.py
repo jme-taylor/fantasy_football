@@ -1,12 +1,3 @@
-"""Build ``player_season`` rows -- the cross-season player identity spine.
-
-FPL reassigns ``element`` ids every season, so ``(season, element)`` cannot join
-a player to their own past. FPL's ``code`` is stable and global, and every
-upstream source already carries it under a different name: Vaastav calls it
-``code`` (with ``id`` for the element), FCI calls it ``player_code`` (with
-``player_id``). This module normalises both into one shape.
-"""
-
 import logging
 from typing import TYPE_CHECKING
 

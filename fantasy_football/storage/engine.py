@@ -1,14 +1,3 @@
-"""DuckDB primitives underpinning the storage layer.
-
-The only module that knows about duckdb mechanics: Arrow registration,
-``register``/``unregister``, and ``.pl()``. Everything above this layer
-speaks Polars frames and plain Python types.
-
-This interface is deliberately DuckDB-shaped -- it accepts Arrow and
-returns Polars, because that zero-copy path is what makes the storage
-layer fast. It is a structuring seam, not a portability boundary.
-"""
-
 import duckdb
 import polars as pl
 
