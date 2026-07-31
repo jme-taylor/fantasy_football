@@ -3,6 +3,7 @@ import pytest
 
 from fantasy_football.features.availability import (
     add_chance_of_playing,
+    add_games_played_this_season,
     add_positional_availability,
     add_rolling_minutes,
 )
@@ -307,15 +308,12 @@ def test_positional_availability_null_chance_counts_as_fit() -> None:
 
 def test_add_games_played_excludes_the_current_gameweek() -> None:
     """A player's first gameweek has zero prior games, the second has one."""
-    from fantasy_football.features.availability import (
-        add_games_played_this_season,
-    )
-
     data = pl.DataFrame(
         {
             "season": ["2023-24"] * 3,
             "gw": [1, 2, 3],
             "element": [10, 10, 10],
+            "minutes": [90, 60, 45],
         }
     )
     result = add_games_played_this_season(data).sort("gw")
@@ -325,17 +323,39 @@ def test_add_games_played_excludes_the_current_gameweek() -> None:
 
 def test_add_games_played_resets_each_season() -> None:
     """The count restarts at zero in a new season."""
-    from fantasy_football.features.availability import (
-        add_games_played_this_season,
-    )
-
     data = pl.DataFrame(
         {
             "season": ["2023-24", "2023-24", "2024-25"],
             "gw": [1, 2, 1],
             "element": [10, 10, 55],
+            "minutes": [90, 60, 45],
         }
     )
     result = add_games_played_this_season(data).sort(["season", "gw"])
 
     assert result["games_played_this_season"].to_list() == [0, 1, 0]
+
+
+def test_games_played_freezes_across_unplayed_rows() -> None:
+    """Rows with null minutes are future fixtures and must not count."""
+    data = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 6,
+            "gw": [1, 2, 3, 4, 5, 6],
+            "element": [1] * 6,
+            "minutes": [90, 60, 45, None, None, None],
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+
+    result = add_games_played_this_season(data)
+    counts = {
+        row["gw"]: row["games_played_this_season"]
+        for row in result.iter_rows(named=True)
+    }
+
+    # Three played gameweeks, so every forward row sees exactly three.
+    assert counts[1] == 0
+    assert counts[4] == 3
+    assert counts[5] == 3
+    assert counts[6] == 3

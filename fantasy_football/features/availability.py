@@ -161,17 +161,18 @@ def add_positional_availability(
 
 
 def add_games_played_this_season(data: pl.DataFrame) -> pl.DataFrame:
-    """Count each player's prior gameweeks within the current season.
+    """Count each player's prior played gameweeks within the current season.
 
-    Shifted by one so the current gameweek is excluded, matching
-    :func:`add_rolling_minutes`. This is the column that lets a model learn when
-    to stop leaning on last season's history: it is 0 at GW1 and grows from
-    there.
+    Only rows with non-null ``minutes`` are counted as played; future fixtures
+    with null ``minutes`` do not increment the count. Shifted by one so the
+    current gameweek is excluded, matching :func:`add_rolling_minutes`. This is
+    the column that lets a model learn when to stop leaning on last season's
+    history: it is 0 at GW1 and grows from there.
 
     Parameters
     ----------
     data : pl.DataFrame
-        Player data containing ``season``, ``gw`` and ``element``.
+        Player data containing ``season``, ``gw``, ``element`` and ``minutes``.
 
     Returns
     -------
@@ -179,10 +180,13 @@ def add_games_played_this_season(data: pl.DataFrame) -> pl.DataFrame:
         ``data`` with an integer ``games_played_this_season`` column added.
     """
     return data.sort(["season", "gw"]).with_columns(
-        pl.col("gw")
-        .cum_count()
+        pl.col("minutes")
+        .is_not_null()
+        .cast(pl.Int64)
+        .cum_sum()
+        .shift(1)
+        .fill_null(0)
         .over(["season", "element"])
-        .sub(1)
         .cast(pl.Int64)
         .alias("games_played_this_season")
     )
