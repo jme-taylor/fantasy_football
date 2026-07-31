@@ -432,9 +432,11 @@ class FplAPI:
             pl.col("was_home").alias("is_home"),
             pl.col("minutes").cast(pl.Int64),
             pl.col("total_points").cast(pl.Int64),
+            # strict=False so a blank or malformed timestamp becomes a
+            # null rather than aborting the whole load.
             pl.col("kickoff_time")
             .str.replace("Z", "+00:00")
-            .str.to_datetime(time_zone="UTC")
+            .str.to_datetime(time_zone="UTC", strict=False)
             .dt.replace_time_zone(None)
             .alias("kickoff_time"),
         )

@@ -99,11 +99,33 @@ def build_forward_fixtures(
     -------
     pl.DataFrame
         Match-grain rows with a null ``minutes``, one per player-fixture.
+
+    Raises
+    ------
+    ValueError
+        If an ``opposition`` name has no entry in ``team_name_to_id``.
+        ``opponent`` is part of ``minutes_prediction``'s primary key and
+        therefore NOT NULL, so an unmapped name would otherwise surface
+        much later as an opaque DuckDB constraint violation.
     """
     upcoming = team_fixture.filter(
         (pl.col("season") == season) & (pl.col("gw") >= from_gw)
     ).select(["season", "gw", "team", "opposition", "kickoff_time"])
     joined = snapshot.join(upcoming, on=["season", "team"], how="inner")
+    unmapped = sorted(
+        (
+            name
+            for name in joined["opposition"].unique().to_list()
+            if name not in team_name_to_id
+        ),
+        key=str,
+    )
+    if unmapped:
+        raise ValueError(
+            f"No FPL team id for opposition {unmapped} in {season}; "
+            f"known names are {sorted(team_name_to_id)}. Fix the club-name "
+            f"mapping before scoring -- opponent cannot be null."
+        )
     return joined.select(
         "season",
         "gw",

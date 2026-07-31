@@ -251,6 +251,76 @@ def test_rolling_minutes_excludes_null_player_codes() -> None:
     assert result["avg_minutes_rolling_5"].null_count() == 2
 
 
+def test_rolling_minutes_is_constant_across_many_unplayed_fixtures() -> None:
+    """Every unplayed fixture carries the same frozen played-match window.
+
+    A shifted window over the raw stream feeds one null in per unplayed
+    fixture, so the mean shrinks and then goes null from the sixth one on.
+    In a pre-season run every gameweek is unplayed, which would strip the
+    feature from GW6-GW38. All ten forward rows must equal 65.0 -- the mean
+    of the player's three played matches.
+    """
+    played = [60, 90, 45]
+    minutes: list[int | None] = [*played, *([None] * 10)]
+    base = datetime(2026, 8, 1, 15, 0)
+    stream = pl.DataFrame(
+        {
+            "season": ["2026-27"] * len(minutes),
+            "gw": list(range(1, len(minutes) + 1)),
+            "element": [7] * len(minutes),
+            "kickoff_time": [
+                base + timedelta(weeks=i) for i in range(len(minutes))
+            ],
+            "minutes": minutes,
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+    codes = _codes([("2026-27", 7, 999)])
+    weeks = stream.select("season", "gw", "element")
+
+    result = add_rolling_minutes(weeks, stream, codes, rolling_window=5).sort(
+        "gw"
+    )
+
+    forward = result.filter(pl.col("gw") > len(played))
+    assert forward.height == 10
+    values = forward["avg_minutes_rolling_5"].to_list()
+    # Constant across every forward fixture, however far ahead...
+    assert len(set(values)) == 1
+    # ...and equal to the mean of the last 5 played matches: (60+90+45)/3.
+    assert values[0] == pytest.approx(65.0)
+
+
+def test_rolling_minutes_played_rows_keep_shifted_window() -> None:
+    """A played row never sees its own minutes, even with forward rows after."""
+    minutes: list[int | None] = [60, 90, 45, None, None]
+    base = datetime(2026, 8, 1, 15, 0)
+    stream = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 5,
+            "gw": [1, 2, 3, 4, 5],
+            "element": [7] * 5,
+            "kickoff_time": [base + timedelta(weeks=i) for i in range(5)],
+            "minutes": minutes,
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+    codes = _codes([("2026-27", 7, 999)])
+    weeks = stream.select("season", "gw", "element")
+
+    result = add_rolling_minutes(weeks, stream, codes, rolling_window=5).sort(
+        "gw"
+    )
+    by_gw = {
+        row["gw"]: row["avg_minutes_rolling_5"]
+        for row in result.iter_rows(named=True)
+    }
+
+    assert by_gw[1] is None
+    assert by_gw[2] == pytest.approx(60.0)
+    assert by_gw[3] == pytest.approx(75.0)
+
+
 def test_add_chance_of_playing_joins_known_value() -> None:
     """A covered (season, gw, element) keeps its availability percentage."""
     data = pl.DataFrame(

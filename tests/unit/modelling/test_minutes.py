@@ -1,4 +1,5 @@
-from datetime import date, datetime
+import logging
+from datetime import date, datetime, timedelta
 from unittest import mock
 
 import numpy as np
@@ -25,6 +26,7 @@ from fantasy_football.modelling.minutes import (
     run_minutes_model,
     season_folds,
     train_final,
+    warn_unidentified_snapshot,
 )
 
 
@@ -957,3 +959,164 @@ def test_build_feature_frame_emits_every_declared_feature() -> None:
 
     for feature in FEATURES:
         assert feature in out.columns, f"{feature} missing from feature frame"
+
+
+def _forward_stream_player_week(gws: list[int]) -> pl.DataFrame:
+    """Player-week rows for one player across the given gameweeks."""
+    n = len(gws)
+    return pl.DataFrame(
+        {
+            "season": ["2026-27"] * n,
+            "gw": gws,
+            "element": [1] * n,
+            "name": ["A"] * n,
+            "position": ["MID"] * n,
+            "team": ["Arsenal"] * n,
+            "bonus": [0] * n,
+            "minutes": [None] * n,
+            "round": gws,
+            "total_points": [None] * n,
+            "value": [70] * n,
+        },
+        schema_overrides={"minutes": pl.Int64, "total_points": pl.Int64},
+    )
+
+
+def test_build_feature_frame_freezes_rolling_minutes_across_forward_gws() -> (
+    None
+):
+    """Forward gameweeks keep the frozen window at an early *and* a late gw.
+
+    The stream mixes three played matches with eleven unplayed fixtures.
+    A shifted window over the combined stream decays after the fifth
+    unplayed fixture and goes null soon after, so GW6+ would silently lose
+    ``avg_minutes_rolling_5`` in a pre-season run -- the exact case forward
+    scoring exists to serve. Both GW5 (early) and GW14 (late) must carry
+    the mean of the played matches.
+    """
+    played_gws = [1, 2, 3]
+    forward_gws = list(range(4, 15))
+    base = datetime(2026, 8, 1, 15, 0)
+    played_match = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 3,
+            "gw": played_gws,
+            "element": [1] * 3,
+            "opponent": [7, 8, 9],
+            "kickoff_time": [
+                base + timedelta(weeks=i) for i in range(len(played_gws))
+            ],
+            "minutes": [60, 90, 45],
+            "total_points": [3, 6, 1],
+        }
+    )
+    forward_fixtures = pl.DataFrame(
+        {
+            "season": ["2026-27"] * len(forward_gws),
+            "gw": forward_gws,
+            "element": [1] * len(forward_gws),
+            "opponent": [10] * len(forward_gws),
+            "kickoff_time": [
+                base + timedelta(weeks=3 + i) for i in range(len(forward_gws))
+            ],
+            "minutes": [None] * len(forward_gws),
+        },
+        schema_overrides={"minutes": pl.Int64},
+    )
+    player_week = pl.concat(
+        [
+            _forward_stream_player_week(played_gws).with_columns(
+                pl.Series("minutes", [60, 90, 45], dtype=pl.Int64)
+            ),
+            _forward_stream_player_week(forward_gws),
+        ],
+        how="vertical",
+    )
+    availability = pl.DataFrame(
+        {
+            "season": ["2026-27"],
+            "gw": [1],
+            "element": [1],
+            "chance_of_playing_this_round": [100],
+        }
+    )
+    player_season = pl.DataFrame(
+        {
+            "season": ["2026-27"],
+            "element": [1],
+            "player_code": [999],
+            "birth_date": [date(1995, 1, 1)],
+            "team_join_date": [date(2020, 1, 1)],
+        },
+        schema_overrides={"birth_date": pl.Date, "team_join_date": pl.Date},
+    )
+    team_fixture = pl.DataFrame(
+        {
+            "season": ["2026-27", "2025-26"],
+            "gw": [1, 1],
+            "team": ["Arsenal", "Arsenal"],
+        }
+    )
+
+    frame = build_feature_frame(
+        player_week,
+        availability,
+        played_match,
+        player_season,
+        team_fixture,
+        forward_fixtures=forward_fixtures,
+    )
+
+    by_gw = {
+        row["gw"]: row["avg_minutes_rolling_5"]
+        for row in frame.iter_rows(named=True)
+    }
+    # (60 + 90 + 45) / 3 = 65.0, frozen at the last played match.
+    assert by_gw[5] == 65.0  # early forward gameweek
+    assert by_gw[14] == 65.0  # late forward gameweek
+    assert all(by_gw[gw] == 65.0 for gw in forward_gws)
+
+
+def test_warn_unidentified_snapshot_reports_the_coverage_gap(caplog) -> None:
+    """Snapshot elements with no player_season row are counted and logged."""
+    snapshot = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 3,
+            "element": [1, 2, 3],
+        }
+    )
+    player_season = pl.DataFrame(
+        {
+            "season": ["2026-27", "2026-27"],
+            "element": [1, 2],
+            "player_code": [111, None],
+        },
+        schema_overrides={"player_code": pl.Int64},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        missing = warn_unidentified_snapshot(
+            snapshot, player_season, "2026-27"
+        )
+
+    # Element 2 has a row but a null player_code, so it is unusable too.
+    assert missing == 2
+    assert "2 of 3" in caplog.text
+
+
+def test_warn_unidentified_snapshot_silent_when_fully_covered(
+    caplog,
+) -> None:
+    """Full identity coverage logs nothing and reports zero."""
+    snapshot = pl.DataFrame({"season": ["2026-27"], "element": [1]})
+    player_season = pl.DataFrame(
+        {"season": ["2026-27"], "element": [1], "player_code": [111]}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        missing = warn_unidentified_snapshot(
+            snapshot, player_season, "2026-27"
+        )
+
+    assert missing == 0
+    assert caplog.text == ""

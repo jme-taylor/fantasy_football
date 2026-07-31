@@ -213,3 +213,25 @@ def test_forward_player_weeks_keeps_the_earliest_kickoff_leg() -> None:
 
     assert weeks.height == 1
     assert weeks["value"][0] == 55
+
+
+def test_build_forward_fixtures_names_unmapped_opposition(
+    snapshot: pl.DataFrame, fixtures: pl.DataFrame
+) -> None:
+    """A club name with no FPL id raises before the write, naming the club.
+
+    ``opponent`` is part of ``minutes_prediction``'s primary key and so is
+    NOT NULL; mapping with ``default=None`` would otherwise turn a renamed
+    or newly-promoted club into an opaque DuckDB constraint violation
+    hundreds of lines later.
+    """
+    ids = {"Chelsea": 7, "Everton": 8}  # Fulham missing.
+
+    with pytest.raises(ValueError) as excinfo:
+        build_forward_fixtures(
+            snapshot, fixtures, "2026-27", from_gw=1, team_name_to_id=ids
+        )
+
+    message = str(excinfo.value)
+    assert "Fulham" in message
+    assert "Chelsea" not in message.split("known names are")[0]

@@ -79,9 +79,12 @@ def _build_player_match(frame: pl.DataFrame) -> pl.DataFrame:
         pl.col("was_home").alias("is_home"),
         pl.col("minutes"),
         pl.col("total_points"),
+        # strict=False: Vaastav emits blank kickoff_time for a handful of
+        # rows, and one bad value in a ~150k-row CSV would otherwise abort
+        # the whole historic load. A bad value becomes a null instead.
         pl.col("kickoff_time")
         .str.replace("Z", "+00:00")
-        .str.to_datetime(time_zone="UTC")
+        .str.to_datetime(time_zone="UTC", strict=False)
         .dt.replace_time_zone(None)
         .alias("kickoff_time"),
     )

@@ -19,9 +19,17 @@ def add_rolling_minutes(
     element-keyed window would silently merge different people.
 
     Unplayed fixtures may appear in ``match_stream`` with a null
-    ``minutes``. ``rolling_mean`` ignores nulls under ``min_periods=1``,
-    so those rows inherit the window frozen at the last played match
-    rather than degrading it.
+    ``minutes``. They do not participate in the window at all: each one
+    carries the mean of the player's last ``rolling_window`` *played*
+    matches, frozen at the last played match and identical however far
+    into the future the fixture is. A naive shifted window would instead
+    feed one null in per unplayed fixture, so the value would shrink and
+    then vanish -- exactly where a pre-season run needs it most, since
+    every gameweek of the season is forward.
+
+    Played rows keep the leak-free shifted window: their value is the
+    mean of the matches strictly *before* them, so the row never sees its
+    own minutes.
 
     The window is computed at match grain, then reduced to one value per
     ``(season, gw, element)`` by taking the earliest kickoff in that
@@ -62,12 +70,33 @@ def add_rolling_minutes(
         )
         .filter(pl.col("player_code").is_not_null())
         .sort("kickoff_time")
+        .with_row_index("_row")
     )
-    stream = stream.with_columns(
+    # The frozen value an unplayed fixture inherits: the mean over the last
+    # ``rolling_window`` played matches, *including* the most recent one.
+    # Computed on the played rows alone so intervening unplayed fixtures
+    # cannot push played matches out of the window, then forward-filled
+    # along each player's timeline.
+    played_carry = stream.filter(pl.col("minutes").is_not_null()).select(
+        "_row",
         pl.col("minutes")
-        .shift(1)
         .rolling_mean(window_size=rolling_window, min_periods=1)
         .over("player_code")
+        .alias("_carry"),
+    )
+    stream = stream.join(played_carry, on="_row", how="left", coalesce=True)
+    stream = stream.with_columns(
+        pl.col("_carry").forward_fill().over("player_code")
+    )
+    stream = stream.with_columns(
+        pl.when(pl.col("minutes").is_not_null())
+        .then(
+            pl.col("minutes")
+            .shift(1)
+            .rolling_mean(window_size=rolling_window, min_periods=1)
+            .over("player_code")
+        )
+        .otherwise(pl.col("_carry"))
         .alias(output_column)
     )
     entering = stream.group_by(["season", "gw", "element"]).agg(

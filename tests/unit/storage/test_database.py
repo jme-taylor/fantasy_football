@@ -5,7 +5,10 @@ import duckdb
 import polars as pl
 import pytest
 
-from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.database import (
+    check_schema_drift,
+    get_connection,
+)
 from fantasy_football.storage.tables import (
     MINUTES_PREDICTION,
     PLAYER_AVAILABILITY,
@@ -57,6 +60,62 @@ def test_get_connection_is_idempotent(tmp_path: Path) -> None:
     finally:
         second.close()
     assert count == 0
+
+
+def test_get_connection_raises_on_schema_drift(tmp_path: Path) -> None:
+    """A stored table missing a declared column fails loudly, not obscurely.
+
+    CREATE TABLE IF NOT EXISTS cannot add a column to an existing table, so
+    a spec change against an old database file would otherwise surface as a
+    DuckDB Binder Error on the first read.
+    """
+    db_path = tmp_path / "drift.duckdb"
+    connection = get_connection(db_path)
+    connection.execute(
+        "ALTER TABLE minutes_prediction DROP COLUMN snapshot_captured_at"
+    )
+    connection.close()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        get_connection(db_path).close()
+
+    message = str(excinfo.value)
+    assert "minutes_prediction" in message
+    assert "snapshot_captured_at" in message
+    assert "rebuild=True" in message
+
+
+def test_get_connection_skips_the_drift_check_for_a_rebuild(
+    tmp_path: Path,
+) -> None:
+    """A rebuild must be able to open a drifted database in order to fix it.
+
+    ``main(rebuild=True)`` opens a connection *before* dropping the tables,
+    so an unconditional guard would make a drifted database impossible to
+    rebuild -- the very remedy the error message recommends.
+    """
+    db_path = tmp_path / "drift.duckdb"
+    connection = get_connection(db_path)
+    connection.execute(
+        "ALTER TABLE minutes_prediction DROP COLUMN snapshot_captured_at"
+    )
+    connection.close()
+
+    connection = get_connection(db_path, check_drift=False)
+    try:
+        reset_database(connection)
+    finally:
+        connection.close()
+
+    # After the rebuild the guard is satisfied again.
+    get_connection(db_path).close()
+
+
+def test_check_schema_drift_passes_on_a_fresh_database(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Every declared column exists after a normal create, so nothing raises."""
+    check_schema_drift(db)
 
 
 def test_coerce_player_week_normalises_gkp_and_selects_columns() -> None:

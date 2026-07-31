@@ -501,3 +501,33 @@ def test_build_player_match_carries_kickoff_time() -> None:
 
     assert "kickoff_time" in result.columns
     assert result["kickoff_time"][0] == datetime(2023, 8, 11, 19, 0)
+
+
+def test_build_player_match_tolerates_blank_kickoff_time() -> None:
+    """A blank or null kickoff becomes a null, not an aborted load.
+
+    Vaastav emits blank ``kickoff_time`` for a handful of rows; a strict
+    parse would raise and take the whole ~150k-row historic load with it.
+    """
+    frame = pl.DataFrame(
+        {
+            "season": ["2023-24"] * 3,
+            "gw": [1, 2, 3],
+            "element": [7, 7, 7],
+            "opponent_team": [3, 4, 5],
+            "was_home": [True, False, True],
+            "minutes": [90, 45, 0],
+            "total_points": [8, 2, 0],
+            "kickoff_time": ["2023-08-11T19:00:00Z", "", None],
+        },
+        schema_overrides={"kickoff_time": pl.Utf8},
+    )
+
+    result = _build_player_match(frame)
+
+    assert result.height == 3
+    assert result["kickoff_time"].to_list() == [
+        datetime(2023, 8, 11, 19, 0),
+        None,
+        None,
+    ]

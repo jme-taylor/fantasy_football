@@ -720,6 +720,53 @@ def backfill_minutes() -> None:
         connection.close()
 
 
+def warn_unidentified_snapshot(
+    snapshot: pl.DataFrame, player_season: pl.DataFrame, season: str
+) -> int:
+    """Log a warning for snapshot elements with no ``player_season`` row.
+
+    The FPL bootstrap typically carries more elements than ``player_season``
+    resolves identities for. An unmatched element gets a null
+    ``player_code``, so it drops out of the cross-season rolling stream and
+    reaches the model with null history, ``is_pl_newcomer=True`` and a null
+    ``age_years`` -- yet it still scores, median-imputed, and its stored
+    prediction is indistinguishable from a well-supported one. Making the
+    gap visible is the point; nothing is filtered out.
+
+    Parameters
+    ----------
+    snapshot : pl.DataFrame
+        One capture's rows, with ``element``.
+    player_season : pl.DataFrame
+        Identity rows with ``season``, ``element`` and ``player_code``.
+    season : str
+        The season being scored.
+
+    Returns
+    -------
+    int
+        The number of snapshot elements with no identity row.
+    """
+    identified = set(
+        player_season.filter(
+            (pl.col("season") == season) & pl.col("player_code").is_not_null()
+        )["element"].to_list()
+    )
+    elements = snapshot["element"].to_list()
+    missing = sorted({e for e in elements if e not in identified})
+    if missing:
+        logger.warning(
+            "%d of %d %s snapshot elements have no player_season row "
+            "(e.g. %s); they score with null history, is_pl_newcomer=True "
+            "and a null age_years.",
+            len(missing),
+            len(elements),
+            season,
+            missing[:10],
+        )
+    return len(missing)
+
+
 def score_forward_minutes() -> None:
     """Score the production model over every unplayed fixture and store it.
 
@@ -756,6 +803,8 @@ def score_forward_minutes() -> None:
         captured_at = snapshot["captured_at"][0]
 
         player_week = PLAYER_WEEK.load(connection)
+        player_season = PLAYER_SEASON.load(connection)
+        warn_unidentified_snapshot(snapshot, player_season, CURRENT_SEASON)
         from_gw = last_played_gw(player_week, CURRENT_SEASON) + 1
         team_name_to_id = {team.name: team.id for team in FplAPI().get_teams()}
         forward_fixtures = build_forward_fixtures(
@@ -781,7 +830,7 @@ def score_forward_minutes() -> None:
             combined_weeks,
             PLAYER_AVAILABILITY.load(connection),
             PLAYER_MATCH.load(connection),
-            PLAYER_SEASON.load(connection),
+            player_season,
             TEAM_FIXTURE.load(connection),
             forward_fixtures=forward_fixtures,
         )

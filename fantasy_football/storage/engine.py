@@ -28,6 +28,31 @@ def drop(connection: duckdb.DuckDBPyConnection, table_name: str) -> None:
     connection.execute(f"DROP TABLE IF EXISTS {table_name}")
 
 
+def table_columns(
+    connection: duckdb.DuckDBPyConnection, table_name: str
+) -> set[str]:
+    """Return the column names a table actually has in the database.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    table_name : str
+        The table to inspect.
+
+    Returns
+    -------
+    set[str]
+        The stored column names; empty when the table does not exist.
+    """
+    rows = connection.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = ?",
+        [table_name],
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
 def insert_frame(
     connection: duckdb.DuckDBPyConnection,
     table_name: str,

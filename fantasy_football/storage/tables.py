@@ -135,6 +135,12 @@ PLAYER_AVAILABILITY = Table(
     order_by=("season", "gw", "element"),
 )
 
+# ``prediction_kind`` is part of the primary key, so the same
+# (season, gw, element, opponent) can hold both a ``backfill`` row and a
+# ``forward`` row. For the current season, where the two coexist, any
+# consumer that joins this table without filtering on ``prediction_kind``
+# fans its rows out 2x -- silently double-counting expected minutes.
+# Always filter to one kind before joining.
 MINUTES_PREDICTION = Table(
     name="minutes_prediction",
     schema={

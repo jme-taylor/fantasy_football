@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -789,6 +790,56 @@ class TestFplAPI:
             pl.Int64,
             pl.Int64,
             pl.Datetime("us"),
+        ]
+
+    def test_get_player_match_history_tolerates_blank_kickoff(
+        self,
+        fpl_api: FplAPI,
+        mocker: MockerFixture,
+    ) -> None:
+        """A blank or null kickoff parses to null rather than raising."""
+        payload = {
+            "history": [
+                {
+                    "element": 5,
+                    "round": 1,
+                    "opponent_team": 12,
+                    "was_home": True,
+                    "minutes": 90,
+                    "total_points": 6,
+                    "kickoff_time": "",
+                },
+                {
+                    "element": 5,
+                    "round": 2,
+                    "opponent_team": 7,
+                    "was_home": False,
+                    "minutes": 70,
+                    "total_points": 2,
+                    "kickoff_time": None,
+                },
+                {
+                    "element": 5,
+                    "round": 3,
+                    "opponent_team": 9,
+                    "was_home": True,
+                    "minutes": 45,
+                    "total_points": 1,
+                    "kickoff_time": "2023-08-25T19:00:00Z",
+                },
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = payload
+        mocker.patch("requests.get", return_value=mock_response)
+
+        result = fpl_api.get_player_match_history(5)
+
+        assert result.height == 3
+        assert result["kickoff_time"].to_list() == [
+            None,
+            None,
+            datetime(2023, 8, 25, 19, 0),
         ]
 
     def test_get_player_match_history_empty_history(
