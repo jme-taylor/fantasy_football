@@ -9,6 +9,7 @@ from fantasy_football.constants import (
     OPPONENT_FACTOR_EXPONENT,
     ROLLING_WINDOW,
 )
+from fantasy_football.extraction.seasons import previous_season
 from fantasy_football.features.roster import current_roster
 from fantasy_football.features.transformation import (
     KNOWN_POSITIONS,
@@ -51,7 +52,9 @@ def _latest_rolling_by_code(
     Returns
     -------
     pl.DataFrame
-        One row per ``player_code``, with a ``baseline`` column.
+        One row per ``player_code``, with a ``baseline`` column and a
+        ``baseline_season`` column naming the season that baseline was taken
+        from (so callers can see how stale it is).
 
     Notes
     -----
@@ -75,12 +78,105 @@ def _latest_rolling_by_code(
         )
     if eligible.is_empty():
         return pl.DataFrame(
-            schema={"player_code": pl.Int64, "baseline": pl.Float64}
+            schema={
+                "player_code": pl.Int64,
+                "baseline": pl.Float64,
+                "baseline_season": pl.Utf8,
+            }
         )
     return (
         eligible.sort(["season", "gw"])
         .group_by("player_code")
-        .agg(pl.col(rolling_col).last().alias("baseline"))
+        .agg(
+            pl.col(rolling_col).last().alias("baseline"),
+            pl.col("season").last().alias("baseline_season"),
+        )
+    )
+
+
+def _log_stale_baselines(
+    joined: pl.DataFrame, current_season: str, worst_n: int = 10
+) -> None:
+    """Log how many baselines predate the immediately-preceding season.
+
+    A cross-season baseline lookup will happily reach years back for a player
+    who has not featured since -- six-year-old form then gets used verbatim as
+    current form. Nothing here changes which baseline is chosen; this only
+    makes the staleness visible.
+
+    Parameters
+    ----------
+    joined : pl.DataFrame
+        Roster rows joined to their baselines, carrying ``name`` and
+        ``baseline_season``.
+    current_season : str
+        The season being predicted.
+    worst_n : int, optional
+        How many of the oldest offenders to name in the log line. Defaults to
+        10.
+
+    Returns
+    -------
+    None
+    """
+    previous = previous_season(current_season)
+    stale = joined.filter(
+        pl.col("baseline_season").is_not_null()
+        & (pl.col("baseline_season") < previous)
+    ).sort(["baseline_season", "name"])
+    if stale.is_empty():
+        return
+    worst = [
+        f"{name} ({season})"
+        for name, season in zip(
+            stale["name"].to_list()[:worst_n],
+            stale["baseline_season"].to_list()[:worst_n],
+            strict=True,
+        )
+    ]
+    logger.info(
+        "%d of %d players draw their baseline from a season older than %s; "
+        "oldest first: %s",
+        stale.height,
+        joined.height,
+        previous,
+        worst,
+    )
+
+
+def _dedupe_by_name(baselines: pl.DataFrame) -> pl.DataFrame:
+    """Collapse same-named players to one row, deterministically and loudly.
+
+    Downstream keys on ``name``, so two players sharing
+    ``first_name || ' ' || second_name`` would otherwise become one variable
+    with last-write-wins. The row with the lowest ``element`` survives, which
+    makes the choice reproducible run to run rather than dependent on join
+    order.
+
+    Parameters
+    ----------
+    baselines : pl.DataFrame
+        Baseline rows carrying ``name`` and ``element``.
+
+    Returns
+    -------
+    pl.DataFrame
+        The same frame with at most one row per ``name``.
+    """
+    duplicated = (
+        baselines.group_by("name")
+        .agg(pl.len().alias("rows"))
+        .filter(pl.col("rows") > 1)
+    )
+    if not duplicated.is_empty():
+        logger.warning(
+            "%d display name(s) are shared by more than one player; keeping "
+            "the lowest element id for each and dropping the rest: %s",
+            duplicated.height,
+            sorted(duplicated["name"].to_list()),
+        )
+    return baselines.sort("element").unique(
+        subset=["name"], keep="first", maintain_order=True
     )
 
 
@@ -114,7 +210,13 @@ def _baselines(
     -------
     pl.DataFrame
         The baselines DataFrame, with columns ``name``, ``position``,
-        ``team``, ``element`` and ``baseline``.
+        ``team``, ``element`` and ``baseline``. One row per ``name``:
+        everything downstream (``optimiser._build_problem``,
+        ``optimiser._load_prices``) keys on ``name``, so two players sharing a
+        display name would otherwise collapse into a single MILP variable with
+        last-write-wins. Both branches therefore deduplicate on ``name``; on
+        the roster branch the survivor is deterministic -- the row with the
+        lowest ``element`` wins -- and the losers are logged.
     """
     rolling_col = rolling_column_name("total_points", ROLLING_WINDOW)
     if roster is not None and not roster.is_empty():
@@ -130,6 +232,7 @@ def _baselines(
                 len(cold),
                 cold,
             )
+        _log_stale_baselines(joined, current_season)
         filled = fill_missing_values_by_position(joined, "baseline")
         unfilled = sorted(
             filled.filter(pl.col("baseline").is_null())["name"].to_list()
@@ -142,8 +245,14 @@ def _baselines(
                 unfilled,
             )
             filled = filled.filter(pl.col("baseline").is_not_null())
-        return filled.select(
-            "name", "position", "team", "element", "baseline"
+        teamless = sorted(
+            filled.filter(pl.col("team").is_null())["name"].to_list()
+        )
+        for name in teamless:
+            logger.debug("Dropping player %r — no team in the roster", name)
+        filled = filled.filter(pl.col("team").is_not_null())
+        return _dedupe_by_name(
+            filled.select("name", "position", "team", "element", "baseline")
         )
 
     current = rolling.filter(pl.col("season") == current_season)
@@ -278,6 +387,7 @@ def _predict(
     current_season: str,
     horizon_n: int | None = None,
     as_of_gw: int | None = None,
+    is_backtest: bool = False,
 ) -> pl.DataFrame:
     """Produce per-(player, future_gw) point predictions and return them.
 
@@ -287,11 +397,21 @@ def _predict(
     will predict on all future gameweeks. It then attaches ELO ratings for
     each fixture and calculates the predicted points for each player.
 
-    When ``as_of_gw`` is None the roster comes from the latest player
-    snapshot, so a season with no played gameweeks still has players to
-    predict for. A backtest (``as_of_gw`` set) never reads the snapshot,
-    since it is a point-in-time capture of *now* and would leak future team
-    membership into a past pivot.
+    Whether the FPL player snapshot may be read is decided by ``is_backtest``
+    alone, never by ``as_of_gw``. The two carry different meanings and a live
+    run legitimately sets both:
+
+    * ``main.main`` is a live run planning from a gameweek. It leaves
+      ``is_backtest`` False, so the snapshot -- a capture of *now* -- is the
+      right source of truth for who plays for whom, whether or not it also
+      passes ``as_of_gw`` (which it does, derived from the team file, and
+      which is 0 for a pre-season GW1 team). Before a ball is kicked the
+      roster is the *only* source of players, so suppressing it here is what
+      produced an empty predictions.csv.
+    * ``evaluation._collect_predictions_vs_actuals`` replays past pivots and
+      passes ``is_backtest=True``. Reading a present-day snapshot there would
+      leak future club membership into a past prediction, so the legacy
+      player-week-derived identity path is used instead.
 
     Parameters
     ----------
@@ -302,9 +422,13 @@ def _predict(
         will be predicted.
     as_of_gw : int | None
         Pivot gameweek. When set, predictions cover gameweeks after as_of_gw
-        and baselines use only form at or before it (leak-free past-window
-        backtest). When None, the pivot is the latest completed current-season
-        gameweek. Defaults to None.
+        and baselines use only form at or before it. When None, the pivot is
+        the latest completed current-season gameweek. Defaults to None.
+    is_backtest : bool, optional
+        Whether this is a historical replay rather than a live run. True
+        suppresses every present-day source -- currently the player snapshot
+        that backs the roster -- so a past pivot cannot see the present.
+        Defaults to False, which is what live callers want.
 
     Returns
     -------
@@ -315,7 +439,7 @@ def _predict(
         TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
         try_parse_dates=True,
     )
-    roster = current_roster(current_season) if as_of_gw is None else None
+    roster = None if is_backtest else current_roster(current_season)
     baselines = _baselines(rolling, current_season, as_of_gw, roster)
     fixtures = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("fixtures_enriched.csv"),
@@ -353,7 +477,13 @@ def _predict(
     fx = _elo_as_of(team_elo, fixtures, "team", "player_team_elo")
     fx = _elo_as_of(team_elo, fx, "opponent_team", "opponent_team_elo")
 
-    median_elo = team_elo["elo"].median()
+    # team_elo carries one row per FPL alias, so a club known by two names
+    # (e.g. Ipswich) appears twice with an identical rating over an identical
+    # interval. Deduplicate on the rating interval before taking the median,
+    # or the multi-alias clubs get double weight in the fallback value.
+    median_elo = team_elo.unique(subset=["elo", "from_date", "to_date"])[
+        "elo"
+    ].median()
     for col, team_col in (
         ("player_team_elo", "team"),
         ("opponent_team_elo", "opponent_team"),
@@ -376,11 +506,18 @@ def predict_points(
     current_season: str,
     horizon_n: int | None = None,
     as_of_gw: int | None = None,
+    is_backtest: bool = False,
 ) -> pl.DataFrame:
     """Compute predictions, write them to predictions.csv, and return them.
 
     Thin IO wrapper around :func:`_predict`. See that function for the
     prediction logic and parameter meanings.
+
+    This is the live entry point: ``main.main`` calls it and leaves
+    ``is_backtest`` at its default of False, so the player snapshot supplies
+    the roster even when ``as_of_gw`` is set from a team file. The backtest
+    harness in :mod:`fantasy_football.modelling.evaluation` bypasses this
+    wrapper and calls :func:`_predict` with ``is_backtest=True``.
 
     Parameters
     ----------
@@ -389,14 +526,19 @@ def predict_points(
     horizon_n : int | None
         Number of future gameweeks to predict. None predicts all of them.
     as_of_gw : int | None
-        Pivot gameweek for a leak-free past-window backtest.
+        Pivot gameweek: predictions cover gameweeks after it, and baselines
+        use only form at or before it.
+    is_backtest : bool, optional
+        Whether this is a historical replay. True suppresses present-day
+        sources (the snapshot-derived roster) so a past pivot cannot see the
+        present. Defaults to False for live callers.
 
     Returns
     -------
     pl.DataFrame
         The predictions DataFrame.
     """
-    predictions = _predict(current_season, horizon_n, as_of_gw)
+    predictions = _predict(current_season, horizon_n, as_of_gw, is_backtest)
     TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
     predictions.write_csv(TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv"))
     logger.info(

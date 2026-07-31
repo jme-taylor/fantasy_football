@@ -100,7 +100,12 @@ def _collect_predictions_vs_actuals(rolling_window: int) -> pl.DataFrame:
     prediction_frames = []
     for season in seasons:
         for pivot in _select_pivots(rolling, season, rolling_window):
-            preds = _predict(season, horizon_n=1, as_of_gw=pivot)
+            # is_backtest=True: this is a past pivot, so the present-day
+            # player snapshot must not be consulted -- it would leak club
+            # membership that had not happened yet at ``pivot``.
+            preds = _predict(
+                season, horizon_n=1, as_of_gw=pivot, is_backtest=True
+            )
             if preds.is_empty():
                 continue
             prediction_frames.append(preds)

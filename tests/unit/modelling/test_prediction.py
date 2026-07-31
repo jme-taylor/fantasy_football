@@ -85,7 +85,7 @@ def _baseline_elo() -> pl.DataFrame:
 
 
 def _two_season_rolling() -> pl.DataFrame:
-    """Rolling rows for one player spanning a season boundary."""
+    """Return rolling rows for one player spanning a season boundary."""
     return pl.DataFrame(
         {
             "season": ["2025-26", "2025-26", "2026-27"],
@@ -689,7 +689,7 @@ def test_predict_points_works_with_no_current_season_rolling_rows(
     assert saka["predicted_points"].item() is not None
 
 
-def test_predict_points_ignores_the_roster_when_as_of_gw_is_set(
+def test_predict_points_ignores_the_roster_when_backtesting(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A backtest never consults the snapshot, so no future state leaks in."""
@@ -714,6 +714,285 @@ def test_predict_points_ignores_the_roster_when_as_of_gw_is_set(
         ),
     )
 
-    predict_points("2025-26", as_of_gw=10)
+    predict_points("2025-26", as_of_gw=10, is_backtest=True)
 
     assert called == []
+
+
+def test_predict_points_uses_the_roster_when_as_of_gw_is_set_live(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live run with a team file still reads the roster.
+
+    Regression test for the pre-season bug: ``main`` derives
+    ``as_of_gw = team.gameweek - 1``, which is 0 for a GW1 team file. Gating
+    the roster on ``as_of_gw is None`` suppressed it, the current-season
+    rolling filter was empty, and predictions.csv came out header-only.
+    """
+    monkeypatch.setattr(
+        prediction,
+        "current_roster",
+        lambda season: pl.DataFrame(
+            {
+                "name": ["Bukayo Saka"],
+                "position": ["MID"],
+                "team": ["Arsenal"],
+                "element": [55],
+                "player_code": [999],
+                "value": [130],
+            }
+        ),
+    )
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26"],
+            "name": ["Bukayo Saka"],
+            "position": ["MID"],
+            "team": ["Arsenal"],
+            "element": [101],
+            "player_code": [999],
+            "gw": [38],
+            "total_points": [8],
+            "total_points_rolling_5": [5.0],
+        }
+    )
+    fixtures = pl.DataFrame(
+        {
+            "team": ["Arsenal"],
+            "opponent_team": ["Hull City"],
+            "is_home": [True],
+            "kickoff_date": [date(2026, 8, 15)],
+            "season": ["2026-27"],
+            "gw": [1],
+        }
+    )
+    team_elo = pl.DataFrame(
+        {
+            "team": ["Arsenal", "Hull City"],
+            "elo": [2000.0, 1400.0],
+            "from_date": [date(2026, 7, 1)] * 2,
+            "to_date": [date(2026, 12, 1)] * 2,
+        }
+    )
+    _setup_artifacts(tmp_path, monkeypatch, rolling, fixtures, team_elo)
+
+    # as_of_gw=0 is exactly what main() passes for a GW1 team file.
+    result = predict_points("2026-27", as_of_gw=0)
+
+    assert not result.is_empty()
+    assert result["gw"].to_list() == [1]
+    assert result["name"].to_list() == ["Bukayo Saka"]
+    assert result["player_id"].to_list() == [55]
+
+
+def _mid_season_roster() -> pl.DataFrame:
+    """Return a two-player roster in the shape ``current_roster`` produces."""
+    return pl.DataFrame(
+        {
+            "name": ["P1", "P2"],
+            "position": ["MID", "FWD"],
+            "team": ["Arsenal", "Chelsea"],
+            "element": [55, 56],
+            "player_code": [999, 888],
+            "value": [130, 90],
+        }
+    )
+
+
+def test_baselines_mid_season_with_a_roster_uses_current_season_form() -> None:
+    """Mid-season with a roster: form is current-season, identity is roster.
+
+    This is the path production actually takes mid-season when no team file is
+    given, so it needs cover in its own right -- the legacy no-roster branch
+    is now only reached by backtests.
+    """
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26", "2026-27", "2026-27"],
+            "name": ["P1", "P1", "P1", "P2"],
+            "position": ["MID"] * 3 + ["FWD"],
+            # Stale club membership: the roster must win, not this.
+            "team": ["Everton"] * 4,
+            "element": [11, 11, 101, 102],
+            "player_code": [999, 999, 999, 888],
+            "gw": [37, 38, 9, 9],
+            "total_points": [6, 8, 2, 4],
+            "total_points_rolling_5": [4.0, 5.0, 7.0, 3.0],
+        }
+    )
+
+    result = _baselines(
+        rolling, "2026-27", as_of_gw=None, roster=_mid_season_roster()
+    ).sort("name")
+
+    # Baselines come from the latest *current-season* rows, not last season's.
+    assert result["baseline"].to_list() == [7.0, 3.0]
+    # Identity -- club and element -- comes from the roster.
+    assert result["team"].to_list() == ["Arsenal", "Chelsea"]
+    assert result["element"].to_list() == [55, 56]
+    assert result["position"].to_list() == ["MID", "FWD"]
+
+
+def test_baselines_roster_path_deduplicates_shared_display_names(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two roster players with one display name cannot silently collapse.
+
+    Downstream (``_build_problem``, ``_load_prices``) keys on ``name``, so a
+    collision would become one MILP variable with last-write-wins. The
+    survivor must be deterministic (lowest element) and the drop logged.
+    """
+    roster = pl.DataFrame(
+        {
+            "name": ["Danny Ward", "Danny Ward"],
+            "position": ["GK", "FWD"],
+            "team": ["Leicester", "Huddersfield"],
+            "element": [402, 77],
+            "player_code": [111, 222],
+            "value": [45, 50],
+        }
+    )
+    rolling = pl.DataFrame(
+        {
+            "season": ["2026-27", "2026-27"],
+            "name": ["Danny Ward", "Danny Ward"],
+            "position": ["GK", "FWD"],
+            "team": ["Leicester", "Huddersfield"],
+            "element": [402, 77],
+            "player_code": [111, 222],
+            "gw": [9, 9],
+            "total_points": [2, 6],
+            "total_points_rolling_5": [1.5, 4.5],
+        }
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.modelling.prediction"
+    ):
+        result = _baselines(rolling, "2026-27", as_of_gw=None, roster=roster)
+
+    assert result.height == 1
+    # Lowest element wins, deterministically.
+    assert result["element"].to_list() == [77]
+    assert result["baseline"].to_list() == [4.5]
+    assert any(
+        "Danny Ward" in record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    )
+
+
+def test_baselines_roster_path_logs_stale_baseline_seasons(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A baseline older than the previous season is surfaced in an INFO log."""
+    roster = pl.DataFrame(
+        {
+            "name": ["Old Timer", "Current Star"],
+            "position": ["MID", "MID"],
+            "team": ["Arsenal", "Arsenal"],
+            "element": [1, 2],
+            "player_code": [111, 222],
+            "value": [45, 130],
+        }
+    )
+    rolling = pl.DataFrame(
+        {
+            "season": ["2020-21", "2025-26"],
+            "name": ["Old Timer", "Current Star"],
+            "position": ["MID", "MID"],
+            "team": ["Arsenal", "Arsenal"],
+            "element": [1, 2],
+            "player_code": [111, 222],
+            "gw": [38, 38],
+            "total_points": [2, 8],
+            "total_points_rolling_5": [1.0, 5.0],
+        }
+    )
+
+    with caplog.at_level(
+        logging.INFO, logger="fantasy_football.modelling.prediction"
+    ):
+        _baselines(rolling, "2026-27", as_of_gw=None, roster=roster)
+
+    stale_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "older than" in record.getMessage()
+    ]
+    assert len(stale_logs) == 1
+    assert "Old Timer (2020-21)" in stale_logs[0]
+    # The player whose baseline is from last season is not an offender.
+    assert "Current Star" not in stale_logs[0]
+
+
+def test_baselines_roster_path_logs_dropped_null_team_rows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A roster row with no club is dropped with a debug log, not silently."""
+    roster = pl.DataFrame(
+        {
+            "name": ["Clubless", "P2"],
+            "position": ["MID", "FWD"],
+            "team": [None, "Chelsea"],
+            "element": [1, 2],
+            "player_code": [111, 222],
+            "value": [45, 90],
+        },
+        schema_overrides={"team": pl.Utf8},
+    )
+    rolling = pl.DataFrame(
+        {
+            "season": ["2026-27", "2026-27"],
+            "name": ["Clubless", "P2"],
+            "position": ["MID", "FWD"],
+            "team": ["Arsenal", "Chelsea"],
+            "element": [1, 2],
+            "player_code": [111, 222],
+            "gw": [9, 9],
+            "total_points": [2, 6],
+            "total_points_rolling_5": [3.0, 4.0],
+        }
+    )
+
+    with caplog.at_level(
+        logging.DEBUG, logger="fantasy_football.modelling.prediction"
+    ):
+        result = _baselines(rolling, "2026-27", as_of_gw=None, roster=roster)
+
+    assert result["name"].to_list() == ["P2"]
+    assert any(
+        "Clubless" in record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.DEBUG
+    )
+
+
+def test_missing_elo_median_is_not_skewed_by_alias_duplication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Alias rows share one rating, so they count once towards the median.
+
+    ``elo.normalize_elo_frame`` emits one row per FPL alias, so a multi-alias
+    club appears twice with an identical rating over an identical interval.
+    Counting both would drag the missing-ELO fallback median towards it.
+    """
+    elo = pl.DataFrame(
+        {
+            # Arsenal 2000, Spurs 1900, and one club under two aliases at 1000.
+            "team": ["Arsenal", "Spurs", "Ipswich", "Ipswich Town"],
+            "elo": [2000.0, 1900.0, 1000.0, 1000.0],
+            "from_date": [date(2025, 10, 1)] * 4,
+            "to_date": [date(2025, 12, 31)] * 4,
+        }
+    )
+    _setup_artifacts(
+        tmp_path, monkeypatch, _baseline_rolling(), _baseline_fixtures(), elo
+    )
+
+    result = predict_points("2025-26", horizon_n=1)
+
+    # Deduplicated ratings are [2000, 1900, 1000] -> median 1900.
+    # With the duplicate counted it would be (1900 + 1000) / 2 = 1450.
+    row = result.filter(pl.col("gw") == 11).row(0, named=True)
+    assert row["opponent_team_elo"] == pytest.approx(1900.0)
