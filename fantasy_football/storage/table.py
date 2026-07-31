@@ -17,6 +17,15 @@ from fantasy_football.storage import engine
 
 logger = logging.getLogger(__name__)
 
+_DUCKDB_TYPES: dict[pl.DataType, str] = {
+    pl.Utf8: "VARCHAR",
+    pl.Int64: "BIGINT",
+    pl.Boolean: "BOOLEAN",
+    pl.Float64: "DOUBLE",
+    pl.Date: "DATE",
+    pl.Datetime: "TIMESTAMP",
+}
+
 
 def duckdb_type(dtype: pl.DataType) -> str:
     """Map a Polars dtype onto its DuckDB column type.
@@ -36,19 +45,10 @@ def duckdb_type(dtype: pl.DataType) -> str:
     ValueError
         If the dtype has no mapping, rather than emitting invalid SQL.
     """
-    if dtype == pl.Utf8:
-        return "VARCHAR"
-    if dtype == pl.Int64:
-        return "BIGINT"
-    if dtype == pl.Boolean:
-        return "BOOLEAN"
-    if dtype == pl.Float64:
-        return "DOUBLE"
-    if dtype == pl.Date:
-        return "DATE"
-    if dtype == pl.Datetime:
-        return "TIMESTAMP"
-    raise ValueError(f"No DuckDB type mapped for Polars dtype {dtype!r}")
+    try:
+        return _DUCKDB_TYPES[dtype]
+    except KeyError:
+        raise ValueError(f"No DuckDB type mapped for Polars dtype {dtype!r}") from None
 
 
 @dataclass(frozen=True, eq=False)
