@@ -109,6 +109,57 @@ class Table:
         body = ",\n".join(lines)
         return f"CREATE TABLE IF NOT EXISTS {self.name} (\n{body}\n)"
 
+    def conform(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """Add any schema columns the frame lacks, as typed nulls.
+
+        Source data is ragged across seasons: Vaastav published
+        ``key_passes`` only from 2016-17 to 2018-19 and ``expected_goals``
+        only from 2022-23, and FCI added ``corners`` in 2026-27. Without
+        this, ``coerce``'s ``select`` raises on any season missing a
+        column. Filling with a typed null lets every season reduce to one
+        schema, and the null is honest: the stat was not published, which
+        is not the same as zero. Which seasons those are is recorded in
+        ``storage/coverage.py``.
+
+        Extra columns are deliberately left in place; ``coerce`` drops
+        them, and ``unknown_columns`` reports them first.
+
+        Parameters
+        ----------
+        frame : pl.DataFrame
+            A frame carrying some subset of this table's columns.
+
+        Returns
+        -------
+        pl.DataFrame
+            The frame plus a typed-null column for each missing one.
+        """
+        missing = [
+            pl.lit(None, dtype=dtype).alias(column)
+            for column, dtype in self.schema.items()
+            if column not in frame.columns
+        ]
+        return frame if not missing else frame.with_columns(missing)
+
+    def unknown_columns(self, frame: pl.DataFrame) -> list[str]:
+        """Return frame columns this table's schema does not declare.
+
+        ``coerce`` drops undeclared columns silently, which is how a new
+        upstream stat disappears without anyone noticing. Loaders call
+        this and log the result so the next addition is visible.
+
+        Parameters
+        ----------
+        frame : pl.DataFrame
+            A frame as read from the source.
+
+        Returns
+        -------
+        list[str]
+            Undeclared column names, sorted.
+        """
+        return sorted(set(frame.columns) - set(self.schema))
+
     def coerce(self, frame: pl.DataFrame) -> pl.DataFrame:
         """Narrow a frame to this table's columns, order, and dtypes.
 

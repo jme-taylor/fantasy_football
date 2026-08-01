@@ -324,3 +324,66 @@ def test_replace_partition_gw_from_preserves_earlier_gameweeks(
     # GW1 has kicked off; its forecast is frozen, not rewritten.
     assert by_gw[1] == pytest.approx(60.0)
     assert by_gw[2] == pytest.approx(5.0)
+
+
+def test_conform_adds_missing_columns_as_typed_nulls():
+    """A frame missing schema columns gains them as typed nulls."""
+    frame = pl.DataFrame({"season": ["2016-17"], "element": [1]})
+    conformed = WIDGET.conform(frame)
+    assert set(conformed.columns) >= set(WIDGET.columns)
+    assert conformed["label"].to_list() == [None]
+    assert conformed["label"].dtype == pl.Utf8
+    assert conformed["ratio"].dtype == pl.Float64
+
+
+def test_conform_leaves_present_columns_untouched():
+    """Columns already in the frame keep their values."""
+    frame = pl.DataFrame(
+        {
+            "season": ["2016-17"],
+            "element": [1],
+            "label": ["keep me"],
+            "ratio": [0.5],
+        }
+    )
+    conformed = WIDGET.conform(frame)
+    assert conformed["label"].to_list() == ["keep me"]
+    assert conformed["ratio"].to_list() == [0.5]
+
+
+def test_conform_keeps_extra_columns_for_coerce_to_drop():
+    """Extra source columns survive conform; coerce is what narrows."""
+    frame = pl.DataFrame({"season": ["2016-17"], "element": [1], "extra": [9]})
+    assert "extra" in WIDGET.conform(frame).columns
+
+
+def test_conform_output_is_coercible():
+    """A conformed frame passes through coerce without raising."""
+    frame = pl.DataFrame({"season": ["2016-17"], "element": [1], "extra": [9]})
+    shaped = WIDGET.coerce(WIDGET.conform(frame))
+    assert shaped.columns == WIDGET.columns
+    assert shaped.height == 1
+
+
+def test_conform_on_empty_frame_produces_empty_typed_frame():
+    """An empty source frame conforms to an empty, fully-typed frame."""
+    frame = pl.DataFrame({"season": [], "element": []})
+    conformed = WIDGET.conform(frame)
+    assert conformed.height == 0
+    assert set(WIDGET.columns) <= set(conformed.columns)
+
+
+def test_unknown_columns_reports_undeclared_source_columns():
+    """Columns absent from the schema are reported, sorted."""
+    frame = pl.DataFrame(
+        {"season": ["2016-17"], "element": [1], "zebra": [1], "apple": [2]}
+    )
+    assert WIDGET.unknown_columns(frame) == ["apple", "zebra"]
+
+
+def test_unknown_columns_empty_when_frame_matches_schema():
+    """A frame with only schema columns reports nothing unknown."""
+    frame = pl.DataFrame(
+        {"season": ["a"], "element": [1], "label": ["x"], "ratio": [1.0]}
+    )
+    assert WIDGET.unknown_columns(frame) == []
