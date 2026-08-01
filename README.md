@@ -36,6 +36,8 @@ fantasy_football/
 ├── extraction/         — ingest raw data into the DuckDB store
 │   ├── fpl.py          — wrappers around the live FPL API (players, teams, fixtures, per-fixture history)
 │   ├── player_match.py — build the current season's per-fixture player_match rows from the FPL API
+│   ├── player_match_fpl.py  — load Vaastav's full per-fixture stat set into player_match_fpl
+│   ├── player_match_opta.py — load FCI's per-fixture Opta stat set (all competitions) into player_match_opta
 │   ├── extractor.py    — download the frozen Vaastav historic dataset (player_week + player_match); GitHub API client
 │   ├── fci.py          — download current-season data from FPL Core Insights and reshape to player_week rows
 │   ├── fplcache.py     — read per-gameweek team and chance-of-playing from the Randdalf/fplcache snapshots
@@ -134,6 +136,63 @@ per-fixture files; current-season rows (2025-26) come from the FPL API
 > per-fixture data is no longer retrievable there. Run the current-season
 > `player_match` backfill before the rollover; historic Vaastav data has no
 > such deadline.
+
+### Match-level player stats
+
+Two tables hold the comprehensive per-fixture record, alongside the thin
+`player_match` table the prediction pipeline uses:
+
+| Table | Source | Seasons | Key |
+|---|---|---|---|
+| `player_match_fpl` | Vaastav `gws/merged_gw.csv` | 2016-17 → 2025-26 | `(season, gw, element, fixture)` |
+| `player_match_opta` | FCI `playermatchstats.csv` | 2024-25 → 2026-27 | `(season, gw, element, match_id)` |
+
+Columns are ragged across seasons: Vaastav published a detailed stat set
+from 2016-17 to 2018-19, dropped it for three seasons, added the
+`expected_*` family in 2022-23 and `defensive_contribution` in 2025-26.
+FCI added nine columns in 2025-26 and `corners` in 2026-27. A null
+therefore may mean "not published that season" rather than zero —
+`fantasy_football/storage/coverage.py` records which, and
+`seasons_covering` returns the seasons in which a given set of columns is
+all available.
+
+`player_match_opta` keeps **every competition**, not just the Premier
+League. Any consumer computing FPL stats must filter to
+`competition = 'prem'`, or European and cup appearances will inflate the
+totals.
+
+`storage/validation.py` cross-checks the two sources over 2024-25 and
+2025-26, where both publish.
+
+**As ingested:** `player_match_fpl` holds all 10 seasons, 253,890 rows in
+total, between 21,790 and 29,747 per season. `player_match_opta` holds
+11,567 rows for 2024-25 (`prem` only, the sole competition FCI records that
+season) and, for 2025-26: 12,754 `prem`, 1,047 `champions`, 835 `efl`, 463
+`europa`, 241 `conference`. 2026-27 has 38 published gameweek files, all
+empty — the season hasn't started yet, so nothing is stored there; this is
+expected, not a fault.
+
+Cross-checking the 23,986 player-gameweeks both sources cover in common
+(2024-25 and 2025-26, Premier League only) shows tight agreement on the
+counting stats and one well-understood gap in minutes:
+
+| stat | disagreement rate |
+|---|---|
+| `minutes` | 12.45% |
+| `assists` | 0.75% |
+| `goals_scored` | 0.07% |
+| `saves` | 0.04% |
+| `penalties_missed` | 0.01% |
+
+The `minutes` figure looks alarming on its own but is a benign convention
+difference, not a bug: 2,859 of the 2,986 disagreements (95.7%) are off by
+exactly one minute, almost always FCI reporting one more than Vaastav — a
+substitution-rounding convention between the two sources. Only 127 of the
+23,986 rows differ by more than a minute. The near-perfect agreement on the
+other four stats is what confirms the join and aggregation logic are
+correct. If a future run shows the disagreement rate climbing, or the
+off-by-one pattern giving way to larger gaps, that would be worth
+investigating — the one-minute rounding is the expected signature here.
 
 The `player_availability` table's `chance_of_playing_this_round` is FPL's
 0/25/50/75 percentage signal; `null` (no injury doubt) is stored as `100`. The
