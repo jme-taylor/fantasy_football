@@ -83,6 +83,9 @@ PRECISION_K_BY_POSITION: dict[str, int] = {
 MLFLOW_TRACKING_URI: str = f"sqlite:///{MLFLOW_DB_PATH}"
 
 # URL slugs passed to ScraperFC ClubElo's scrape_team(name).
+# This must cover every club appearing in *any* season we hold data for, not
+# just the current top flight -- a club relegated years ago still needs its
+# ELO series for backtests over the season it played in.
 # Update this when team set changes (promotions/relegations).
 CLUBELO_SCRAPE_NAMES: list[str] = [
     "Arsenal",
@@ -101,13 +104,18 @@ CLUBELO_SCRAPE_NAMES: list[str] = [
     "Leeds",
     "Leicester",
     "Liverpool",
+    "Luton",
     "ManCity",
     "ManUnited",
     "Newcastle",
+    "Norwich",
     "Forest",
+    "SheffieldUnited",
     "Southampton",
     "Sunderland",
     "Tottenham",
+    "Watford",
+    "WestBrom",
     "WestHam",
     "Wolves",
 ]
@@ -136,13 +144,18 @@ CLUBELO_TO_FPL: dict[str, list[str]] = {
     "Leeds": ["Leeds"],
     "Leicester": ["Leicester"],
     "Liverpool": ["Liverpool"],
+    "Luton": ["Luton"],
     "Man City": ["Man City"],
     "Man United": ["Man Utd"],
     "Newcastle": ["Newcastle"],
+    "Norwich": ["Norwich"],
     "Forest": ["Nott'm Forest"],
+    "Sheffield United": ["Sheffield Utd"],
     "Southampton": ["Southampton"],
     "Sunderland": ["Sunderland"],
     "Tottenham": ["Spurs"],
+    "Watford": ["Watford"],
+    "West Brom": ["West Brom"],
     "West Ham": ["West Ham"],
     "Wolves": ["Wolves"],
 }

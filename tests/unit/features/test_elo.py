@@ -6,6 +6,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from fantasy_football.constants import CLUBELO_SCRAPE_NAMES, CLUBELO_TO_FPL
 from fantasy_football.features import elo
 from fantasy_football.features.elo import build_team_elo, normalize_elo_frame
 
@@ -325,3 +326,25 @@ def test_build_team_elo_scrape_failure_no_cache_raises(
 
     with pytest.raises(RuntimeError):
         build_team_elo(force=True)
+
+
+def test_scrape_names_cover_every_mapped_club() -> None:
+    """Verify every club in CLUBELO_TO_FPL is actually scraped.
+
+    The slug ClubElo's API expects is the `Club` value with spaces removed,
+    so the two constants must stay in lockstep -- adding a promoted club to
+    one but not the other silently leaves it without an ELO series.
+    """
+    assert sorted(CLUBELO_SCRAPE_NAMES) == sorted(
+        club.replace(" ", "") for club in CLUBELO_TO_FPL
+    )
+
+
+def test_fpl_aliases_are_unique_across_clubs() -> None:
+    """Verify no FPL club name maps to more than one ClubElo club.
+
+    The alias join in normalize_elo_frame is on the FPL name, so a duplicate
+    alias would fan a fixture out onto two different ELO series.
+    """
+    aliases = [name for names in CLUBELO_TO_FPL.values() for name in names]
+    assert len(aliases) == len(set(aliases))
