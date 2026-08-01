@@ -642,3 +642,52 @@ def test_collapse_double_gameweeks_still_sums_genuine_dgw_legs() -> None:
     assert collapsed["minutes"] == 165
     assert collapsed["total_points"] == 14
     assert collapsed["bonus"] == 3
+
+
+def test_read_csv_defaults_to_strict_utf8(
+    mocker: MockerFixture, mock_data_extractor: DataExtractor
+) -> None:
+    """The default encoding is unchanged, so existing callers are unaffected."""
+    response = mocker.Mock()
+    response.content = b"a,b\n1,2\n"
+    mocker.patch(
+        "fantasy_football.extraction.extractor.requests.get",
+        return_value=response,
+    )
+    read_csv = mocker.patch(
+        "fantasy_football.extraction.extractor.pl.read_csv",
+        return_value=pl.DataFrame({"a": [1], "b": [2]}),
+    )
+    mock_data_extractor._read_csv("data/x.csv")
+    assert read_csv.call_args.kwargs["encoding"] == "utf8"
+
+
+def test_read_csv_passes_lossy_encoding_through_to_polars(
+    mocker: MockerFixture, mock_data_extractor: DataExtractor
+) -> None:
+    """The caller's encoding reaches Polars, so legacy files can be read."""
+    response = mocker.Mock()
+    response.content = "name\nAdlène\n".encode("latin-1")
+    mocker.patch(
+        "fantasy_football.extraction.extractor.requests.get",
+        return_value=response,
+    )
+    frame = mock_data_extractor._read_csv(
+        "data/2016-17/gws/merged_gw.csv", encoding="utf8-lossy"
+    )
+    assert frame.height == 1
+    assert frame.columns == ["name"]
+
+
+def test_read_csv_raises_on_legacy_bytes_under_the_default_encoding(
+    mocker: MockerFixture, mock_data_extractor: DataExtractor
+) -> None:
+    """Without the lossy encoding the 2016-19 files genuinely fail to parse."""
+    response = mocker.Mock()
+    response.content = "name\nAdlène\n".encode("latin-1")
+    mocker.patch(
+        "fantasy_football.extraction.extractor.requests.get",
+        return_value=response,
+    )
+    with pytest.raises(Exception):
+        mock_data_extractor._read_csv("data/2016-17/gws/merged_gw.csv")

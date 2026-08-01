@@ -1,4 +1,4 @@
-"""DuckDB connection lifecycle for the storage layer's six tables.
+"""DuckDB connection lifecycle for the storage layer's nine tables.
 
 This module owns opening the database connection and resetting it. Table
 schemas live as declarative ``Table`` specs in ``tables.py``; those specs
