@@ -119,15 +119,23 @@ class FciMatchStatsLoader:
             Defaults to a new ``FciExtractor``.
         """
         self.extractor = extractor or FciExtractor()
+        self._tree_cache: list[tuple[str, int, str]] | None = None
 
     def _matchstats_tree(self) -> list[tuple[str, int, str]]:
         """Return every playermatchstats path as (season, gw, path).
+
+        Fetched once per loader instance and cached -- both
+        ``available_seasons`` and ``matchstats_paths`` (called once per
+        season) would otherwise each trigger a full recursive tree fetch
+        of the repo.
 
         Returns
         -------
         list[tuple[str, int, str]]
             Short-form season, gameweek number, and repo-relative path.
         """
+        if self._tree_cache is not None:
+            return self._tree_cache
         tree = self.extractor.api_client.get_all_repo_files()
         found = []
         for entry in tree["tree"]:
@@ -140,6 +148,7 @@ class FciMatchStatsLoader:
                         entry["path"],
                     )
                 )
+        self._tree_cache = found
         return found
 
     def available_seasons(self) -> list[str]:
@@ -196,13 +205,6 @@ class FciMatchStatsLoader:
             raw = self.extractor._read_csv(path)
             renamed = raw.rename({"player_id": "element"})
             unknown = PLAYER_MATCH_OPTA.unknown_columns(renamed)
-            # ``season``, ``gw`` and ``competition`` are added below, so
-            # they are never genuinely unknown.
-            unknown = [
-                column
-                for column in unknown
-                if column not in {"season", "gw", "competition"}
-            ]
             if unknown:
                 logger.warning(
                     "FCI %s GW%d carries %d column(s) not in the "
@@ -223,12 +225,8 @@ class FciMatchStatsLoader:
             )
         if not frames:
             logger.info("FCI has no match stats for season %s yet.", season)
-            # PLAYER_MATCH_OPTA.conform(pl.DataFrame()) does not raise --
-            # it silently broadcasts each typed-null literal to a single
-            # row, producing a phantom (1, 67) frame instead of an empty
-            # one. Build the empty frame explicitly instead.
-            return pl.DataFrame(schema=PLAYER_MATCH_OPTA.schema).select(
-                PLAYER_MATCH_OPTA.columns
+            return PLAYER_MATCH_OPTA.coerce(
+                PLAYER_MATCH_OPTA.conform(pl.DataFrame())
             )
         return pl.concat(frames)
 
@@ -250,9 +248,21 @@ class FciMatchStatsLoader:
         present = PLAYER_MATCH_OPTA.seasons_present(connection)
         for season in self.available_seasons():
             if season == current_season:
-                PLAYER_MATCH_OPTA.upsert_current(
-                    connection, self.load_season(season), season
-                )
+                frame = self.load_season(season)
+                if frame.is_empty():
+                    # PLAYER_MATCH_OPTA.upsert_current deletes the
+                    # season's rows before inserting, so upserting an
+                    # empty frame would wipe whatever is already stored.
+                    # Leave the database untouched instead (see
+                    # fci.py's build_current_season_merged_gw for the
+                    # same guard).
+                    logger.warning(
+                        "FCI has no match stats for current season %s; "
+                        "leaving the stored season untouched.",
+                        season,
+                    )
+                    continue
+                PLAYER_MATCH_OPTA.upsert_current(connection, frame, season)
                 continue
             if season in present:
                 continue

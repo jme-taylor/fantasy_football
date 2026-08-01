@@ -52,7 +52,7 @@ class Table:
     """A declarative description of one stored table.
 
     ``eq=False`` is paired with ``frozen=True`` because ``schema`` is a
-    dict and therefore unhashable. The six specs are module-level
+    dict and therefore unhashable. The nine specs are module-level
     singletons, so identity equality is the correct semantics.
 
     Attributes
@@ -139,7 +139,16 @@ class Table:
             for column, dtype in self.schema.items()
             if column not in frame.columns
         ]
-        return frame if not missing else frame.with_columns(missing)
+        if not missing:
+            return frame
+        if frame.width == 0:
+            # A zero-column frame has no column for ``with_columns`` to
+            # take its height from, so each ``pl.lit(None)`` broadcasts
+            # to a single row -- a phantom (1, N) frame rather than the
+            # empty one the caller expects. Build the fully-typed empty
+            # frame directly instead.
+            return pl.DataFrame(schema=self.schema)
+        return frame.with_columns(missing)
 
     def unknown_columns(self, frame: pl.DataFrame) -> list[str]:
         """Return frame columns this table's schema does not declare.

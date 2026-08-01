@@ -133,6 +133,22 @@ def test_load_season_warns_about_undeclared_source_columns(mocker, caplog):
     assert "brand_new" in caplog.text
 
 
+def test_load_season_returns_an_empty_typed_frame_when_no_paths_found(
+    mocker,
+):
+    """A season with no gameweek files yet yields an empty typed frame.
+
+    This is the shape a genuinely empty fetch takes on the way into
+    ``load``, so it must not be the phantom one-row frame ``conform``
+    used to produce for a zero-column input.
+    """
+    loader = FciMatchStatsLoader()
+    mocker.patch.object(loader, "matchstats_paths", return_value={})
+    frame = loader.load_season("2026-27")
+    assert frame.is_empty()
+    assert frame.columns == PLAYER_MATCH_OPTA.columns
+
+
 def test_matchstats_paths_handles_the_2024_25_layout(mocker):
     """2024-25 stores files under playermatchstats/, not By Gameweek/."""
     loader = FciMatchStatsLoader()
@@ -176,6 +192,32 @@ def test_matchstats_paths_handles_the_by_gameweek_layout(mocker):
     }
 
 
+def test_matchstats_tree_is_fetched_once_per_loader_instance(mocker):
+    """The repo tree is cached, not re-fetched per season.
+
+    ``available_seasons`` and ``matchstats_paths`` (called once per
+    season) all go through ``_matchstats_tree``; without caching a
+    single run triggers several full recursive tree fetches.
+    """
+    loader = FciMatchStatsLoader()
+    get_all_repo_files = mocker.patch.object(
+        loader.extractor.api_client,
+        "get_all_repo_files",
+        return_value={
+            "tree": [
+                {
+                    "path": "data/2025-2026/By Gameweek/GW1/"
+                    "playermatchstats.csv"
+                }
+            ]
+        },
+    )
+    loader.available_seasons()
+    loader.matchstats_paths("2025-26")
+    loader.matchstats_paths("2025-26")
+    assert get_all_repo_files.call_count == 1
+
+
 def test_load_skips_completed_seasons_on_rerun(mocker, db):
     """Completed FCI seasons are immutable."""
     loader = FciMatchStatsLoader()
@@ -211,3 +253,30 @@ def test_load_upserts_the_current_season(mocker, db):
     stored = PLAYER_MATCH_OPTA.load(db)
     assert stored.height == 2
     assert stored["goals"].unique().to_list() == [5]
+
+
+def test_load_leaves_a_populated_current_season_untouched_on_empty_fetch(
+    mocker, db, caplog
+):
+    """An empty current-season fetch must not wipe already-stored rows.
+
+    ``upsert_current`` deletes a season's rows before inserting, so a
+    naive upsert of an empty frame would silently empty the table.
+    """
+    loader = FciMatchStatsLoader()
+    mocker.patch.object(loader, "available_seasons", return_value=["2026-27"])
+    mocker.patch.object(
+        loader, "matchstats_paths", return_value={1: "data/x/GW1/f.csv"}
+    )
+    mocker.patch.object(
+        loader.extractor, "_read_csv", return_value=_source_frame()
+    )
+    loader.load(db, current_season="2026-27")
+    assert PLAYER_MATCH_OPTA.load(db).height == 2
+
+    mocker.patch.object(loader, "matchstats_paths", return_value={})
+    with caplog.at_level("WARNING"):
+        loader.load(db, current_season="2026-27")
+
+    assert PLAYER_MATCH_OPTA.load(db).height == 2
+    assert "2026-27" in caplog.text

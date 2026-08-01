@@ -148,9 +148,21 @@ class VaastavMatchLoader:
         present = PLAYER_MATCH_FPL.seasons_present(connection)
         for season in self.available_seasons():
             if season == current_season:
-                PLAYER_MATCH_FPL.upsert_current(
-                    connection, self.load_season(season), season
-                )
+                frame = self.load_season(season)
+                if frame.is_empty():
+                    # PLAYER_MATCH_FPL.upsert_current deletes the
+                    # season's rows before inserting, so upserting an
+                    # empty frame would wipe whatever is already stored.
+                    # Leave the database untouched instead (see
+                    # fci.py's build_current_season_merged_gw for the
+                    # same guard).
+                    logger.warning(
+                        "Vaastav has no rows for current season %s; "
+                        "leaving the stored season untouched.",
+                        season,
+                    )
+                    continue
+                PLAYER_MATCH_FPL.upsert_current(connection, frame, season)
                 continue
             if season in present:
                 continue

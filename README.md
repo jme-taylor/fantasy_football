@@ -26,11 +26,12 @@ fantasy_football/
 │   │                      from one `schema` dict, generated DDL, and the
 │   │                      five operations (coerce, load, seasons_present,
 │   │                      write_immutable, upsert_current)
-│   ├── tables.py       — the six table specs (player_season, player_week,
-│   │                      team_fixture, player_match, player_availability,
-│   │                      minutes_prediction) and the `TABLES` tuple;
-│   │                      adding a table means adding a spec here and
-│   │                      nothing else
+│   ├── tables.py       — the nine table specs (player_season, player_week,
+│   │                      team_fixture, player_match, player_match_fpl,
+│   │                      player_match_opta, player_availability,
+│   │                      minutes_prediction, player_snapshot) and the
+│   │                      `TABLES` tuple; adding a table means adding a
+│   │                      spec here and nothing else
 │   └── database.py     — `get_connection` and `reset_database`, both
 │                          driven by `TABLES`
 ├── extraction/         — ingest raw data into the DuckDB store
@@ -76,10 +77,10 @@ only module that touches Arrow, `register`/`unregister`, and `.pl()`),
 `storage/table.py` builds on it with the `Table` descriptor (column order
 and dtypes from one `schema` dict, generated DDL, and the five operations
 `coerce`/`load`/`seasons_present`/`write_immutable`/`upsert_current`), and
-`storage/tables.py` declares the six tables as `Table` specs gathered into
+`storage/tables.py` declares the nine tables as `Table` specs gathered into
 `TABLES`. `storage/database.py` reduces to `get_connection` and
 `reset_database`, both driven by `TABLES`. Extractors hand the layer Polars
-frames; downstream code reads frames back. The six tables are:
+frames; downstream code reads frames back. The tables are:
 
 * **`player_season`** — the `(season, element) -> player_code` identity
   dimension. `player_code` is FPL's stable global player identifier, unlike
@@ -98,6 +99,12 @@ frames; downstream code reads frames back. The six tables are:
 * **`player_match`** — one row per `(season, gw, element, opponent)` (minutes
   and points only), **not** collapsed across double gameweeks. The training
   substrate for the minutes-played model.
+* **`player_match_fpl`** — Vaastav's full per-fixture stat set, one row per
+  `(season, gw, element, fixture)`, keeping every column the source
+  publishes rather than the eight `player_match` narrows to.
+* **`player_match_opta`** — FCI's Opta-grade per-fixture stat set from
+  2024-25 onwards, one row per `(season, gw, element, match_id)`, covering
+  every competition a player appeared in, not just the Premier League.
 * **`player_availability`** — one row per `(season, gw, element)` capturing
   FPL's point-in-time `chance_of_playing_this_round`.
 * **`minutes_prediction`** — one row per `(season, gw, element, opponent)`

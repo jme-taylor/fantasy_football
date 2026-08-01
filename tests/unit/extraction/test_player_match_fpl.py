@@ -150,3 +150,31 @@ def test_load_upserts_the_current_season_when_present(mocker, db):
     stored = PLAYER_MATCH_FPL.load(db)
     assert stored.height == 2
     assert stored["total_points"].unique().to_list() == [99]
+
+
+def test_load_leaves_a_populated_current_season_untouched_on_empty_fetch(
+    mocker, db, caplog
+):
+    """An empty current-season fetch must not wipe already-stored rows.
+
+    ``upsert_current`` deletes a season's rows before inserting, so a
+    naive upsert of an empty frame would silently empty the table.
+    """
+    loader = VaastavMatchLoader()
+    mocker.patch.object(loader, "available_seasons", return_value=["2025-26"])
+    mocker.patch.object(
+        loader.extractor, "_read_csv", return_value=_source_frame()
+    )
+    loader.load(db, current_season="2025-26")
+    assert PLAYER_MATCH_FPL.load(db).height == 2
+
+    mocker.patch.object(
+        loader.extractor,
+        "_read_csv",
+        return_value=_source_frame().filter(pl.lit(False)),
+    )
+    with caplog.at_level("WARNING"):
+        loader.load(db, current_season="2025-26")
+
+    assert PLAYER_MATCH_FPL.load(db).height == 2
+    assert "2025-26" in caplog.text

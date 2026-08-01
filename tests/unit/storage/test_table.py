@@ -373,6 +373,21 @@ def test_conform_on_empty_frame_produces_empty_typed_frame():
     assert set(WIDGET.columns) <= set(conformed.columns)
 
 
+def test_conform_on_a_zero_column_frame_produces_an_empty_typed_frame():
+    """A frame with no columns at all conforms to height 0, not 1.
+
+    ``pl.lit(None)`` broadcasts to a single row when there is no
+    existing column to take the frame's height from, so a naive
+    ``with_columns`` on a zero-column frame produces a phantom one-row
+    frame instead of an empty one. The 0-row/2-column case above does
+    not exercise this path.
+    """
+    frame = pl.DataFrame()
+    conformed = WIDGET.conform(frame)
+    assert conformed.height == 0
+    assert set(WIDGET.columns) <= set(conformed.columns)
+
+
 def test_unknown_columns_reports_undeclared_source_columns():
     """Columns absent from the schema are reported, sorted."""
     frame = pl.DataFrame(
