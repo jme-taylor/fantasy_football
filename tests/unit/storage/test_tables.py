@@ -1,14 +1,16 @@
-"""Tests for the six table specs, including DDL equivalence."""
+"""Tests for the table specs, including DDL equivalence."""
 
 import duckdb
 import polars as pl
 import pytest
 
-from fantasy_football.storage import database
+from fantasy_football.storage import database, engine
 from fantasy_football.storage.tables import (
     MINUTES_PREDICTION,
     PLAYER_AVAILABILITY,
     PLAYER_MATCH,
+    PLAYER_MATCH_FPL,
+    PLAYER_MATCH_OPTA,
     PLAYER_SEASON,
     PLAYER_SNAPSHOT,
     PLAYER_WEEK,
@@ -171,12 +173,14 @@ def test_generated_ddl_matches_legacy_ddl(table, legacy):
 
 
 def test_tables_tuple_covers_every_spec():
-    """``TABLES`` holds all seven specs, so loops cannot miss one."""
-    assert len(TABLES) == 7
+    """``TABLES`` holds all nine specs, so loops cannot miss one."""
+    assert len(TABLES) == 9
     assert {t.name for t in TABLES} == {
         "player_week",
         "team_fixture",
         "player_match",
+        "player_match_fpl",
+        "player_match_opta",
         "player_availability",
         "minutes_prediction",
         "player_season",
@@ -248,7 +252,7 @@ def minimal_row(table) -> pl.DataFrame:
 
 
 def test_reset_database_clears_every_table(db):
-    """Reset empties all six tables, not a hand-listed subset."""
+    """Reset empties every table, not a hand-listed subset."""
     for table in TABLES:
         table.upsert_current(db, minimal_row(table), "2024-25")
         assert not table.load(db).is_empty()
@@ -257,3 +261,79 @@ def test_reset_database_clears_every_table(db):
 
     for table in TABLES:
         assert table.load(db).is_empty(), f"{table.name} not cleared"
+
+
+def test_player_match_fpl_is_registered():
+    """The Vaastav match table is in TABLES so it gets created and reset."""
+    assert PLAYER_MATCH_FPL in TABLES
+
+
+def test_player_match_opta_is_registered():
+    """The FCI match table is in TABLES so it gets created and reset."""
+    assert PLAYER_MATCH_OPTA in TABLES
+
+
+def test_player_match_fpl_is_keyed_on_fixture():
+    """Fixture, not opponent: it exists in every season, unlike opponent."""
+    assert PLAYER_MATCH_FPL.primary_key == (
+        "season",
+        "gw",
+        "element",
+        "fixture",
+    )
+
+
+def test_player_match_opta_is_keyed_on_match_id():
+    """FCI identifies fixtures by slug, so match_id completes the key."""
+    assert PLAYER_MATCH_OPTA.primary_key == (
+        "season",
+        "gw",
+        "element",
+        "match_id",
+    )
+
+
+def test_new_match_tables_do_not_disturb_player_match():
+    """The pre-existing thin table keeps its own name and schema."""
+    assert PLAYER_MATCH.name == "player_match"
+    assert PLAYER_MATCH.name not in {
+        PLAYER_MATCH_FPL.name,
+        PLAYER_MATCH_OPTA.name,
+    }
+
+
+def test_player_match_fpl_carries_the_rich_columns():
+    """The columns the thin player_match table discards are stored here."""
+    for column in (
+        "goals_scored",
+        "assists",
+        "bps",
+        "ict_index",
+        "expected_goals",
+        "defensive_contribution",
+        "value",
+        "selected",
+    ):
+        assert column in PLAYER_MATCH_FPL.schema
+
+
+def test_player_match_opta_carries_the_opta_columns():
+    """The FCI stat set is stored, including the wholly-null ones."""
+    for column in (
+        "xg",
+        "xgot",
+        "goals_prevented",
+        "aerial_duels_won",
+        "defensive_contributions",
+        "corners",
+        "competition",
+        "distance_covered",
+    ):
+        assert column in PLAYER_MATCH_OPTA.schema
+
+
+def test_both_new_tables_have_executable_ddl(db):
+    """DuckDB creates both tables from their specs."""
+    for table in (PLAYER_MATCH_FPL, PLAYER_MATCH_OPTA):
+        stored = engine.table_columns(db, table.name)
+        assert stored == set(table.columns)
