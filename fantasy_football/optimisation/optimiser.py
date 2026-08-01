@@ -6,6 +6,7 @@ import pulp
 from pydantic import TypeAdapter
 
 from fantasy_football.constants import TRANSFORMED_DATA_FOLDER
+from fantasy_football.features.roster import current_roster
 from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
@@ -92,11 +93,35 @@ def _load_prices(season: str, start_gw: int) -> dict[str, int]:
     Returns
     -------
     dict[str, int]
-        Mapping of player name to price in tenths of a million.
+        Mapping of player name to price in tenths of a million. Falls back to
+        the latest snapshot capture when the season has no player-week rows.
     """
     merged = PLAYER_WEEK.load().filter(
         (pl.col("season") == season) & (pl.col("gw") <= start_gw)
     )
+    if merged.is_empty():
+        # Pre-season: no gameweek has been played, so player_week has nothing
+        # to price from. The FPL bootstrap snapshot carries the launch prices.
+        # This condition also fires mid-season if player_week is missing
+        # rows for gameweeks <= start_gw (a data-load gap), in which case the
+        # fallback quietly substitutes *current* snapshot prices for a *past*
+        # gameweek's prices -- hence the warning below.
+        logger.warning(
+            "No player_week rows for season=%s at or before start_gw=%d; "
+            "falling back to current snapshot prices from current_roster(). "
+            "If this is not pre-season GW1, prices may be stale relative to "
+            "the requested gameweek.",
+            season,
+            start_gw,
+        )
+        roster = current_roster(season)
+        return dict(
+            zip(
+                roster["name"].to_list(),
+                roster["value"].to_list(),
+                strict=True,
+            )
+        )
     latest_gw = merged.group_by("name").agg(pl.col("gw").max().alias("gw"))
     latest = merged.join(latest_gw, on=["name", "gw"], how="inner")
     return dict(

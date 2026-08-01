@@ -16,7 +16,7 @@ from fantasy_football.features.transformation import (
 )
 from fantasy_football.storage import database
 from fantasy_football.storage.database import get_connection
-from fantasy_football.storage.tables import PLAYER_WEEK
+from fantasy_football.storage.tables import PLAYER_SEASON, PLAYER_WEEK
 
 
 @pytest.fixture
@@ -311,6 +311,100 @@ def test_fill_missing_values_by_position_no_warning_for_known_positions(
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
+def _player_season_frame(
+    season: str, element: int, player_code: int
+) -> pl.DataFrame:
+    """Build a minimal ``player_season`` row so ``player_code`` resolves.
+
+    Parameters
+    ----------
+    season : str
+        The season string, e.g. "2025-26".
+    element : int
+        The FPL element ID for this row.
+    player_code : int
+        The cross-season identity to attach to ``element`` for ``season``.
+
+    Returns
+    -------
+    pl.DataFrame
+        A single-row ``player_season``-shaped frame.
+    """
+    return pl.DataFrame(
+        {
+            "season": [season],
+            "element": [element],
+            "player_code": [player_code],
+            "web_name": ["Salah"],
+            "first_name": ["Mohamed"],
+            "second_name": ["Salah"],
+            "position": ["MID"],
+            "team_code": [14],
+            "birth_date": [None],
+            "region": [None],
+            "team_join_date": [None],
+        },
+        schema_overrides={
+            "birth_date": pl.Date,
+            "team_join_date": pl.Date,
+            "region": pl.Int64,
+        },
+    )
+
+
+def _seed_and_point_at(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    gw_data: pl.DataFrame,
+    player_code: int = 111,
+) -> None:
+    """Seed a temporary DuckDB with player-week data and redirect the pipeline at it.
+
+    Writes ``gw_data`` into ``player_week`` season by season, and adds a
+    matching ``player_season`` row for every ``(season, element)`` pair
+    present -- all sharing ``player_code`` -- so ``player_code`` resolves for
+    every row. ``database.DATABASE_PATH`` is monkeypatched to a tmp DuckDB
+    file and ``transformation.TRANSFORMED_DATA_FOLDER`` to a tmp directory,
+    so the pipeline reads and writes in isolation from the real database.
+
+    Parameters
+    ----------
+    tmp_path : Path
+        A temporary directory path provided by pytest.
+    monkeypatch : pytest.MonkeyPatch
+        Pytest monkeypatch fixture used to redirect the DB and output folder.
+    gw_data : pl.DataFrame
+        Player-week rows to seed, in ``player_week`` shape, spanning one or
+        more seasons.
+    player_code : int, optional
+        The cross-season identity given to every seeded player_season row.
+        Defaults to 111. Callers seeding more than one distinct player should
+        not rely on the default.
+    """
+    db_path = tmp_path / "t.duckdb"
+    transformed_data = tmp_path / "transformed"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    monkeypatch.setattr(
+        data_transformation, "TRANSFORMED_DATA_FOLDER", transformed_data
+    )
+
+    connection = get_connection(db_path)
+    try:
+        for season in gw_data["season"].unique(maintain_order=True).to_list():
+            season_data = gw_data.filter(pl.col("season") == season)
+            PLAYER_WEEK.write_immutable(connection, season_data, season)
+            for element in (
+                season_data["element"].unique(maintain_order=True).to_list()
+            ):
+                PLAYER_SEASON.write_immutable(
+                    connection,
+                    _player_season_frame(season, element, player_code),
+                    season,
+                )
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize("rolling_window", [2, 3, 5])
 def test_create_rolling_points_data_respects_rolling_window(
     tmp_path: Path,
@@ -401,8 +495,13 @@ def test_rolling_average_separates_players_sharing_a_name() -> None:
     assert values == [2.0, 2.0]
 
 
-def test_rolling_average_does_not_span_a_season_boundary() -> None:
-    """A new season restarts the window rather than averaging over the break."""
+def test_rolling_average_restarts_when_season_is_in_the_grouping() -> None:
+    """Including ``season`` in the partition restarts the window each season.
+
+    This covers the grouping argument itself. The points pipeline no longer
+    passes ``season`` -- see
+    ``test_create_rolling_points_data_spans_the_season_boundary``.
+    """
     data = pl.DataFrame(
         {
             "season": ["2023-24", "2023-24", "2024-25"],
@@ -420,6 +519,48 @@ def test_rolling_average_does_not_span_a_season_boundary() -> None:
     assert out.sort(["season", "gw"])[column].to_list() == [10.0, 10.0, 2.0]
 
 
+def test_create_rolling_points_data_spans_the_season_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new season's first gameweek averages in the prior season's tail.
+
+    One player scores 10 in each of the last two gameweeks of 2024-25, then
+    2 in 2025-26 GW1. With a window of 2, that GW1 row must be mean(10, 2)
+    = 6.0 -- the window reaching back across the summer -- rather than 2.0.
+    """
+    _seed_and_point_at(
+        tmp_path,
+        monkeypatch,
+        pl.DataFrame(
+            {
+                "season": ["2024-25", "2024-25", "2025-26"],
+                "gw": [37, 38, 1],
+                "element": [1, 1, 1],
+                "name": ["Salah"] * 3,
+                "position": ["MID"] * 3,
+                "team": ["Liverpool"] * 3,
+                "bonus": [0] * 3,
+                "minutes": [90] * 3,
+                "round": [37, 38, 1],
+                "total_points": [10, 10, 2],
+                "value": [130] * 3,
+            }
+        ),
+    )
+
+    create_rolling_points_data("2025-26", rolling_window=2)
+
+    out = pl.read_csv(
+        data_transformation.TRANSFORMED_DATA_FOLDER / "rolling_points.csv"
+    )
+    column = rolling_column_name("total_points", 2)
+    gw1 = out.filter((pl.col("season") == "2025-26") & (pl.col("gw") == 1))[
+        column
+    ].item()
+
+    assert gw1 == 6.0
+
+
 def test_add_rolling_identity_column_gives_distinct_fallbacks_for_null_codes() -> (
     None
 ):
@@ -432,6 +573,7 @@ def test_add_rolling_identity_column_gives_distinct_fallbacks_for_null_codes() -
     """
     data = pl.DataFrame(
         {
+            "season": ["2025-26", "2025-26", "2025-26"],
             "player_code": [None, None, 111],
             "element": [1, 2, 111],
         }
@@ -446,6 +588,32 @@ def test_add_rolling_identity_column_gives_distinct_fallbacks_for_null_codes() -
     # ...which cannot equal either fallback, even though element == 111 here.
     assert identities[0] != identities[2]
     assert identities[1] != identities[2]
+
+
+def test_add_rolling_identity_column_scopes_fallbacks_to_season() -> None:
+    """Two different null-player_code players sharing an element stay apart.
+
+    ``element`` is only unique *within* a season, so two unrelated players in
+    different seasons -- both missing a ``player_season`` row, and so both
+    with a null ``player_code`` -- can share the same ``element`` value. The
+    rolling window no longer partitions on ``season`` (it spans the summer
+    break), so a fallback keyed on ``element`` alone would silently pool
+    these two strangers' points together the moment the window widens. This
+    checks the fallback is scoped to ``(season, element)`` so that cannot
+    happen.
+    """
+    data = pl.DataFrame(
+        {
+            "season": ["2024-25", "2025-26"],
+            "player_code": [None, None],
+            "element": [1, 1],
+        }
+    )
+
+    result = add_rolling_identity_column(data)
+
+    identities = result["rolling_identity"].to_list()
+    assert identities[0] != identities[1]
 
 
 def test_create_rolling_points_data_separates_players_with_null_player_code(

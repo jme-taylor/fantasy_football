@@ -92,9 +92,11 @@ CLUBELO_SCRAPE_NAMES: list[str] = [
     "Brighton",
     "Burnley",
     "Chelsea",
+    "Coventry",
     "CrystalPalace",
     "Everton",
     "Fulham",
+    "Hull",
     "Ipswich",
     "Leeds",
     "Leicester",
@@ -110,32 +112,39 @@ CLUBELO_SCRAPE_NAMES: list[str] = [
     "Wolves",
 ]
 
-# Mapping from the `Club` column value (as returned by ClubElo) to the
-# Update this when team set changes (promotions/relegations).
-CLUBELO_TO_FPL: dict[str, str] = {
-    "Arsenal": "Arsenal",
-    "Aston Villa": "Aston Villa",
-    "Bournemouth": "Bournemouth",
-    "Brentford": "Brentford",
-    "Brighton": "Brighton",
-    "Burnley": "Burnley",
-    "Chelsea": "Chelsea",
-    "Crystal Palace": "Crystal Palace",
-    "Everton": "Everton",
-    "Fulham": "Fulham",
-    "Ipswich": "Ipswich",
-    "Leeds": "Leeds",
-    "Leicester": "Leicester",
-    "Liverpool": "Liverpool",
-    "Man City": "Man City",
-    "Man United": "Man Utd",
-    "Newcastle": "Newcastle",
-    "Forest": "Nott'm Forest",
-    "Southampton": "Southampton",
-    "Sunderland": "Sunderland",
-    "Tottenham": "Spurs",
-    "West Ham": "West Ham",
-    "Wolves": "Wolves",
+# Mapping from the `Club` column value (as returned by ClubElo) to every FPL
+# club name that club has carried. It is one-to-many because FPL renames
+# clubs between seasons: team_fixture says "Ipswich" in 2024-25 and
+# "Ipswich Town" in 2026-27, and the as-of ELO join in prediction.py matches
+# on the club name the season actually uses. Emitting a row per alias lets
+# both names resolve to the same ELO series.
+# Update this when the team set changes (promotions/relegations).
+CLUBELO_TO_FPL: dict[str, list[str]] = {
+    "Arsenal": ["Arsenal"],
+    "Aston Villa": ["Aston Villa"],
+    "Bournemouth": ["Bournemouth"],
+    "Brentford": ["Brentford"],
+    "Brighton": ["Brighton"],
+    "Burnley": ["Burnley"],
+    "Chelsea": ["Chelsea"],
+    "Coventry": ["Coventry City"],
+    "Crystal Palace": ["Crystal Palace"],
+    "Everton": ["Everton"],
+    "Fulham": ["Fulham"],
+    "Hull": ["Hull City"],
+    "Ipswich": ["Ipswich", "Ipswich Town"],
+    "Leeds": ["Leeds"],
+    "Leicester": ["Leicester"],
+    "Liverpool": ["Liverpool"],
+    "Man City": ["Man City"],
+    "Man United": ["Man Utd"],
+    "Newcastle": ["Newcastle"],
+    "Forest": ["Nott'm Forest"],
+    "Southampton": ["Southampton"],
+    "Sunderland": ["Sunderland"],
+    "Tottenham": ["Spurs"],
+    "West Ham": ["West Ham"],
+    "Wolves": ["Wolves"],
 }
 
 # First season with player <> team mapping

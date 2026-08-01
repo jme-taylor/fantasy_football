@@ -1,3 +1,5 @@
+import logging
+
 import polars as pl
 import pytest
 
@@ -94,6 +96,89 @@ def test_load_prices_uses_latest_value_at_or_before_start_gw(
     prices = _load_prices("2025-26", start_gw=10)
     assert prices["P1"] == 55  # GW10 value, not the later GW11=60
     assert prices["P2"] == 80
+
+
+def test_load_prices_falls_back_to_the_roster_before_a_season_starts(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With no player_week rows, prices come from the snapshot roster.
+
+    The fallback must also log a warning naming the season and start_gw, so
+    a surprising budget can be traced back to snapshot-derived prices after
+    the fact.
+    """
+    _seed_player_week(
+        tmp_path,
+        monkeypatch,
+        name=["P1"],
+        element=[1],
+        gw=[10],
+        value=[55],
+        season="2025-26",
+    )
+    monkeypatch.setattr(
+        optimisation,
+        "current_roster",
+        lambda season: pl.DataFrame(
+            {
+                "name": ["Bukayo Saka", "Ryan Newman"],
+                "position": ["MID", "DEF"],
+                "team": ["Arsenal", "Hull City"],
+                "element": [55, 56],
+                "player_code": [999, 1000],
+                "value": [130, 45],
+            }
+        ),
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.optimisation.optimiser"
+    ):
+        prices = _load_prices("2026-27", start_gw=1)
+
+    assert prices == {"Bukayo Saka": 130, "Ryan Newman": 45}
+    assert any(
+        record.levelno == logging.WARNING
+        and "2026-27" in record.getMessage()
+        and "start_gw=1" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_load_prices_prefers_player_week_when_it_has_rows(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Mid-season the existing player_week path still wins, silently."""
+    _seed_player_week(
+        tmp_path,
+        monkeypatch,
+        name=["P1"],
+        element=[1],
+        gw=[10],
+        value=[55],
+    )
+    monkeypatch.setattr(
+        optimisation,
+        "current_roster",
+        lambda season: pl.DataFrame(
+            {
+                "name": ["P1"],
+                "position": ["MID"],
+                "team": ["Arsenal"],
+                "element": [1],
+                "player_code": [999],
+                "value": [999],
+            }
+        ),
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="fantasy_football.optimisation.optimiser"
+    ):
+        prices = _load_prices("2025-26", start_gw=10)
+
+    assert prices == {"P1": 55}
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 from fantasy_football.optimisation.optimiser import (
