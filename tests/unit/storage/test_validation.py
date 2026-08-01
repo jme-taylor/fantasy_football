@@ -93,6 +93,25 @@ def test_double_gameweeks_are_summed_before_comparing():
     assert goals["disagreements"].item() == 0
 
 
+def test_disagreement_on_a_colliding_column_is_detected():
+    """A mismatch on a same-named column (the join-suffixed path).
+
+    ``assists``, ``saves`` and ``penalties_missed`` share their name
+    across both frames, so the join in ``compare_overlap`` suffixes the
+    opta side to ``assists_opta`` etc. and the comparison depends on
+    ``right_name`` resolving to that suffixed column rather than
+    silently comparing the left-hand column against itself. Every
+    other test keeps these three columns identical between sources, so
+    only this test exercises that path -- do not delete it as
+    redundant with ``test_disagreeing_sources_are_counted``, which
+    only covers the non-suffixed ``goals_scored`` column.
+    """
+    opta = _opta_frame([1, 0]).with_columns(pl.Series("assists", [9, 1]))
+    result = compare_overlap(_fpl_frame(), opta)
+    assists = result.filter(pl.col("column") == "assists")
+    assert assists["disagreements"].item() == 1
+
+
 def test_seasons_in_only_one_source_are_ignored():
     """A season only Vaastav has contributes nothing to the comparison."""
     fpl = pl.concat(
