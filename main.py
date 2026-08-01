@@ -17,6 +17,10 @@ from fantasy_football.extraction.player_identity import (
 from fantasy_football.extraction.player_match import (
     load_current_season_player_match,
 )
+from fantasy_football.extraction.player_match_fpl import VaastavMatchLoader
+from fantasy_football.extraction.player_match_opta import (
+    FciMatchStatsLoader,
+)
 from fantasy_football.extraction.seasons import (
     DataSource,
     previous_season,
@@ -98,6 +102,47 @@ def load_player_match_data(
     current_loader(season, connection)
 
 
+def load_match_level_stats(
+    connection: "DuckDBPyConnection",
+    season: str = CURRENT_SEASON,
+    vaastav: VaastavMatchLoader | None = None,
+    fci: FciMatchStatsLoader | None = None,
+) -> None:
+    """Populate the two comprehensive match-level stats tables.
+
+    The two sources are independent, so a failure in one must not stop
+    the other: Vaastav is a frozen historic archive whose repo may go
+    away entirely, while FCI is the only source for the current season.
+    Failures are logged and swallowed here because neither table feeds
+    the prediction pipeline yet -- nothing downstream breaks if one is
+    stale, and aborting the whole run would be a worse trade.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        Open connection to the database.
+    season : str, optional
+        The current season, upserted rather than treated as immutable.
+        Defaults to ``CURRENT_SEASON``.
+    vaastav : VaastavMatchLoader | None, optional
+        Vaastav loader. Defaults to a new ``VaastavMatchLoader``.
+    fci : FciMatchStatsLoader | None, optional
+        FCI loader. Defaults to a new ``FciMatchStatsLoader``.
+    """
+    for name, loader in (
+        ("Vaastav", vaastav or VaastavMatchLoader()),
+        ("FCI", fci or FciMatchStatsLoader()),
+    ):
+        try:
+            loader.load(connection, current_season=season)
+        except Exception:
+            logger.exception(
+                "%s match-level stats ingestion failed; continuing. The "
+                "affected table is stale, not corrupt.",
+                name,
+            )
+
+
 def check_prior_season_loaded(
     connection: "DuckDBPyConnection", season: str = CURRENT_SEASON
 ) -> None:
@@ -175,6 +220,7 @@ def main(
         update_current_season(CURRENT_SEASON, connection)
         load_fixtures(connection, CURRENT_SEASON)
         load_player_match_data(CURRENT_SEASON, connection)
+        load_match_level_stats(connection, CURRENT_SEASON)
         load_player_availability_data(connection, CURRENT_SEASON)
         load_player_identity_data(connection, CURRENT_SEASON)
         load_player_snapshot(CURRENT_SEASON, connection)

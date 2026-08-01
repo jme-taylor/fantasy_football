@@ -6,6 +6,7 @@ import duckdb
 import polars as pl
 import pytest
 
+import main
 from fantasy_football.constants import (
     CURRENT_SEASON,
     VASTAAV_BRIDGE_SEASONS,
@@ -101,3 +102,27 @@ def test_check_prior_season_loaded_raises_when_fixtures_missing(
         check_prior_season_loaded(db, CURRENT_SEASON)
 
     assert "team_fixture" in str(excinfo.value)
+
+
+def test_load_match_level_stats_runs_both_loaders(mocker, db):
+    """Both the Vaastav and FCI match-stat loaders are invoked."""
+    vaastav = mocker.Mock()
+    fci = mocker.Mock()
+    main.load_match_level_stats(db, season="2026-27", vaastav=vaastav, fci=fci)
+    vaastav.load.assert_called_once_with(db, current_season="2026-27")
+    fci.load.assert_called_once_with(db, current_season="2026-27")
+
+
+def test_load_match_level_stats_still_runs_fci_when_vaastav_fails(
+    mocker, db, caplog
+):
+    """A dead Vaastav source must not block the current season's Opta data."""
+    vaastav = mocker.Mock()
+    vaastav.load.side_effect = RuntimeError("github is down")
+    fci = mocker.Mock()
+    with caplog.at_level("ERROR"):
+        main.load_match_level_stats(
+            db, season="2026-27", vaastav=vaastav, fci=fci
+        )
+    fci.load.assert_called_once()
+    assert "github is down" in caplog.text
