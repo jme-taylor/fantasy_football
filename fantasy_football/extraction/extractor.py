@@ -328,13 +328,20 @@ class DataExtractor:
         with open(local_path, "wb") as f:
             f.write(response.content)
 
-    def _read_csv(self, file_path: str) -> pl.DataFrame:
+    def _read_csv(
+        self, file_path: str, encoding: str = "utf8"
+    ) -> pl.DataFrame:
         """Download a Vaastav repo CSV into a Polars DataFrame in memory.
 
         Parameters
         ----------
         file_path : str
             Repo-relative path of the CSV.
+        encoding : str, optional
+            Encoding passed to Polars. Defaults to ``"utf8"``. The
+            2016-17 to 2018-19 ``merged_gw.csv`` files contain latin-1
+            bytes (e.g. ``Adlène_Guédioura``) that abort a strict read,
+            so their loader passes ``"utf8-lossy"``.
 
         Returns
         -------
@@ -345,7 +352,9 @@ class DataExtractor:
         response = requests.get(url)
         response.raise_for_status()
         return pl.read_csv(
-            io.BytesIO(response.content), infer_schema_length=10000
+            io.BytesIO(response.content),
+            infer_schema_length=10000,
+            encoding=encoding,
         )
 
     def read_players_raw(self, season: str) -> pl.DataFrame:
