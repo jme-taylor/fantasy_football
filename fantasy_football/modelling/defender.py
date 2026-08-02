@@ -905,9 +905,16 @@ def score_forward_defender_points() -> None:
 
         frame = build_forward_feature_frame(connection, forward_fixtures)
         if frame.height != forward_fixtures.height:
+            # Every join in build_forward_feature_frame is a left join or
+            # an as-of, which takes at most one match, so the height can
+            # only grow: a fixture has been duplicated. That means two
+            # rows sharing (season, gw, element, opponent, forward) and
+            # the insert below is about to violate points_prediction's
+            # primary key.
             logger.warning(
-                "Forward feature join changed row count from %d to %d; "
-                "some rostered defenders may have no prediction.",
+                "Forward feature join duplicated rows: %d fixtures became "
+                "%d. Duplicate keys will violate the points_prediction "
+                "primary key on insert.",
                 forward_fixtures.height,
                 frame.height,
             )
