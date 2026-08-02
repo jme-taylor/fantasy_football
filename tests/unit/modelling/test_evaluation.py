@@ -63,6 +63,28 @@ def _write_artifacts(transformed: Path) -> None:
     ).write_csv(transformed / "team_elo.csv")
 
 
+def _stub_defender_predictions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Satisfy _predict's defender-model liveness check hermetically.
+
+    ``_predict`` refuses to run without stored forward defender
+    predictions, and loading them for real would open the developer's
+    store. This frame covers an element these fixtures never use, so it
+    unblocks the check without ever matching a row.
+    """
+    monkeypatch.setattr(
+        prediction,
+        "load_forward_defender_predictions",
+        lambda: pl.DataFrame(
+            {
+                "season": ["2025-26"],
+                "gw": [7],
+                "element": [999_999],
+                "predicted_points": [1.0],
+            }
+        ),
+    )
+
+
 def test_collect_joins_predictions_to_actuals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -72,6 +94,7 @@ def test_collect_joins_predictions_to_actuals(
     _write_artifacts(transformed)
     monkeypatch.setattr(prediction, "TRANSFORMED_DATA_FOLDER", transformed)
     monkeypatch.setattr(evaluation, "TRANSFORMED_DATA_FOLDER", transformed)
+    _stub_defender_predictions(monkeypatch)
 
     collected = evaluation._collect_predictions_vs_actuals(rolling_window=5)
 
@@ -92,6 +115,7 @@ def test_evaluate_returns_metrics_for_present_positions(
     _write_artifacts(transformed)
     monkeypatch.setattr(prediction, "TRANSFORMED_DATA_FOLDER", transformed)
     monkeypatch.setattr(evaluation, "TRANSFORMED_DATA_FOLDER", transformed)
+    _stub_defender_predictions(monkeypatch)
 
     results = evaluation.evaluate(rolling_window=5)
 

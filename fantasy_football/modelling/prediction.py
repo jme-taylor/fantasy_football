@@ -16,7 +16,21 @@ from fantasy_football.features.transformation import (
     fill_missing_values_by_position,
     rolling_column_name,
 )
-from fantasy_football.modelling.models import MODELS_BY_POSITION
+from fantasy_football.modelling.defender import (
+    POSITION as DEFENDER_POSITION,
+)
+from fantasy_football.modelling.defender import (
+    PRODUCTION_ALIAS as DEFENDER_ALIAS,
+)
+from fantasy_football.modelling.defender import (
+    REGISTERED_MODEL as DEFENDER_REGISTERED_MODEL,
+)
+from fantasy_football.modelling.models import (
+    MODELS_BY_POSITION,
+    PointsModel,
+    StoredPredictionModel,
+)
+from fantasy_football.storage.tables import FORWARD_KIND, POINTS_PREDICTION
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +332,11 @@ def _elo_as_of(
     return joined.drop("to_date", "from_date")
 
 
-def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
+def _apply_models(
+    fx: pl.DataFrame,
+    baselines: pl.DataFrame,
+    models: dict[str, PointsModel] | None = None,
+) -> pl.DataFrame:
     """Join baselines, build factors, and apply the per-position model.
 
     Parameters
@@ -327,12 +345,17 @@ def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
         Fixtures enriched with player and opponent ELO.
     baselines : pl.DataFrame
         One row per player with their latest rolling baseline and team.
+    models : dict[str, PointsModel] | None, optional
+        Position-to-model map. Defaults to ``MODELS_BY_POSITION``.
+        Passed explicitly by :func:`_predict` so a position served by a
+        registered model can be swapped in per run.
 
     Returns
     -------
     pl.DataFrame
         Per-(player, future_gw) rows with a ``predicted_points`` column.
     """
+    models = MODELS_BY_POSITION if models is None else models
     joined = fx.join(baselines, on="team", how="inner").with_columns(
         (pl.col("player_team_elo") / pl.col("opponent_team_elo"))
         .pow(OPPONENT_FACTOR_EXPONENT)
@@ -350,7 +373,7 @@ def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
         )
 
     scored_frames = []
-    for position, model in MODELS_BY_POSITION.items():
+    for position, model in models.items():
         sub = joined.filter(pl.col("position") == position)
         if sub.is_empty():
             continue
@@ -381,6 +404,28 @@ def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
         "home_away_factor",
         "predicted_points",
     )
+
+
+class MissingProductionModelError(RuntimeError):
+    """Raised when a position has no live model to serve predictions."""
+
+
+def load_forward_defender_predictions() -> pl.DataFrame | None:
+    """Return stored forward defender predictions, or None if there are none.
+
+    Returns
+    -------
+    pl.DataFrame | None
+        Match-grain rows with ``season``, ``gw``, ``element`` and
+        ``predicted_points``, or ``None`` when nothing is stored.
+    """
+    stored = POINTS_PREDICTION.load().filter(
+        (pl.col("prediction_kind") == FORWARD_KIND)
+        & (pl.col("position") == DEFENDER_POSITION)
+    )
+    if stored.is_empty():
+        return None
+    return stored.select("season", "gw", "element", "predicted_points")
 
 
 def _predict(
@@ -434,6 +479,17 @@ def _predict(
     -------
     pl.DataFrame
         The predictions DataFrame.
+
+    Raises
+    ------
+    MissingProductionModelError
+        When no forward defender predictions are stored. Defenders are
+        served by a registered model, and there is deliberately no
+        per-row fallback to the formula: mixing formula-scored and
+        model-scored defenders in one column would put two uncalibrated
+        scales side by side and make the optimiser's comparison between
+        them meaningless. So the choice is made once, here, for the
+        whole run.
     """
     rolling = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
@@ -498,7 +554,20 @@ def _predict(
             )
         fx = fx.with_columns(pl.col(col).fill_null(median_elo))
 
-    fx = _apply_models(fx, baselines)
+    defender_predictions = load_forward_defender_predictions()
+    if defender_predictions is None:
+        raise MissingProductionModelError(
+            f"No forward {DEFENDER_POSITION} predictions in "
+            f"points_prediction. Train a model, then promote a version to "
+            f"'{DEFENDER_ALIAS}' on {DEFENDER_REGISTERED_MODEL} in the "
+            f"MLflow UI. The optimiser needs five defenders, so continuing "
+            f"would hand it an infeasible squad problem."
+        )
+    models = MODELS_BY_POSITION | {
+        DEFENDER_POSITION: StoredPredictionModel(defender_predictions)
+    }
+
+    fx = _apply_models(fx, baselines, models)
     return fx
 
 

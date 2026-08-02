@@ -8,12 +8,18 @@ import polars as pl
 import pytest
 
 from fantasy_football.modelling import prediction
+from fantasy_football.modelling.models import (
+    MODELS_BY_POSITION,
+    StoredPredictionModel,
+)
 from fantasy_football.modelling.prediction import (
     _baselines,
     _latest_rolling_by_code,
+    load_forward_defender_predictions,
     predict_points,
 )
 from fantasy_football.storage import database
+from fantasy_football.storage.tables import FORWARD_KIND, POINTS_PREDICTION
 
 
 def _setup_artifacts(
@@ -30,6 +36,11 @@ def _setup_artifacts(
     None -- resolves hermetically to an empty roster (falling back to the
     pre-existing current-season behaviour) instead of touching the real,
     developer-local database.
+
+    Stored forward defender predictions are supplied too, since ``_predict``
+    refuses to run without them. The stub covers an element no fixture frame
+    in this module uses, so it satisfies the liveness check without ever
+    matching a row and changing an assertion.
     """
     transformed = tmp_path / "transformed"
     transformed.mkdir()
@@ -38,7 +49,24 @@ def _setup_artifacts(
     team_elo.write_csv(transformed / "team_elo.csv")
     monkeypatch.setattr(prediction, "TRANSFORMED_DATA_FOLDER", transformed)
     monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "test.duckdb")
+    monkeypatch.setattr(
+        prediction,
+        "load_forward_defender_predictions",
+        lambda: _unrelated_defender_predictions(),
+    )
     return transformed
+
+
+def _unrelated_defender_predictions() -> pl.DataFrame:
+    """Return a stored defender prediction for an element nothing else uses."""
+    return pl.DataFrame(
+        {
+            "season": ["2025-26"],
+            "gw": [11],
+            "element": [999_999],
+            "predicted_points": [1.0],
+        }
+    )
 
 
 def _baseline_rolling() -> pl.DataFrame:
@@ -996,3 +1024,291 @@ def test_missing_elo_median_is_not_skewed_by_alias_duplication(
     # With the duplicate counted it would be (1900 + 1000) / 2 = 1450.
     row = result.filter(pl.col("gw") == 11).row(0, named=True)
     assert row["opponent_team_elo"] == pytest.approx(1900.0)
+
+
+def _minimal_fixture_frame() -> pl.DataFrame:
+    """Return one ELO-enriched fixture row, as _apply_models expects it."""
+    return pl.DataFrame(
+        {
+            "season": ["2025-26"],
+            "gw": [11],
+            "team": ["Arsenal"],
+            "opponent_team": ["Chelsea"],
+            "is_home": [True],
+            "player_team_elo": [2000.0],
+            "opponent_team_elo": [1800.0],
+        }
+    )
+
+
+def _minimal_baselines() -> pl.DataFrame:
+    """Return one baseline row per known position, all at the same club."""
+    return pl.DataFrame(
+        {
+            "name": ["G1", "D1", "M1", "F1"],
+            "element": [1, 2, 3, 4],
+            "position": ["GK", "DEF", "MID", "FWD"],
+            "team": ["Arsenal"] * 4,
+            "baseline": [4.0] * 4,
+        }
+    )
+
+
+def _formula_points() -> float:
+    """Return the formula score for _minimal_fixture_frame's home fixture."""
+    return (
+        4.0
+        * (2000 / 1800) ** prediction.OPPONENT_FACTOR_EXPONENT
+        * prediction.HOME_FACTOR
+    )
+
+
+def _stored_points_rows(rows: list[dict]) -> pl.DataFrame:
+    """Return a points_prediction-shaped frame built from partial rows."""
+    defaults = {
+        "season": "2025-26",
+        "gw": 11,
+        "element": 2,
+        "opponent": 7,
+        "position": "DEF",
+        "predicted_points": 1.0,
+        "model_version": "3",
+        "prediction_kind": FORWARD_KIND,
+    }
+    return pl.DataFrame(
+        [defaults | row for row in rows],
+        schema=POINTS_PREDICTION.schema,
+        orient="row",
+    )
+
+
+def _stub_store(mocker, frame: pl.DataFrame) -> None:
+    """Make the points_prediction table load ``frame`` instead of the store.
+
+    ``Table`` is a frozen dataclass, so its ``load`` cannot be patched on
+    the instance; the module-level name is replaced wholesale instead.
+    """
+    stub = mocker.patch.object(prediction, "POINTS_PREDICTION")
+    stub.load.return_value = frame
+
+
+def test_apply_models_uses_the_injected_model_map() -> None:
+    """A model map passed in replaces the registry for that position."""
+    called: dict[str, int] = {}
+
+    class Recorder:
+        def predict(self, features: pl.DataFrame) -> pl.Series:
+            """Record how many rows it saw and score them all at 9."""
+            called["rows"] = features.height
+            return pl.Series([9.0] * features.height)
+
+    result = prediction._apply_models(
+        _minimal_fixture_frame(), _minimal_baselines(), {"DEF": Recorder()}
+    )
+
+    assert called["rows"] == 1
+    # Positions absent from the injected map have no model, so they are
+    # dropped rather than silently scored by the formula.
+    assert result["position"].to_list() == ["DEF"]
+    assert result["predicted_points"].to_list() == [9.0]
+
+
+def test_apply_models_defaults_to_the_registry() -> None:
+    """Omitting the model map scores every position with the formula."""
+    result = prediction._apply_models(
+        _minimal_fixture_frame(), _minimal_baselines()
+    )
+
+    assert sorted(result["position"].to_list()) == ["DEF", "FWD", "GK", "MID"]
+    assert result["predicted_points"].to_list() == pytest.approx(
+        [_formula_points()] * 4
+    )
+
+
+def test_apply_models_leaves_the_other_positions_on_the_formula() -> None:
+    """Swapping DEF for a stored model does not disturb GK, MID or FWD."""
+    stored = pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26"],
+            "gw": [11, 11],
+            "element": [2, 2],
+            "predicted_points": [5.0, 2.5],
+        }
+    )
+    models = MODELS_BY_POSITION | {"DEF": StoredPredictionModel(stored)}
+
+    result = prediction._apply_models(
+        _minimal_fixture_frame(), _minimal_baselines(), models
+    )
+
+    scored = dict(
+        zip(
+            result["position"].to_list(),
+            result["predicted_points"].to_list(),
+            strict=True,
+        )
+    )
+    # Both legs of the double gameweek land on the one gameweek row.
+    assert scored["DEF"] == pytest.approx(7.5)
+    assert scored["DEF"] != pytest.approx(_formula_points())
+    for position in ("GK", "MID", "FWD"):
+        assert scored[position] == pytest.approx(_formula_points())
+
+
+def test_load_forward_defender_predictions_returns_none_when_empty(
+    mocker,
+) -> None:
+    """No stored rows at all reads as no live model."""
+    _stub_store(mocker, _stored_points_rows([]))
+
+    assert prediction.load_forward_defender_predictions() is None
+
+
+def test_load_forward_defender_predictions_ignores_other_rows(mocker) -> None:
+    """Backfill defenders and forward non-defenders both read as no model."""
+    _stub_store(
+        mocker,
+        _stored_points_rows(
+            [{"prediction_kind": "backfill"}, {"position": "MID"}]
+        ),
+    )
+
+    assert prediction.load_forward_defender_predictions() is None
+
+
+def test_load_forward_defender_predictions_selects_forward_defenders(
+    mocker,
+) -> None:
+    """Only forward-kind defender rows come back, at match grain."""
+    _stub_store(
+        mocker,
+        _stored_points_rows(
+            [
+                {"element": 2, "opponent": 7, "predicted_points": 3.0},
+                {"element": 2, "opponent": 8, "predicted_points": 2.5},
+                {"element": 3, "position": "MID", "predicted_points": 99.0},
+                {
+                    "element": 4,
+                    "prediction_kind": "backfill",
+                    "predicted_points": 88.0,
+                },
+            ]
+        ),
+    )
+
+    result = prediction.load_forward_defender_predictions()
+
+    assert result.columns == ["season", "gw", "element", "predicted_points"]
+    assert result["predicted_points"].to_list() == [3.0, 2.5]
+
+
+def test_predict_raises_when_no_defender_model_is_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run with no stored forward defender predictions fails loudly."""
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        _baseline_rolling(),
+        _baseline_fixtures(),
+        _baseline_elo(),
+    )
+    monkeypatch.setattr(
+        prediction, "load_forward_defender_predictions", lambda: None
+    )
+
+    with pytest.raises(prediction.MissingProductionModelError) as excinfo:
+        prediction._predict("2025-26", horizon_n=2)
+
+    message = str(excinfo.value)
+    assert "defender_points_regressor" in message
+    assert "production" in message
+    assert "DEF" in message
+
+
+def test_predict_raises_when_stored_rows_hold_no_forward_defenders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    """Stored rows that are all the wrong kind or position still fail."""
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        _baseline_rolling(),
+        _baseline_fixtures(),
+        _baseline_elo(),
+    )
+    # Undo the stub _setup_artifacts installs, so the real loader runs
+    # against the mocked store below.
+    monkeypatch.setattr(
+        prediction,
+        "load_forward_defender_predictions",
+        load_forward_defender_predictions,
+    )
+    _stub_store(
+        mocker,
+        _stored_points_rows(
+            [{"position": "MID"}, {"prediction_kind": "backfill"}]
+        ),
+    )
+
+    with pytest.raises(prediction.MissingProductionModelError) as excinfo:
+        prediction._predict("2025-26", horizon_n=2)
+
+    message = str(excinfo.value)
+    assert "defender_points_regressor" in message
+    assert "production" in message
+
+
+def test_predict_scores_defenders_from_the_stored_predictions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A defender's points come from the store, not the rolling formula."""
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26"],
+            "name": ["D1", "M1"],
+            "position": ["DEF", "MID"],
+            "team": ["Arsenal", "Arsenal"],
+            "element": [101, 102],
+            "player_code": [901, 902],
+            "gw": [10, 10],
+            "total_points": [6, 6],
+            "total_points_rolling_5": [4.0, 4.0],
+        }
+    )
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        rolling,
+        _baseline_fixtures().head(1),
+        _baseline_elo(),
+    )
+    monkeypatch.setattr(
+        prediction,
+        "load_forward_defender_predictions",
+        lambda: pl.DataFrame(
+            {
+                "season": ["2025-26", "2025-26"],
+                "gw": [11, 11],
+                "element": [101, 101],
+                "predicted_points": [5.0, 2.5],
+            }
+        ),
+    )
+
+    result = prediction._predict("2025-26", horizon_n=1)
+
+    scored = dict(
+        zip(
+            result["position"].to_list(),
+            result["predicted_points"].to_list(),
+            strict=True,
+        )
+    )
+    formula = (
+        4.0
+        * (2000 / 1800) ** prediction.OPPONENT_FACTOR_EXPONENT
+        * prediction.HOME_FACTOR
+    )
+    assert scored["DEF"] == pytest.approx(7.5)
+    assert scored["MID"] == pytest.approx(formula)
