@@ -42,6 +42,7 @@ from fantasy_football.features.valuation import (
     add_positional_value_rank,
     add_team_value,
 )
+from fantasy_football.modelling.folds import season_folds
 from fantasy_football.modelling.forward import (
     build_forward_fixtures,
     forward_player_weeks,
@@ -343,26 +344,6 @@ def make_pipeline() -> Pipeline:
             ("clf", LogisticRegression(max_iter=1000)),
         ]
     )
-
-
-def season_folds(seasons: list[str]) -> list[tuple[list[str], str]]:
-    """Build expanding-window CV folds over sorted seasons.
-
-    Each fold trains on every prior season and tests on the next unseen one,
-    mirroring deployment. Requires at least two seasons.
-
-    Parameters
-    ----------
-    seasons : list[str]
-        Season strings; sorted ascending internally.
-
-    Returns
-    -------
-    list[tuple[list[str], str]]
-        ``(train_seasons, test_season)`` pairs.
-    """
-    ordered = sorted(seasons)
-    return [(ordered[:i], ordered[i]) for i in range(1, len(ordered))]
 
 
 def _boundary_column(
