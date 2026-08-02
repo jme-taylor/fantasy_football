@@ -16,7 +16,7 @@ dependencies = [
     "mlflow>=3",
     "scraperfc>=4.5.0",
     "pulp>=3.3.2",
-    "polars>=1.43.2",
+    "polars>=1.43.2,<2",
 ]
 
 [dependency-groups]
