@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from fantasy_football.constants import ROLLING_WINDOW
+from fantasy_football.features.team_form import window_frame
 from fantasy_football.features.transformation import (
     _FALLBACK_IDENTITY_PREFIX,
     rolling_column_name,
@@ -136,6 +137,7 @@ _NON_RATEABLE: frozenset[str] = frozenset(
 )
 
 _VIEW_NAME = "player_match_form"
+_INCLUSIVE_VIEW_NAME = "player_match_form_inclusive"
 
 
 def validate_stats(
@@ -300,13 +302,19 @@ def _identity_sql() -> str:
     )
 
 
-def form_sql(rolling_window: int = ROLLING_WINDOW) -> str:
+def form_sql(
+    rolling_window: int = ROLLING_WINDOW, inclusive: bool = False
+) -> str:
     """Return the SELECT statement behind the ``player_match_form`` view.
 
     Parameters
     ----------
     rolling_window : int, optional
         Number of preceding appearances in the window.
+    inclusive : bool, optional
+        When True the current appearance counts towards its own window.
+        Used only on the forward-scoring path; see
+        :func:`fantasy_football.features.team_form.window_frame`.
 
     Returns
     -------
@@ -340,6 +348,11 @@ def form_sql(rolling_window: int = ROLLING_WINDOW) -> str:
             f"f.{stat}"
             for stat in dict.fromkeys((*FPL_PER90_STATS, *CUMULATIVE_STATS))
         ]
+    )
+    std_frame = (
+        "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+        if inclusive
+        else "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
     )
     return f"""
 WITH appearances AS (
@@ -385,6 +398,9 @@ SELECT
     {totals},
     count(*) OVER form AS form_matches,
     sum(a.minutes) OVER form AS form_minutes,
+    -- Under the inclusive frame this is always 0, because the current
+    -- appearance is inside its own window. The forward path recomputes
+    -- staleness against the future fixture's kickoff and ignores it.
     date_diff('day', max(a.kickoff_time) OVER form, a.kickoff_time)
         AS days_since_last_appearance
 FROM appearances AS a
@@ -392,12 +408,12 @@ WINDOW
     form AS (
         PARTITION BY a.rolling_identity
         ORDER BY a.kickoff_time
-        ROWS BETWEEN {rolling_window} PRECEDING AND 1 PRECEDING
+        {window_frame(rolling_window, inclusive)}
     ),
     season_to_date AS (
         PARTITION BY a.rolling_identity, a.season
         ORDER BY a.kickoff_time
-        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        {std_frame}
     )
 """
 
@@ -405,6 +421,7 @@ WINDOW
 def register_match_form(
     connection: "DuckDBPyConnection",
     rolling_window: int = ROLLING_WINDOW,
+    inclusive: bool = False,
 ) -> None:
     """Create the ``player_match_form`` view.
 
@@ -417,6 +434,9 @@ def register_match_form(
         An open connection.
     rolling_window : int, optional
         Number of preceding appearances in the window.
+    inclusive : bool, optional
+        When True, register ``player_match_form_inclusive`` built on the
+        inclusive frame instead of ``player_match_form``.
     """
     # opta_match is aliased so this module reads one name, whether the
     # bridge view is renamed later or swapped for a materialised table.
@@ -424,9 +444,10 @@ def register_match_form(
         f"CREATE OR REPLACE TEMP VIEW {_VIEW_NAME}_opta AS "
         "SELECT * FROM opta_match"
     )
+    view = _INCLUSIVE_VIEW_NAME if inclusive else _VIEW_NAME
     connection.execute(
-        f"CREATE OR REPLACE TEMP VIEW {_VIEW_NAME} AS "
-        f"{form_sql(rolling_window)}"
+        f"CREATE OR REPLACE TEMP VIEW {view} AS "
+        f"{form_sql(rolling_window, inclusive)}"
     )
 
 

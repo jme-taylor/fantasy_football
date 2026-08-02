@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from fantasy_football.features import match_form
+from fantasy_football.features.match_form import register_match_form
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.lookups import register_lookups
 from fantasy_football.storage.tables import (
@@ -377,6 +378,32 @@ def test_card_rate_and_running_total_use_prior_matches(
         assert third["red_cards_season_to_date"].item() == 0
     finally:
         connection.close()
+
+
+def test_form_sql_inclusive_frame_includes_current_row():
+    """The inclusive frame widens the window to the current row."""
+    exclusive = match_form.form_sql(rolling_window=5, inclusive=False)
+    inclusive = match_form.form_sql(rolling_window=5, inclusive=True)
+
+    assert "ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING" in exclusive
+    assert "ROWS BETWEEN 4 PRECEDING AND CURRENT ROW" in inclusive
+    assert "AND 1 PRECEDING" not in inclusive
+
+
+def test_inclusive_view_registers_under_its_own_name(connection):
+    """The inclusive view is a separate, additional view, not a swap."""
+    register_lookups(connection)
+    register_match_form(connection, inclusive=False)
+    register_match_form(connection, inclusive=True)
+
+    names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT view_name FROM duckdb_views()"
+        ).fetchall()
+    }
+    assert "player_match_form" in names
+    assert "player_match_form_inclusive" in names
 
 
 def test_running_total_starts_at_zero_not_null(tmp_path: Path) -> None:

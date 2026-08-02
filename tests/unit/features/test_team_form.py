@@ -8,6 +8,7 @@ import polars as pl
 import pytest
 
 from fantasy_football.features import team_form
+from fantasy_football.features.team_form import register_team_form
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.lookups import register_lookups
 from fantasy_football.storage.tables import (
@@ -267,6 +268,31 @@ def test_days_since_last_match_measures_the_gap(connection) -> None:
     frame = team_form.load_team_form(connection)
     third = frame.filter((pl.col("team") == UNITED) & (pl.col("gw") == 3))
     assert third["days_since_last_match"].item() == 7
+
+
+def test_form_sql_inclusive_frame_includes_current_row():
+    """The inclusive frame widens the window to the current row."""
+    exclusive = team_form.form_sql(rolling_window=5, inclusive=False)
+    inclusive = team_form.form_sql(rolling_window=5, inclusive=True)
+
+    assert "ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING" in exclusive
+    assert "ROWS BETWEEN 4 PRECEDING AND CURRENT ROW" in inclusive
+
+
+def test_inclusive_view_registers_under_its_own_name(connection):
+    """The inclusive view is a separate, additional view, not a swap."""
+    register_lookups(connection)
+    register_team_form(connection, inclusive=False)
+    register_team_form(connection, inclusive=True)
+
+    names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT view_name FROM duckdb_views()"
+        ).fetchall()
+    }
+    assert "team_match_form" in names
+    assert "team_match_form_inclusive" in names
 
 
 def test_each_club_windows_over_its_own_matches(connection) -> None:

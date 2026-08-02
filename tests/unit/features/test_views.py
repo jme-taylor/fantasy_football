@@ -38,6 +38,20 @@ def test_registers_every_view_in_dependency_order(connection):
         assert view in names
 
 
+def test_registers_inclusive_views_too(connection):
+    """The forward-scoring views are registered alongside the training ones."""
+    register_feature_views(connection)
+
+    names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT view_name FROM duckdb_views()"
+        ).fetchall()
+    }
+    assert "player_match_form_inclusive" in names
+    assert "team_match_form_inclusive" in names
+
+
 def test_views_are_queryable_when_sources_are_empty(connection):
     """The views return zero rows rather than erroring on empty sources."""
     register_feature_views(connection)

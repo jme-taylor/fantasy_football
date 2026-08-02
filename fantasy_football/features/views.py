@@ -24,6 +24,8 @@ def register_feature_views(
 ) -> None:
     """Register the lookup, player-form and team-form views.
 
+    Both frames are registered: exclusive and inclusive.
+
     Parameters
     ----------
     connection : duckdb.DuckDBPyConnection
@@ -34,3 +36,5 @@ def register_feature_views(
     register_lookups(connection)
     register_match_form(connection, rolling_window)
     register_team_form(connection, rolling_window)
+    register_match_form(connection, rolling_window, inclusive=True)
+    register_team_form(connection, rolling_window, inclusive=True)

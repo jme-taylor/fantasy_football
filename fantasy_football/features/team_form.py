@@ -83,6 +83,7 @@ TEAM_CONTEXT_COLUMNS: tuple[str, ...] = (
 
 _MATCH_VIEW = "team_match"
 _FORM_VIEW = "team_match_form"
+_INCLUSIVE_FORM_VIEW = "team_match_form_inclusive"
 
 # One row per team per fixture. The self-join flips each side's own
 # figures into the other's "against" columns.
@@ -183,13 +184,44 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
     ] + list(TEAM_CONTEXT_COLUMNS)
 
 
-def form_sql(rolling_window: int = ROLLING_WINDOW) -> str:
-    """Return the SELECT behind the ``team_match_form`` view.
+def window_frame(rolling_window: int, inclusive: bool) -> str:
+    """Return the ROWS frame clause for a rolling window.
+
+    The exclusive frame ends one row before the current one, so a
+    training row cannot see its own match. The inclusive frame ends on
+    the current row and is used only when as-of joining the most recent
+    played match onto an unplayed fixture -- there, that match has
+    happened and excluding it would make the prediction one game stale.
+
+    Parameters
+    ----------
+    rolling_window : int
+        Number of matches the window spans.
+    inclusive : bool
+        Whether the current row counts towards its own window.
+
+    Returns
+    -------
+    str
+        A ``ROWS BETWEEN ...`` clause.
+    """
+    if inclusive:
+        return f"ROWS BETWEEN {rolling_window - 1} PRECEDING AND CURRENT ROW"
+    return f"ROWS BETWEEN {rolling_window} PRECEDING AND 1 PRECEDING"
+
+
+def form_sql(
+    rolling_window: int = ROLLING_WINDOW, inclusive: bool = False
+) -> str:
+    """Return the SELECT behind the team form view.
 
     Parameters
     ----------
     rolling_window : int, optional
         Number of preceding matches in the window.
+    inclusive : bool, optional
+        When True the current match counts towards its own window. Used
+        only on the forward-scoring path; see :func:`window_frame`.
 
     Returns
     -------
@@ -213,13 +245,16 @@ SELECT
     {", ".join(TEAM_MEASURES)},
     {averages},
     count(*) OVER form AS form_matches,
+    -- Under the inclusive frame this is always 0, because the current
+    -- match is inside its own window. The forward path recomputes
+    -- staleness against the future fixture's kickoff and ignores it.
     date_diff('day', max(kickoff_time) OVER form, kickoff_time)
         AS days_since_last_match
 FROM {_MATCH_VIEW}
 WINDOW form AS (
     PARTITION BY team
     ORDER BY kickoff_time
-    ROWS BETWEEN {rolling_window} PRECEDING AND 1 PRECEDING
+    {window_frame(rolling_window, inclusive)}
 )
 """
 
@@ -227,8 +262,9 @@ WINDOW form AS (
 def register_team_form(
     connection: "DuckDBPyConnection",
     rolling_window: int = ROLLING_WINDOW,
+    inclusive: bool = False,
 ) -> None:
-    """Create the ``team_match`` and ``team_match_form`` views.
+    """Create the ``team_match`` and team form views.
 
     Requires ``storage.lookups.register_lookups`` on the same connection.
 
@@ -238,11 +274,15 @@ def register_team_form(
         An open connection.
     rolling_window : int, optional
         Number of preceding matches in the window.
+    inclusive : bool, optional
+        When True, register ``team_match_form_inclusive`` built on the
+        inclusive frame instead of ``team_match_form``.
     """
     connection.execute(_TEAM_MATCH_SQL)
+    view = _INCLUSIVE_FORM_VIEW if inclusive else _FORM_VIEW
     connection.execute(
-        f"CREATE OR REPLACE TEMP VIEW {_FORM_VIEW} AS "
-        f"{form_sql(rolling_window)}"
+        f"CREATE OR REPLACE TEMP VIEW {view} AS "
+        f"{form_sql(rolling_window, inclusive)}"
     )
     unordered = connection.sql(
         f"SELECT count(*) FROM {_MATCH_VIEW} WHERE kickoff_time IS NULL"
