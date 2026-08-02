@@ -431,6 +431,11 @@ def _prediction_versions(
         rows = connection.execute(
             f"SELECT DISTINCT model_version FROM {table_name}"
         ).fetchall()
+    elif not seasons:
+        # An empty ``IN ()`` clause is invalid SQL. An empty seasons
+        # list means "no seasons requested", so the honest answer is an
+        # empty set, without ever building the query.
+        return set()
     else:
         placeholders = ", ".join("?" for _ in seasons)
         rows = connection.execute(

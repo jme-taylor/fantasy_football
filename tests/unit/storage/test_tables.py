@@ -403,3 +403,76 @@ def test_points_prediction_versions_filters_by_season(db):
 
     assert points_prediction_versions(db) == {"1", "2"}
     assert points_prediction_versions(db, seasons=["2025-26"]) == {"1"}
+
+
+def test_points_prediction_versions_empty_seasons_returns_empty_set(
+    db,
+) -> None:
+    """An empty ``seasons`` filter returns an empty set without raising.
+
+    A naive ``WHERE season IN (...)`` built from an empty list is
+    invalid SQL (``IN ()``); this must short-circuit before reaching
+    DuckDB rather than crash. Seeding a row first proves the empty
+    result comes from the empty filter, not an empty table.
+    """
+    from fantasy_football.storage.tables import (
+        BACKFILL_KIND,
+        POINTS_PREDICTION,
+        points_prediction_versions,
+    )
+
+    frame = pl.DataFrame(
+        {
+            "season": ["2025-26"],
+            "gw": [1],
+            "element": [1],
+            "opponent": [2],
+            "position": ["DEF"],
+            "predicted_points": [1.0],
+            "model_version": ["1"],
+            "prediction_kind": [BACKFILL_KIND],
+        }
+    )
+    POINTS_PREDICTION.replace_partition(
+        db, frame, equals={"prediction_kind": BACKFILL_KIND}
+    )
+
+    assert points_prediction_versions(db, seasons=[]) == set()
+
+
+def test_minutes_prediction_versions_empty_seasons_returns_empty_set(
+    db,
+) -> None:
+    """An empty ``seasons`` filter returns an empty set without raising.
+
+    Mirrors the points_prediction case: an empty ``IN ()`` clause is
+    invalid SQL, so an empty ``seasons`` list must short-circuit before
+    any query runs. Seeding a row first proves the empty result comes
+    from the empty filter, not an empty table.
+    """
+    from fantasy_football.storage.tables import (
+        BACKFILL_KIND,
+        MINUTES_PREDICTION,
+        minutes_prediction_versions,
+    )
+
+    frame = pl.DataFrame(
+        {
+            "season": ["2025-26"],
+            "gw": [1],
+            "element": [1],
+            "opponent": [2],
+            "p_zero": [0.1],
+            "p_partial": [0.2],
+            "p_sixty_plus": [0.7],
+            "expected_minutes": [70.0],
+            "model_version": ["1"],
+            "prediction_kind": [BACKFILL_KIND],
+            "snapshot_captured_at": [None],
+        }
+    )
+    MINUTES_PREDICTION.replace_partition(
+        db, frame, equals={"prediction_kind": BACKFILL_KIND}
+    )
+
+    assert minutes_prediction_versions(db, seasons=[]) == set()

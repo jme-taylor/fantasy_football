@@ -552,21 +552,24 @@ def backfill_defender_points() -> None:
             connection, model_frame, CURRENT_SEASON, model, prod_version
         )
 
-        # Guard the version/season lookups behind ``historic`` being
-        # non-empty: an empty ``IN ()`` clause is invalid SQL, and there
-        # is nothing to gate when there are no historic seasons at all
-        # (e.g. a fresh database holding only the current season).
+        # Nothing to gate when there are no historic seasons at all --
+        # e.g. a fresh database holding only the current season. The
+        # shared version-lookup helpers handle an empty ``seasons`` list
+        # safely (see storage/tables.py); skipping here just avoids
+        # logging a vacuous "backfilled the empty list" line.
         needs_rebuild = False
         if historic:
+            historic_set = set(historic)
             stored_versions = points_prediction_versions(
                 connection, seasons=historic
             )
-            stored_seasons = POINTS_PREDICTION.seasons_present(
-                connection
-            ) & set(historic)
-            needs_rebuild = stored_versions != {
-                prod_version
-            } or stored_seasons != set(historic)
+            stored_seasons = (
+                POINTS_PREDICTION.seasons_present(connection) & historic_set
+            )
+            needs_rebuild = (
+                stored_versions != {prod_version}
+                or stored_seasons != historic_set
+            )
         if needs_rebuild:
             for season in historic:
                 _score_and_store(
