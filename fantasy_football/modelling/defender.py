@@ -11,14 +11,32 @@ in :class:`fantasy_football.modelling.models.StoredPredictionModel`.
 """
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+import mlflow
+import mlflow.sklearn
+import numpy as np
 import polars as pl
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
+from fantasy_football.constants import (
+    EXPERIMENT_BY_POSITION,
+    MLFLOW_TRACKING_URI,
+    PRECISION_K_BY_POSITION,
+)
 from fantasy_football.features.views import register_feature_views
+from fantasy_football.modelling.folds import gameweek_folds
+from fantasy_football.modelling.metrics import (
+    mae,
+    precision_at_k,
+    rmse,
+    skill_score,
+    spearman_by_gw,
+)
+from fantasy_football.storage.database import get_connection
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -225,3 +243,181 @@ def make_pipeline() -> Pipeline:
             ),
         ]
     )
+
+
+def fold_metrics(
+    test_df: pl.DataFrame, predicted: Sequence[float]
+) -> dict[str, float]:
+    """Score one fold's predictions against its actuals.
+
+    The baseline for the skill score is the mean target over the fold,
+    i.e. "predict the average defender every time". Ranking metrics
+    matter more than MAE here: the optimiser only needs the order of
+    defenders to be right.
+
+    Parameters
+    ----------
+    test_df : pl.DataFrame
+        The fold's held-out rows, carrying ``KEY_COLUMNS`` and ``TARGET``.
+    predicted : Sequence[float]
+        Predictions aligned to ``test_df`` row order.
+
+    Returns
+    -------
+    dict[str, float]
+        ``mae``, ``rmse``, ``skill_score``, ``spearman`` and
+        ``precision_at_k``.
+    """
+    actual = test_df[TARGET].to_list()
+    baseline = [float(np.mean(actual))] * len(actual)
+    ranked = test_df.select(
+        pl.col("gw"),
+        pl.col("element").alias("player_id"),
+        pl.Series("predicted_points", predicted),
+        pl.col(TARGET).alias("actual"),
+    )
+    return {
+        "mae": mae(predicted, actual),
+        "rmse": rmse(predicted, actual),
+        "skill_score": skill_score(predicted, actual, baseline),
+        "spearman": spearman_by_gw(ranked),
+        "precision_at_k": precision_at_k(
+            ranked, k=PRECISION_K_BY_POSITION[POSITION]
+        ),
+    }
+
+
+def cross_validate(
+    model_df: pl.DataFrame,
+    folds: list[tuple[list[tuple[str, int]], tuple[str, int]]],
+) -> tuple[list[dict[str, float]], dict[str, float]]:
+    """Score the model over expanding-window gameweek folds.
+
+    Parameters
+    ----------
+    model_df : pl.DataFrame
+        Output of :func:`build_model_frame`.
+    folds : list
+        ``(train_keys, test_key)`` pairs from
+        :func:`fantasy_football.modelling.folds.gameweek_folds`.
+
+    Returns
+    -------
+    tuple[list[dict], dict]
+        Per-fold metric dicts, and an aggregate dict with
+        ``{metric}_mean`` and ``{metric}_std`` for every metric present
+        in all folds. Both are empty when no fold has data on both sides.
+    """
+    per_fold: list[dict[str, float]] = []
+    keys = pl.struct(["season", "gw"])
+    for train_keys, test_key in folds:
+        train_set = [{"season": s, "gw": g} for s, g in train_keys]
+        train_df = model_df.filter(keys.is_in(train_set))
+        test_df = model_df.filter(
+            (pl.col("season") == test_key[0]) & (pl.col("gw") == test_key[1])
+        )
+        if train_df.is_empty() or test_df.is_empty():
+            continue
+        pipe = make_pipeline()
+        pipe.fit(
+            train_df.select(FEATURES).to_pandas(), train_df[TARGET].to_list()
+        )
+        predicted = pipe.predict(test_df.select(FEATURES).to_pandas())
+        per_fold.append(fold_metrics(test_df, list(predicted)))
+
+    agg: dict[str, float] = {}
+    if per_fold:
+        shared = set(per_fold[0])
+        for metrics in per_fold[1:]:
+            shared &= set(metrics)
+        for key in sorted(shared):
+            values = [metrics[key] for metrics in per_fold]
+            agg[f"{key}_mean"] = float(np.mean(values))
+            agg[f"{key}_std"] = float(np.std(values))
+    return per_fold, agg
+
+
+def train_final(model_df: pl.DataFrame) -> Pipeline:
+    """Fit the pipeline on every row in ``model_df``.
+
+    Parameters
+    ----------
+    model_df : pl.DataFrame
+        The full model frame.
+
+    Returns
+    -------
+    sklearn.pipeline.Pipeline
+        The fitted pipeline.
+    """
+    pipe = make_pipeline()
+    pipe.fit(model_df.select(FEATURES).to_pandas(), model_df[TARGET].to_list())
+    return pipe
+
+
+def run_defender_model() -> dict[str, float]:
+    """Train, cross-validate and log the defender model to MLflow.
+
+    Assembles the model frame, scores it with expanding-window gameweek
+    folds, fits the final pipeline on every row, and logs params,
+    per-fold metrics (stepped), aggregate mean/std metrics and the fitted
+    model. Every run registers a new version; which version is live is a
+    manual alias move in the MLflow UI.
+
+    Returns
+    -------
+    dict[str, float]
+        The aggregate metrics, or an empty dict when there is too little
+        data to form a fold.
+    """
+    connection = get_connection()
+    try:
+        model_df = build_model_frame(connection)
+    finally:
+        connection.close()
+
+    folds = gameweek_folds(
+        list(zip(model_df["season"], model_df["gw"])),
+        min_train_gws=MIN_TRAIN_GWS,
+    )
+    per_fold, agg = cross_validate(model_df, folds)
+    final_model = train_final(model_df)
+
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(EXPERIMENT_BY_POSITION[POSITION])
+    with mlflow.start_run():
+        mlflow.log_params(
+            {
+                "model": "random_forest",
+                "n_estimators": N_ESTIMATORS,
+                "random_state": RANDOM_STATE,
+                "cv": "expanding_window_by_gameweek",
+                "min_train_gws": MIN_TRAIN_GWS,
+                "n_folds": len(folds),
+                "n_samples": model_df.height,
+                "n_features": len(FEATURES),
+            }
+        )
+        for step, metrics in enumerate(per_fold):
+            for key, value in metrics.items():
+                mlflow.log_metric(key, value, step=step)
+        mlflow.log_metrics(agg)
+        # TODO (JT): Promote automatically once the metrics justify it.
+        # A gate must re-score the incumbent on today's folds rather than
+        # compare against its stored number -- the incumbent's metric was
+        # computed over fewer folds, so a direct comparison would read as
+        # an improvement or regression for reasons unrelated to the model.
+        # Deferred until a few weeks of retrains show how much the
+        # metrics wobble. Mirrors the same TODO in minutes.py.
+        mlflow.sklearn.log_model(
+            final_model,
+            name="model",
+            registered_model_name=REGISTERED_MODEL,
+        )
+
+    logger.info(
+        "Defender model registered under %s over %d folds",
+        REGISTERED_MODEL,
+        len(folds),
+    )
+    return agg

@@ -1,12 +1,14 @@
 from datetime import datetime, timedelta
 
 import duckdb
+import numpy as np
 import polars as pl
 import pytest
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 
 from fantasy_football.modelling import defender
+from fantasy_football.modelling.folds import gameweek_folds
 from fantasy_football.storage.tables import (
     PLAYER_MATCH,
     PLAYER_MATCH_OPTA,
@@ -334,3 +336,128 @@ def test_own_team_and_opposition_form_are_not_swapped(connection) -> None:
     # Arsenal's own gw1 record (vs Chelsea): 1.0 xG for, 1 goal for.
     assert row["xg_for_rolling_5"].item() == pytest.approx(1.0)
     assert row["goals_for_rolling_5"].item() == pytest.approx(1.0)
+
+
+def _synthetic_frame(n_gws: int = 14, n_players: int = 12) -> pl.DataFrame:
+    """Build a synthetic model frame spanning several gameweeks."""
+    rows = []
+    for gw in range(1, n_gws + 1):
+        for element in range(1, n_players + 1):
+            rows.append(
+                {
+                    "season": "2026-27",
+                    "gw": gw,
+                    "element": element,
+                    "opponent": (element % 5) + 1,
+                    defender.TARGET: float(element % 7),
+                    **{
+                        name: float(element + gw) for name in defender.FEATURES
+                    },
+                }
+            )
+    return pl.DataFrame(rows).select(
+        defender.KEY_COLUMNS + [defender.TARGET] + defender.FEATURES
+    )
+
+
+def test_fold_metrics_reports_every_expected_metric():
+    """fold_metrics returns exactly the five expected metric keys."""
+    test_df = _synthetic_frame(n_gws=1)
+    predicted = [1.0] * test_df.height
+    metrics = defender.fold_metrics(test_df, predicted)
+    assert set(metrics) == {
+        "mae",
+        "rmse",
+        "skill_score",
+        "spearman",
+        "precision_at_k",
+    }
+
+
+def test_fold_metrics_perfect_predictions_are_zero_error():
+    """Exact predictions give mae == 0.0 and rmse == 0.0, not swapped."""
+    test_df = _synthetic_frame(n_gws=1)
+    predicted = test_df[defender.TARGET].to_list()
+    metrics = defender.fold_metrics(test_df, predicted)
+    assert metrics["mae"] == 0.0
+    assert metrics["rmse"] == 0.0
+
+
+def test_fold_metrics_constant_mean_prediction_has_zero_skill():
+    """Predicting the fold mean everywhere scores skill_score == 0.0.
+
+    The skill-score baseline *is* the fold mean, so a constant-mean
+    prediction has identical MAE to the baseline: 1 - mae/mae == 0.0.
+    """
+    test_df = _synthetic_frame(n_gws=1)
+    mean_target = float(np.mean(test_df[defender.TARGET].to_list()))
+    predicted = [mean_target] * test_df.height
+    metrics = defender.fold_metrics(test_df, predicted)
+    assert metrics["skill_score"] == pytest.approx(0.0)
+
+
+def test_fold_metrics_perfect_and_reversed_ranking_spearman():
+    """A perfectly ordered prediction scores spearman == 1.0.
+
+    Element values in _synthetic_frame are unique per row within a
+    gameweek, so using them directly as the prediction reproduces the
+    actual ranking exactly, and negating them reverses it exactly.
+    """
+    test_df = _synthetic_frame(n_gws=1)
+    actual = test_df[defender.TARGET].to_list()
+    perfect = defender.fold_metrics(test_df, actual)
+    assert perfect["spearman"] == pytest.approx(1.0)
+
+    reversed_pred = [-value for value in actual]
+    reversed_metrics = defender.fold_metrics(test_df, reversed_pred)
+    assert reversed_metrics["spearman"] == pytest.approx(-1.0)
+
+
+def test_cross_validate_returns_per_fold_and_aggregates():
+    """cross_validate returns one metric dict per fold plus aggregates."""
+    model_df = _synthetic_frame()
+    folds = gameweek_folds(
+        list(zip(model_df["season"], model_df["gw"])), min_train_gws=10
+    )
+    per_fold, agg = defender.cross_validate(model_df, folds)
+    assert len(per_fold) == len(folds) == 4
+    assert "mae_mean" in agg
+    assert "mae_std" in agg
+
+
+def test_cross_validate_handles_no_folds():
+    """No folds yields empty per-fold and aggregate results."""
+    per_fold, agg = defender.cross_validate(_synthetic_frame(), [])
+    assert per_fold == []
+    assert agg == {}
+
+
+def test_train_final_fits_on_every_row():
+    """train_final fits a pipeline that predicts every row in the frame."""
+    model_df = _synthetic_frame()
+    pipe = defender.train_final(model_df)
+    predicted = pipe.predict(model_df.select(defender.FEATURES).to_pandas())
+    assert len(predicted) == model_df.height
+
+
+def test_run_defender_model_logs_and_registers(mocker):
+    """run_defender_model logs metrics and registers the model to MLflow."""
+    model_df = _synthetic_frame()
+    mocker.patch.object(defender, "get_connection")
+    mocker.patch.object(defender, "build_model_frame", return_value=model_df)
+    mocker.patch.object(defender.mlflow, "set_tracking_uri")
+    mocker.patch.object(defender.mlflow, "set_experiment")
+    mocker.patch.object(defender.mlflow, "start_run")
+    mocker.patch.object(defender.mlflow, "log_params")
+    mocker.patch.object(defender.mlflow, "log_metric")
+    log_metrics = mocker.patch.object(defender.mlflow, "log_metrics")
+    log_model = mocker.patch.object(defender.mlflow.sklearn, "log_model")
+
+    agg = defender.run_defender_model()
+
+    assert "mae_mean" in agg
+    log_metrics.assert_called_once()
+    assert (
+        log_model.call_args.kwargs["registered_model_name"]
+        == defender.REGISTERED_MODEL
+    )
