@@ -415,6 +415,32 @@ TABLES: tuple[Table, ...] = (
 )
 
 
+def _prediction_versions(
+    connection: duckdb.DuckDBPyConnection,
+    table_name: str,
+    seasons: list[str] | None = None,
+) -> set[str]:
+    """Return the distinct ``model_version`` values stored in a table.
+
+    Shared body for ``minutes_prediction_versions`` and
+    ``points_prediction_versions``. ``table_name`` is always one of the
+    two module-level literals those functions pass in, never external
+    input, so it is safe to interpolate directly.
+    """
+    if seasons is None:
+        rows = connection.execute(
+            f"SELECT DISTINCT model_version FROM {table_name}"
+        ).fetchall()
+    else:
+        placeholders = ", ".join("?" for _ in seasons)
+        rows = connection.execute(
+            f"SELECT DISTINCT model_version FROM {table_name} "
+            f"WHERE season IN ({placeholders})",
+            seasons,
+        ).fetchall()
+    return {row[0] for row in rows if row[0] is not None}
+
+
 def minutes_prediction_versions(
     connection: duckdb.DuckDBPyConnection,
     seasons: list[str] | None = None,
@@ -434,18 +460,7 @@ def minutes_prediction_versions(
     set[str]
         Distinct non-null model versions.
     """
-    if seasons is None:
-        rows = connection.execute(
-            "SELECT DISTINCT model_version FROM minutes_prediction"
-        ).fetchall()
-    else:
-        placeholders = ", ".join("?" for _ in seasons)
-        rows = connection.execute(
-            "SELECT DISTINCT model_version FROM minutes_prediction "
-            f"WHERE season IN ({placeholders})",
-            seasons,
-        ).fetchall()
-    return {row[0] for row in rows if row[0] is not None}
+    return _prediction_versions(connection, "minutes_prediction", seasons)
 
 
 def points_prediction_versions(
@@ -467,15 +482,4 @@ def points_prediction_versions(
     set[str]
         Distinct non-null model versions.
     """
-    if seasons is None:
-        rows = connection.execute(
-            "SELECT DISTINCT model_version FROM points_prediction"
-        ).fetchall()
-    else:
-        placeholders = ", ".join("?" for _ in seasons)
-        rows = connection.execute(
-            "SELECT DISTINCT model_version FROM points_prediction "
-            f"WHERE season IN ({placeholders})",
-            seasons,
-        ).fetchall()
-    return {row[0] for row in rows if row[0] is not None}
+    return _prediction_versions(connection, "points_prediction", seasons)
