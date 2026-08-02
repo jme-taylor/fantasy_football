@@ -9,6 +9,14 @@ import polars as pl
 
 from fantasy_football.storage.table import Table
 
+# How a stored prediction was produced. Backfilled rows are in-sample --
+# the champion scored its own training seasons. Forward rows are genuine
+# out-of-sample forecasts for fixtures that had not been played. Both
+# minutes_prediction and points_prediction use these, which is why they
+# live here rather than in either model's module.
+BACKFILL_KIND = "backfill"
+FORWARD_KIND = "forward"
+
 # Attributes that are properties of the person, not of the season. One
 # observation anywhere determines them everywhere, so they are filled
 # across every season sharing a player_code on read. Everything else is
@@ -330,6 +338,31 @@ MINUTES_PREDICTION = Table(
     order_by=("season", "gw", "element", "opponent", "prediction_kind"),
 )
 
+# Per-position points predictions at match grain, so a double gameweek
+# is two rows that sum to a gameweek total. ``position`` is carried so
+# GK/MID/FWD models can land here without a migration.
+POINTS_PREDICTION = Table(
+    name="points_prediction",
+    schema={
+        "season": pl.Utf8,
+        "gw": pl.Int64,
+        "element": pl.Int64,
+        "opponent": pl.Int64,
+        "position": pl.Utf8,
+        "predicted_points": pl.Float64,
+        "model_version": pl.Utf8,
+        "prediction_kind": pl.Utf8,
+    },
+    primary_key=(
+        "season",
+        "gw",
+        "element",
+        "opponent",
+        "prediction_kind",
+    ),
+    order_by=("season", "gw", "element", "opponent", "prediction_kind"),
+)
+
 PLAYER_SNAPSHOT = Table(
     name="player_snapshot",
     schema={
@@ -376,9 +409,41 @@ TABLES: tuple[Table, ...] = (
     PLAYER_MATCH_OPTA,
     PLAYER_AVAILABILITY,
     MINUTES_PREDICTION,
+    POINTS_PREDICTION,
     PLAYER_SEASON,
     PLAYER_SNAPSHOT,
 )
+
+
+def _prediction_versions(
+    connection: duckdb.DuckDBPyConnection,
+    table_name: str,
+    seasons: list[str] | None = None,
+) -> set[str]:
+    """Return the distinct ``model_version`` values stored in a table.
+
+    Shared body for ``minutes_prediction_versions`` and
+    ``points_prediction_versions``. ``table_name`` is always one of the
+    two module-level literals those functions pass in, never external
+    input, so it is safe to interpolate directly.
+    """
+    if seasons is None:
+        rows = connection.execute(
+            f"SELECT DISTINCT model_version FROM {table_name}"
+        ).fetchall()
+    elif not seasons:
+        # An empty ``IN ()`` clause is invalid SQL. An empty seasons
+        # list means "no seasons requested", so the honest answer is an
+        # empty set, without ever building the query.
+        return set()
+    else:
+        placeholders = ", ".join("?" for _ in seasons)
+        rows = connection.execute(
+            f"SELECT DISTINCT model_version FROM {table_name} "
+            f"WHERE season IN ({placeholders})",
+            seasons,
+        ).fetchall()
+    return {row[0] for row in rows if row[0] is not None}
 
 
 def minutes_prediction_versions(
@@ -400,15 +465,26 @@ def minutes_prediction_versions(
     set[str]
         Distinct non-null model versions.
     """
-    if seasons is None:
-        rows = connection.execute(
-            "SELECT DISTINCT model_version FROM minutes_prediction"
-        ).fetchall()
-    else:
-        placeholders = ", ".join("?" for _ in seasons)
-        rows = connection.execute(
-            "SELECT DISTINCT model_version FROM minutes_prediction "
-            f"WHERE season IN ({placeholders})",
-            seasons,
-        ).fetchall()
-    return {row[0] for row in rows if row[0] is not None}
+    return _prediction_versions(connection, "minutes_prediction", seasons)
+
+
+def points_prediction_versions(
+    connection: duckdb.DuckDBPyConnection,
+    seasons: list[str] | None = None,
+) -> set[str]:
+    """Return the distinct ``model_version`` values stored.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    seasons : list[str] | None, optional
+        When given, restrict to these seasons (used to gate the historic
+        backfill on the versions already stored for historic seasons).
+
+    Returns
+    -------
+    set[str]
+        Distinct non-null model versions.
+    """
+    return _prediction_versions(connection, "points_prediction", seasons)

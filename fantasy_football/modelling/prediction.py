@@ -16,7 +16,21 @@ from fantasy_football.features.transformation import (
     fill_missing_values_by_position,
     rolling_column_name,
 )
-from fantasy_football.modelling.models import MODELS_BY_POSITION
+from fantasy_football.modelling.defender import (
+    POSITION as DEFENDER_POSITION,
+)
+from fantasy_football.modelling.defender import (
+    PRODUCTION_ALIAS as DEFENDER_ALIAS,
+)
+from fantasy_football.modelling.defender import (
+    REGISTERED_MODEL as DEFENDER_REGISTERED_MODEL,
+)
+from fantasy_football.modelling.models import (
+    MODELS_BY_POSITION,
+    PointsModel,
+    StoredPredictionModel,
+)
+from fantasy_football.storage.tables import FORWARD_KIND, POINTS_PREDICTION
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +332,11 @@ def _elo_as_of(
     return joined.drop("to_date", "from_date")
 
 
-def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
+def _apply_models(
+    fx: pl.DataFrame,
+    baselines: pl.DataFrame,
+    models: dict[str, PointsModel] | None = None,
+) -> pl.DataFrame:
     """Join baselines, build factors, and apply the per-position model.
 
     Parameters
@@ -327,12 +345,17 @@ def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
         Fixtures enriched with player and opponent ELO.
     baselines : pl.DataFrame
         One row per player with their latest rolling baseline and team.
+    models : dict[str, PointsModel] | None, optional
+        Position-to-model map. Defaults to ``MODELS_BY_POSITION``.
+        Passed explicitly by :func:`_predict` so a position served by a
+        registered model can be swapped in per run.
 
     Returns
     -------
     pl.DataFrame
         Per-(player, future_gw) rows with a ``predicted_points`` column.
     """
+    models = MODELS_BY_POSITION if models is None else models
     joined = fx.join(baselines, on="team", how="inner").with_columns(
         (pl.col("player_team_elo") / pl.col("opponent_team_elo"))
         .pow(OPPONENT_FACTOR_EXPONENT)
@@ -350,7 +373,7 @@ def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
         )
 
     scored_frames = []
-    for position, model in MODELS_BY_POSITION.items():
+    for position, model in models.items():
         sub = joined.filter(pl.col("position") == position)
         if sub.is_empty():
             continue
@@ -381,6 +404,141 @@ def _apply_models(fx: pl.DataFrame, baselines: pl.DataFrame) -> pl.DataFrame:
         "home_away_factor",
         "predicted_points",
     )
+
+
+class MissingProductionModelError(RuntimeError):
+    """Raised when a position has no live model to serve predictions."""
+
+
+class UncoveredPositionError(RuntimeError):
+    """Raised when a model-served position leaves rows unpredicted."""
+
+
+# How many uncovered rows the error names before it stops listing them.
+UNCOVERED_SAMPLE_N = 10
+
+
+def _check_defender_coverage(scored: pl.DataFrame) -> None:
+    """Raise if any defender row came back without a prediction.
+
+    :class:`~fantasy_football.modelling.models.StoredPredictionModel`
+    returns null where nothing is stored, and there is deliberately no
+    per-row fallback to the formula -- so a gap has to fail rather than
+    degrade. Without this it fails anyway, but as a ``TypeError`` raised
+    inside pulp while building the LP, which names neither the position
+    nor the rows.
+
+    Parameters
+    ----------
+    scored : pl.DataFrame
+        Output of :func:`_apply_models`, carrying ``position``,
+        ``predicted_points``, ``season``, ``gw`` and ``player_id``.
+
+    Raises
+    ------
+    UncoveredPositionError
+        When a ``DEF`` row has a null ``predicted_points``.
+    """
+    uncovered = scored.filter(
+        (pl.col("position") == DEFENDER_POSITION)
+        & pl.col("predicted_points").is_null()
+    ).sort(["season", "gw", "player_id"])
+    if uncovered.is_empty():
+        return
+    sample = uncovered.select("season", "gw", "player_id").rows()[
+        :UNCOVERED_SAMPLE_N
+    ]
+    raise UncoveredPositionError(
+        f"{uncovered.height} {DEFENDER_POSITION} row(s) have no stored "
+        f"prediction, e.g. {sample} as (season, gw, element). "
+        f"{DEFENDER_POSITION} is served by {DEFENDER_REGISTERED_MODEL} "
+        f"with no per-row fallback, so this is a coverage gap in the "
+        f"forward scoring run, not a degradation to absorb. Re-run "
+        f"score_forward_defender_points for these gameweeks."
+    )
+
+
+def load_forward_defender_predictions() -> pl.DataFrame | None:
+    """Return stored forward defender predictions, or None if there are none.
+
+    Returns
+    -------
+    pl.DataFrame | None
+        Match-grain rows with ``season``, ``gw``, ``element`` and
+        ``predicted_points``, or ``None`` when nothing is stored.
+    """
+    stored = POINTS_PREDICTION.load().filter(
+        (pl.col("prediction_kind") == FORWARD_KIND)
+        & (pl.col("position") == DEFENDER_POSITION)
+    )
+    if stored.is_empty():
+        return None
+    return stored.select("season", "gw", "element", "predicted_points")
+
+
+def _models_for_run(is_backtest: bool) -> dict[str, PointsModel]:
+    """Return the position-to-model map this run should score with.
+
+    Live runs serve ``DEF`` from the registered model's stored forward
+    predictions, and fail loudly when none exist -- see
+    :class:`MissingProductionModelError`.
+
+    Backtests deliberately keep ``DEF`` on
+    :class:`~fantasy_football.modelling.models.RollingFormulaModel`. The
+    rolling-origin harness replays *past* gameweeks, but the stored
+    predictions are forward-kind and cover only *unplayed* ones, so a
+    replayed pivot would match none of them. That would not surface as
+    an obvious gap either: ``evaluation`` sums ``predicted_points`` per
+    player-gameweek, and a polars ``sum`` over an all-null group returns
+    ``0.0``, so every historical defender would reach the metrics as a
+    numeric zero -- MAE and RMSE measuring distance from zero, a
+    strongly negative skill score, all of it logged to the DEF
+    experiment as though it described the model. Wiring the harness to
+    the defender model means teaching it to read the backfill-kind rows
+    and reworking the replay; that is deferred, and until it lands the
+    honest behaviour is the one the spec already documents -- the
+    backtest measures the formula.
+
+    Parameters
+    ----------
+    is_backtest : bool
+        Whether this is a historical replay rather than a live run.
+
+    Returns
+    -------
+    dict[str, PointsModel]
+        ``MODELS_BY_POSITION`` for a backtest; the same map with ``DEF``
+        swapped for a :class:`StoredPredictionModel` for a live run.
+
+    Raises
+    ------
+    MissingProductionModelError
+        On a live run with no stored forward defender predictions.
+    """
+    if is_backtest:
+        logger.info(
+            "Backtest run: scoring %s with the rolling formula, not the "
+            "registered model. Stored predictions are forward-kind and "
+            "cover only unplayed gameweeks, so they cannot serve a "
+            "replayed pivot. Do not read %s metrics from this run as "
+            "measuring the ML model.",
+            DEFENDER_POSITION,
+            DEFENDER_POSITION,
+        )
+        return MODELS_BY_POSITION
+
+    defender_predictions = load_forward_defender_predictions()
+    if defender_predictions is None:
+        raise MissingProductionModelError(
+            f"No forward {DEFENDER_POSITION} predictions in "
+            f"points_prediction. Train a model, then promote a version to "
+            f"'{DEFENDER_ALIAS}' on {DEFENDER_REGISTERED_MODEL} in the "
+            f"MLflow UI. The optimiser needs five defenders, so continuing "
+            f"would hand it an infeasible squad problem."
+        )
+    return MODELS_BY_POSITION | {
+        DEFENDER_POSITION: StoredPredictionModel(defender_predictions)
+    }
 
 
 def _predict(
@@ -428,13 +586,31 @@ def _predict(
         Whether this is a historical replay rather than a live run. True
         suppresses every present-day source -- currently the player snapshot
         that backs the roster -- so a past pivot cannot see the present.
+        It also keeps ``DEF`` on the rolling formula rather than the
+        registered model, for the reasons in :func:`_models_for_run`.
         Defaults to False, which is what live callers want.
 
     Returns
     -------
     pl.DataFrame
         The predictions DataFrame.
+
+    Raises
+    ------
+    MissingProductionModelError
+        When this is a live run and no forward defender predictions are
+        stored. Defenders are served by a registered model, and there is
+        deliberately no per-row fallback to the formula: mixing
+        formula-scored and model-scored defenders in one column would
+        put two uncalibrated scales side by side and make the
+        optimiser's comparison between them meaningless. So the choice
+        is made once, here, for the whole run.
+    UncoveredPositionError
+        When this is a live run and a defender reaches the end of
+        scoring with no stored prediction. See
+        :func:`_check_defender_coverage`.
     """
+    models = _models_for_run(is_backtest)
     rolling = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
         try_parse_dates=True,
@@ -498,7 +674,12 @@ def _predict(
             )
         fx = fx.with_columns(pl.col(col).fill_null(median_elo))
 
-    fx = _apply_models(fx, baselines)
+    fx = _apply_models(fx, baselines, models)
+    # Live runs only: on the backtest path DEF is formula-scored, so a
+    # null there means something else entirely and is not this check's
+    # business. See _models_for_run.
+    if not is_backtest:
+        _check_defender_coverage(fx)
     return fx
 
 

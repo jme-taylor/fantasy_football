@@ -497,13 +497,9 @@ def test_get_production_model_returns_version_and_model() -> None:
     """get_production_model returns the aliased version string and model."""
     stub_model = _StubModel([BUCKET_ZERO], np.array([[1.0]]))
     with mock.patch(
-        "fantasy_football.modelling.minutes.mlflow"
-    ) as mlflow_mock:
-        client = mlflow_mock.tracking.MlflowClient.return_value
-        client.get_model_version_by_alias.return_value = SimpleNamespace(
-            version="7"
-        )
-        mlflow_mock.sklearn.load_model.return_value = stub_model
+        "fantasy_football.modelling.minutes.load_production_model",
+        return_value=("7", stub_model),
+    ):
         version, model = get_production_model()
 
     assert version == "7"

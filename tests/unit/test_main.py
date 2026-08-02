@@ -126,3 +126,56 @@ def test_load_match_level_stats_still_runs_fci_when_vaastav_fails(
         )
     fci.load.assert_called_once()
     assert "github is down" in caplog.text
+
+
+def test_defender_steps_run_after_forward_minutes(mocker):
+    """Defender steps must run after forward minutes are scored."""
+    import main as main_module
+
+    order = []
+
+    for name in (
+        "score_forward_minutes",
+        "run_defender_model",
+        "backfill_defender_points",
+        "score_forward_defender_points",
+    ):
+        mocker.patch.object(
+            main_module,
+            name,
+            side_effect=lambda n=name: order.append(n),
+        )
+    # Stub everything else main() touches so only ordering is exercised.
+    for name in (
+        "get_connection",
+        "reset_database",
+        "update_current_season",
+        "load_fixtures",
+        "load_player_match_data",
+        "load_match_level_stats",
+        "load_player_availability_data",
+        "load_player_identity_data",
+        "load_player_snapshot",
+        "check_prior_season_loaded",
+        "create_rolling_points_data",
+        "build_fixtures_enriched",
+        "build_team_elo",
+        "run_minutes_model",
+        "backfill_minutes",
+        "predict_points",
+        "optimise_plan",
+    ):
+        mocker.patch.object(main_module, name)
+    mocker.patch.object(main_module.DataExtractor, "load_immutable_seasons")
+    mocker.patch.object(
+        main_module.pl, "read_csv", return_value=pl.DataFrame({"gw": [1]})
+    )
+
+    main_module.main()
+
+    assert order == [
+        "score_forward_minutes",
+        "run_defender_model",
+        "backfill_defender_points",
+        "score_forward_defender_points",
+    ]

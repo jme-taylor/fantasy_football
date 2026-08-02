@@ -3,10 +3,8 @@ from typing import TYPE_CHECKING, Any
 
 import mlflow
 import mlflow.sklearn
-import mlflow.tracking
 import numpy as np
 import polars as pl
-from mlflow.exceptions import MlflowException
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
@@ -42,14 +40,18 @@ from fantasy_football.features.valuation import (
     add_positional_value_rank,
     add_team_value,
 )
+from fantasy_football.modelling.folds import season_folds
 from fantasy_football.modelling.forward import (
     build_forward_fixtures,
     forward_player_weeks,
     last_played_gw,
     latest_snapshot,
 )
+from fantasy_football.modelling.registry import load_production_model
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.tables import (
+    BACKFILL_KIND,
+    FORWARD_KIND,
     MINUTES_PREDICTION,
     PLAYER_AVAILABILITY,
     PLAYER_MATCH,
@@ -70,12 +72,6 @@ BUCKET_ZERO = "0_minutes"
 BUCKET_PARTIAL = "1_to_59_minutes"
 BUCKET_SIXTY_PLUS = "60_minutes_plus"
 MINUTES_BUCKETS = [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
-
-# How a stored prediction was produced. Backfilled rows are in-sample --
-# the champion scored its own training seasons. Forward rows are genuine
-# out-of-sample forecasts for fixtures that had not been played.
-BACKFILL_KIND = "backfill"
-FORWARD_KIND = "forward"
 
 # Model inputs. The first block is contemporaneous -- everything knowable at
 # the deadline. The second reaches across the summer break through player_code
@@ -345,26 +341,6 @@ def make_pipeline() -> Pipeline:
     )
 
 
-def season_folds(seasons: list[str]) -> list[tuple[list[str], str]]:
-    """Build expanding-window CV folds over sorted seasons.
-
-    Each fold trains on every prior season and tests on the next unseen one,
-    mirroring deployment. Requires at least two seasons.
-
-    Parameters
-    ----------
-    seasons : list[str]
-        Season strings; sorted ascending internally.
-
-    Returns
-    -------
-    list[tuple[list[str], str]]
-        ``(train_seasons, test_season)`` pairs.
-    """
-    ordered = sorted(seasons)
-    return [(ordered[:i], ordered[i]) for i in range(1, len(ordered))]
-
-
 def _boundary_column(
     proba: np.ndarray, classes: list[str], label: str
 ) -> np.ndarray:
@@ -566,10 +542,9 @@ def run_minutes_model() -> dict[str, float]:
 def get_production_model() -> tuple[str, Any] | None:
     """Return the production-aliased version string and model, or None.
 
-    Looks up ``MINUTES_REGISTERED_MODEL@MINUTES_PRODUCTION_ALIAS`` in the
-    MLflow Model Registry. Returns ``None`` (without raising) when the
-    registered model or the alias does not exist yet — which is the normal
-    state until the first manual promotion in the MLflow UI.
+    Thin wrapper over
+    :func:`fantasy_football.modelling.registry.load_production_model`,
+    kept so callers and tests can keep using the minutes-specific name.
 
     Returns
     -------
@@ -577,23 +552,9 @@ def get_production_model() -> tuple[str, Any] | None:
         The aliased model version and the loaded model, or ``None`` if no
         production alias is set.
     """
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    client = mlflow.tracking.MlflowClient()
-    try:
-        version = client.get_model_version_by_alias(
-            MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
-        )
-    except MlflowException:
-        logger.warning(
-            "No %s alias on %s; promote a version in the MLflow UI first.",
-            MINUTES_PRODUCTION_ALIAS,
-            MINUTES_REGISTERED_MODEL,
-        )
-        return None
-    model = mlflow.sklearn.load_model(
-        f"models:/{MINUTES_REGISTERED_MODEL}@{MINUTES_PRODUCTION_ALIAS}"
+    return load_production_model(
+        MINUTES_REGISTERED_MODEL, MINUTES_PRODUCTION_ALIAS
     )
-    return version.version, model
 
 
 def score_minutes(frame: pl.DataFrame, model: Pipeline) -> pl.DataFrame:

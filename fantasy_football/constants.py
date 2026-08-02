@@ -160,5 +160,42 @@ CLUBELO_TO_FPL: dict[str, list[str]] = {
     "Wolves": ["Wolves"],
 }
 
+# Mapping from the club slug embedded in an FCI ``match_id`` to the FPL club
+# name used by ``team_fixture.team``. FCI slugs are full legal club names
+# ("manchester-united") where FPL uses short ones ("Man Utd"), so the two
+# cannot be reconciled by string normalisation alone. It is many-to-one
+# because FCI respells slugs between seasons: Brighton is
+# "brighton-&-hove-albion" in 2024-25 and "brighton-hove-albion" in 2025-26,
+# and both must resolve to the same club.
+# This is what lets per-match FCI stats join to a specific player_match leg
+# rather than being summed to gameweek grain -- see storage/lookups.py.
+# Update this when the team set changes (promotions/relegations).
+FCI_SLUG_TO_FPL: dict[str, str] = {
+    "afc-bournemouth": "Bournemouth",
+    "arsenal": "Arsenal",
+    "aston-villa": "Aston Villa",
+    "brentford": "Brentford",
+    "brighton-&-hove-albion": "Brighton",
+    "brighton-hove-albion": "Brighton",
+    "burnley": "Burnley",
+    "chelsea": "Chelsea",
+    "crystal-palace": "Crystal Palace",
+    "everton": "Everton",
+    "fulham": "Fulham",
+    "ipswich-town": "Ipswich",
+    "leeds-united": "Leeds",
+    "leicester-city": "Leicester",
+    "liverpool": "Liverpool",
+    "manchester-city": "Man City",
+    "manchester-united": "Man Utd",
+    "newcastle-united": "Newcastle",
+    "nottingham-forest": "Nott'm Forest",
+    "southampton": "Southampton",
+    "sunderland": "Sunderland",
+    "tottenham-hotspur": "Spurs",
+    "west-ham-united": "West Ham",
+    "wolverhampton-wanderers": "Wolves",
+}
+
 # First season with player <> team mapping
 PLAYER_TEAM_MAPPING_FIRST_SEASON = "2020-21"
