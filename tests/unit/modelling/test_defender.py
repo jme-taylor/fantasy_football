@@ -10,10 +10,12 @@ from sklearn.impute import SimpleImputer
 from fantasy_football.modelling import defender
 from fantasy_football.modelling.folds import gameweek_folds
 from fantasy_football.storage.tables import (
+    BACKFILL_KIND,
     PLAYER_MATCH,
     PLAYER_MATCH_OPTA,
     PLAYER_SEASON,
     PLAYER_WEEK,
+    POINTS_PREDICTION,
     TABLES,
     TEAM_FIXTURE,
 )
@@ -338,14 +340,16 @@ def test_own_team_and_opposition_form_are_not_swapped(connection) -> None:
     assert row["goals_for_rolling_5"].item() == pytest.approx(1.0)
 
 
-def _synthetic_frame(n_gws: int = 14, n_players: int = 12) -> pl.DataFrame:
+def _synthetic_frame(
+    n_gws: int = 14, n_players: int = 12, season: str = "2026-27"
+) -> pl.DataFrame:
     """Build a synthetic model frame spanning several gameweeks."""
     rows = []
     for gw in range(1, n_gws + 1):
         for element in range(1, n_players + 1):
             rows.append(
                 {
-                    "season": "2026-27",
+                    "season": season,
                     "gw": gw,
                     "element": element,
                     "opponent": (element % 5) + 1,
@@ -474,3 +478,160 @@ def test_run_defender_model_logs_and_registers(mocker):
         log_model.call_args.kwargs["registered_model_name"]
         == defender.REGISTERED_MODEL
     )
+
+
+def test_score_defender_points_shapes_rows_for_storage():
+    """score_defender_points shapes rows for POINTS_PREDICTION storage."""
+    frame = _synthetic_frame(n_gws=1, n_players=3)
+    pipe = defender.train_final(frame)
+    scored = defender.score_defender_points(frame, pipe, "4", BACKFILL_KIND)
+
+    assert scored.columns == POINTS_PREDICTION.columns
+    assert scored.height == frame.height
+    assert scored["position"].unique().to_list() == [defender.POSITION]
+    assert scored["model_version"].unique().to_list() == ["4"]
+    assert scored["prediction_kind"].unique().to_list() == [BACKFILL_KIND]
+
+
+def test_backfill_writes_nothing_without_a_production_alias(mocker):
+    """No production alias: backfill returns quietly without a connection."""
+    mocker.patch.object(defender, "get_production_model", return_value=None)
+    connection = mocker.patch.object(defender, "get_connection")
+
+    defender.backfill_defender_points()
+
+    connection.assert_not_called()
+
+
+def test_backfill_rescores_the_current_season_every_run(mocker):
+    """The current season is always re-scored, with no historic seasons."""
+    frame = _synthetic_frame(n_gws=2, n_players=3)
+    pipe = defender.train_final(frame)
+    mocker.patch.object(
+        defender, "get_production_model", return_value=("4", pipe)
+    )
+    mocker.patch.object(defender, "build_model_frame", return_value=frame)
+    conn = duckdb.connect(":memory:")
+    for table in TABLES:
+        conn.execute(table.ddl)
+    mocker.patch.object(defender, "get_connection", return_value=conn)
+    mocker.patch.object(defender, "CURRENT_SEASON", "2026-27")
+    # backfill_defender_points closes the connection it is handed in its
+    # finally block; the test owns this one and needs it open afterwards
+    # to read back what was stored, so close is stubbed out here.
+    mocker.patch.object(duckdb.DuckDBPyConnection, "close")
+
+    defender.backfill_defender_points()
+
+    stored = conn.sql("SELECT * FROM points_prediction").pl()
+    assert stored.height == frame.height
+    assert stored["prediction_kind"].unique().to_list() == [BACKFILL_KIND]
+    assert stored["model_version"].unique().to_list() == ["4"]
+
+
+def _seed_points_prediction(
+    connection,
+    frame: pl.DataFrame,
+    season: str,
+    model_version: str,
+    predicted_points: float = 999.0,
+) -> None:
+    """Seed a sentinel backfill row per (season) key in ``frame``."""
+    sentinel = (
+        frame.filter(pl.col("season") == season)
+        .select(defender.KEY_COLUMNS)
+        .with_columns(
+            position=pl.lit(defender.POSITION),
+            predicted_points=pl.lit(predicted_points),
+            model_version=pl.lit(model_version),
+            prediction_kind=pl.lit(BACKFILL_KIND),
+        )
+        .select(POINTS_PREDICTION.columns)
+    )
+    POINTS_PREDICTION.append(connection, sentinel)
+
+
+def _two_season_frame() -> pl.DataFrame:
+    """Combine a historic and a current season into one model frame."""
+    historic = _synthetic_frame(n_gws=2, n_players=3, season="2025-26")
+    current = _synthetic_frame(n_gws=2, n_players=3, season="2026-27")
+    return pl.concat([historic, current], how="vertical")
+
+
+def _backfill_test_connection(mocker, frame, prod_version):
+    """Wire up a real in-memory connection and patch backfill's dependencies."""
+    pipe = defender.train_final(frame)
+    mocker.patch.object(
+        defender,
+        "get_production_model",
+        return_value=(prod_version, pipe),
+    )
+    mocker.patch.object(defender, "build_model_frame", return_value=frame)
+    conn = duckdb.connect(":memory:")
+    for table in TABLES:
+        conn.execute(table.ddl)
+    mocker.patch.object(defender, "get_connection", return_value=conn)
+    mocker.patch.object(defender, "CURRENT_SEASON", "2026-27")
+    mocker.patch.object(duckdb.DuckDBPyConnection, "close")
+    return conn
+
+
+def test_backfill_rescores_historic_season_when_nothing_stored(mocker):
+    """A historic season with no stored rows is scored on this run."""
+    frame = _two_season_frame()
+    conn = _backfill_test_connection(mocker, frame, prod_version="4")
+
+    defender.backfill_defender_points()
+
+    stored = conn.sql("SELECT * FROM points_prediction").pl()
+    historic = stored.filter(pl.col("season") == "2025-26")
+    assert (
+        historic.height == frame.filter(pl.col("season") == "2025-26").height
+    )
+    assert historic["model_version"].unique().to_list() == ["4"]
+
+
+def test_backfill_rescores_historic_season_on_version_change(mocker):
+    """A historic season stored under a stale version is rewritten."""
+    frame = _two_season_frame()
+    conn = _backfill_test_connection(mocker, frame, prod_version="4")
+    _seed_points_prediction(
+        conn, frame, "2025-26", model_version="3", predicted_points=999.0
+    )
+
+    defender.backfill_defender_points()
+
+    stored = conn.sql("SELECT * FROM points_prediction").pl()
+    historic = stored.filter(pl.col("season") == "2025-26")
+    assert (
+        historic.height == frame.filter(pl.col("season") == "2025-26").height
+    )
+    assert historic["model_version"].unique().to_list() == ["4"]
+    assert 999.0 not in historic["predicted_points"].to_list()
+
+
+def test_backfill_skips_historic_season_already_at_production_version(
+    mocker,
+):
+    """A complete, up-to-date historic season is left untouched.
+
+    The current season is still re-scored regardless of what the gate
+    decides about historic seasons.
+    """
+    frame = _two_season_frame()
+    conn = _backfill_test_connection(mocker, frame, prod_version="4")
+    _seed_points_prediction(
+        conn, frame, "2025-26", model_version="4", predicted_points=999.0
+    )
+
+    defender.backfill_defender_points()
+
+    stored = conn.sql("SELECT * FROM points_prediction").pl()
+    historic = stored.filter(pl.col("season") == "2025-26")
+    # Untouched sentinel proves the historic partition was not rewritten.
+    assert historic["predicted_points"].unique().to_list() == [999.0]
+    assert historic["model_version"].unique().to_list() == ["4"]
+
+    current = stored.filter(pl.col("season") == "2026-27")
+    assert current.height == frame.filter(pl.col("season") == "2026-27").height
+    assert current["model_version"].unique().to_list() == ["4"]

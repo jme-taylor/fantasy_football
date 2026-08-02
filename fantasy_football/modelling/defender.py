@@ -12,7 +12,7 @@ in :class:`fantasy_football.modelling.models.StoredPredictionModel`.
 
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import mlflow
 import mlflow.sklearn
@@ -23,6 +23,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
 from fantasy_football.constants import (
+    CURRENT_SEASON,
     EXPERIMENT_BY_POSITION,
     MLFLOW_TRACKING_URI,
     PRECISION_K_BY_POSITION,
@@ -36,7 +37,13 @@ from fantasy_football.modelling.metrics import (
     skill_score,
     spearman_by_gw,
 )
+from fantasy_football.modelling.registry import load_production_model
 from fantasy_football.storage.database import get_connection
+from fantasy_football.storage.tables import (
+    BACKFILL_KIND,
+    POINTS_PREDICTION,
+    points_prediction_versions,
+)
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -430,3 +437,150 @@ def run_defender_model() -> dict[str, float]:
         len(folds),
     )
     return agg
+
+
+def get_production_model() -> tuple[str, Any] | None:
+    """Return the production-aliased version string and model, or None.
+
+    Returns
+    -------
+    tuple[str, Any] | None
+        The aliased model version and loaded model, or ``None`` when no
+        alias is set -- the normal state until the first manual
+        promotion in the MLflow UI.
+    """
+    return load_production_model(REGISTERED_MODEL, PRODUCTION_ALIAS)
+
+
+def score_defender_points(
+    frame: pl.DataFrame, model: Pipeline, version: str, kind: str
+) -> pl.DataFrame:
+    """Score a fitted model over ``frame`` and shape rows for storage.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        Rows carrying ``KEY_COLUMNS`` and every column in ``FEATURES``.
+    model : sklearn.pipeline.Pipeline
+        A fitted pipeline exposing ``predict``.
+    version : str
+        The registry version that produced the predictions.
+    kind : str
+        ``BACKFILL_KIND`` or ``FORWARD_KIND``.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per input row, in ``POINTS_PREDICTION`` column order.
+    """
+    predicted = model.predict(frame.select(FEATURES).to_pandas())
+    return (
+        frame.select(KEY_COLUMNS)
+        .with_columns(
+            position=pl.lit(POSITION),
+            predicted_points=pl.Series(predicted).cast(pl.Float64),
+            model_version=pl.lit(version),
+            prediction_kind=pl.lit(kind),
+        )
+        .select(POINTS_PREDICTION.columns)
+    )
+
+
+def _score_and_store(
+    connection: "DuckDBPyConnection",
+    model_frame: pl.DataFrame,
+    season: str,
+    model: Pipeline,
+    version: str,
+) -> None:
+    """Score one season's rows and store them as backfill predictions.
+
+    Written via ``replace_partition`` scoped to this season's backfill
+    partition, so forward rows for the same season are left untouched.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    model_frame : pl.DataFrame
+        The full model frame, filtered to ``season`` internally.
+    season : str
+        The season to score.
+    model : sklearn.pipeline.Pipeline
+        The production model.
+    version : str
+        The registry version that produced it.
+    """
+    sub = model_frame.filter(pl.col("season") == season)
+    if sub.is_empty():
+        return
+    scored = score_defender_points(sub, model, version, BACKFILL_KIND)
+    POINTS_PREDICTION.replace_partition(
+        connection,
+        scored,
+        equals={"season": season, "prediction_kind": BACKFILL_KIND},
+    )
+
+
+def backfill_defender_points() -> None:
+    """Score the production model over all seasons and persist the rows.
+
+    Always re-scores the current season, since new gameweeks arrive each
+    run, and re-scores historic seasons only when the stored predictions
+    are missing or came from a different model version.
+
+    These rows are not what the optimiser consumes -- that is the
+    forward path. They exist so predictions can be read next to actuals
+    when deciding whether to promote a newly trained version, which
+    matters because promotion is manual and ``run_evaluation`` does not
+    yet exercise this model.
+
+    Does nothing (logs a warning) when no production alias is set.
+    """
+    production = get_production_model()
+    if production is None:
+        return
+    prod_version, model = production
+
+    connection = get_connection()
+    try:
+        model_frame = build_model_frame(connection)
+        all_seasons = set(model_frame["season"].unique().to_list())
+        historic = sorted(all_seasons - {CURRENT_SEASON})
+
+        _score_and_store(
+            connection, model_frame, CURRENT_SEASON, model, prod_version
+        )
+
+        # Guard the version/season lookups behind ``historic`` being
+        # non-empty: an empty ``IN ()`` clause is invalid SQL, and there
+        # is nothing to gate when there are no historic seasons at all
+        # (e.g. a fresh database holding only the current season).
+        needs_rebuild = False
+        if historic:
+            stored_versions = points_prediction_versions(
+                connection, seasons=historic
+            )
+            stored_seasons = POINTS_PREDICTION.seasons_present(
+                connection
+            ) & set(historic)
+            needs_rebuild = stored_versions != {
+                prod_version
+            } or stored_seasons != set(historic)
+        if needs_rebuild:
+            for season in historic:
+                _score_and_store(
+                    connection, model_frame, season, model, prod_version
+                )
+            logger.info(
+                "Backfilled historic defender points for %s at version %s",
+                historic,
+                prod_version,
+            )
+        else:
+            logger.info(
+                "Historic defender points already at version %s; skipping.",
+                prod_version,
+            )
+    finally:
+        connection.close()
