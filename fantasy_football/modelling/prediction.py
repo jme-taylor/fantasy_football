@@ -428,6 +428,71 @@ def load_forward_defender_predictions() -> pl.DataFrame | None:
     return stored.select("season", "gw", "element", "predicted_points")
 
 
+def _models_for_run(is_backtest: bool) -> dict[str, PointsModel]:
+    """Return the position-to-model map this run should score with.
+
+    Live runs serve ``DEF`` from the registered model's stored forward
+    predictions, and fail loudly when none exist -- see
+    :class:`MissingProductionModelError`.
+
+    Backtests deliberately keep ``DEF`` on
+    :class:`~fantasy_football.modelling.models.RollingFormulaModel`. The
+    rolling-origin harness replays *past* gameweeks, but the stored
+    predictions are forward-kind and cover only *unplayed* ones, so a
+    replayed pivot would match none of them. That would not surface as
+    an obvious gap either: ``evaluation`` sums ``predicted_points`` per
+    player-gameweek, and a polars ``sum`` over an all-null group returns
+    ``0.0``, so every historical defender would reach the metrics as a
+    numeric zero -- MAE and RMSE measuring distance from zero, a
+    strongly negative skill score, all of it logged to the DEF
+    experiment as though it described the model. Wiring the harness to
+    the defender model means teaching it to read the backfill-kind rows
+    and reworking the replay; that is deferred, and until it lands the
+    honest behaviour is the one the spec already documents -- the
+    backtest measures the formula.
+
+    Parameters
+    ----------
+    is_backtest : bool
+        Whether this is a historical replay rather than a live run.
+
+    Returns
+    -------
+    dict[str, PointsModel]
+        ``MODELS_BY_POSITION`` for a backtest; the same map with ``DEF``
+        swapped for a :class:`StoredPredictionModel` for a live run.
+
+    Raises
+    ------
+    MissingProductionModelError
+        On a live run with no stored forward defender predictions.
+    """
+    if is_backtest:
+        logger.info(
+            "Backtest run: scoring %s with the rolling formula, not the "
+            "registered model. Stored predictions are forward-kind and "
+            "cover only unplayed gameweeks, so they cannot serve a "
+            "replayed pivot. Do not read %s metrics from this run as "
+            "measuring the ML model.",
+            DEFENDER_POSITION,
+            DEFENDER_POSITION,
+        )
+        return MODELS_BY_POSITION
+
+    defender_predictions = load_forward_defender_predictions()
+    if defender_predictions is None:
+        raise MissingProductionModelError(
+            f"No forward {DEFENDER_POSITION} predictions in "
+            f"points_prediction. Train a model, then promote a version to "
+            f"'{DEFENDER_ALIAS}' on {DEFENDER_REGISTERED_MODEL} in the "
+            f"MLflow UI. The optimiser needs five defenders, so continuing "
+            f"would hand it an infeasible squad problem."
+        )
+    return MODELS_BY_POSITION | {
+        DEFENDER_POSITION: StoredPredictionModel(defender_predictions)
+    }
+
+
 def _predict(
     current_season: str,
     horizon_n: int | None = None,
@@ -473,6 +538,8 @@ def _predict(
         Whether this is a historical replay rather than a live run. True
         suppresses every present-day source -- currently the player snapshot
         that backs the roster -- so a past pivot cannot see the present.
+        It also keeps ``DEF`` on the rolling formula rather than the
+        registered model, for the reasons in :func:`_models_for_run`.
         Defaults to False, which is what live callers want.
 
     Returns
@@ -483,14 +550,15 @@ def _predict(
     Raises
     ------
     MissingProductionModelError
-        When no forward defender predictions are stored. Defenders are
-        served by a registered model, and there is deliberately no
-        per-row fallback to the formula: mixing formula-scored and
-        model-scored defenders in one column would put two uncalibrated
-        scales side by side and make the optimiser's comparison between
-        them meaningless. So the choice is made once, here, for the
-        whole run.
+        When this is a live run and no forward defender predictions are
+        stored. Defenders are served by a registered model, and there is
+        deliberately no per-row fallback to the formula: mixing
+        formula-scored and model-scored defenders in one column would
+        put two uncalibrated scales side by side and make the
+        optimiser's comparison between them meaningless. So the choice
+        is made once, here, for the whole run.
     """
+    models = _models_for_run(is_backtest)
     rolling = pl.read_csv(
         TRANSFORMED_DATA_FOLDER.joinpath("rolling_points.csv"),
         try_parse_dates=True,
@@ -553,19 +621,6 @@ def _predict(
                 col,
             )
         fx = fx.with_columns(pl.col(col).fill_null(median_elo))
-
-    defender_predictions = load_forward_defender_predictions()
-    if defender_predictions is None:
-        raise MissingProductionModelError(
-            f"No forward {DEFENDER_POSITION} predictions in "
-            f"points_prediction. Train a model, then promote a version to "
-            f"'{DEFENDER_ALIAS}' on {DEFENDER_REGISTERED_MODEL} in the "
-            f"MLflow UI. The optimiser needs five defenders, so continuing "
-            f"would hand it an infeasible squad problem."
-        )
-    models = MODELS_BY_POSITION | {
-        DEFENDER_POSITION: StoredPredictionModel(defender_predictions)
-    }
 
     fx = _apply_models(fx, baselines, models)
     return fx

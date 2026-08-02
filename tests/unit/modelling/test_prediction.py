@@ -1312,3 +1312,106 @@ def test_predict_scores_defenders_from_the_stored_predictions(
     )
     assert scored["DEF"] == pytest.approx(7.5)
     assert scored["MID"] == pytest.approx(formula)
+
+
+def _backtest_rolling() -> pl.DataFrame:
+    """Return one DEF and one MID at the same club, on the same baseline."""
+    return pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26"],
+            "name": ["D1", "M1"],
+            "position": ["DEF", "MID"],
+            "team": ["Arsenal", "Arsenal"],
+            "element": [101, 102],
+            "player_code": [901, 902],
+            "gw": [10, 10],
+            "total_points": [6, 6],
+            "total_points_rolling_5": [4.0, 4.0],
+        }
+    )
+
+
+def test_backtest_scores_defenders_with_the_formula(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A historical replay keeps DEF on the formula and reads no store.
+
+    Stored predictions are forward-kind, so they only cover unplayed
+    gameweeks; a replayed past pivot would match none of them. The
+    carve-out is what stops that arriving as a column of zeroes in the
+    evaluation metrics.
+    """
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        _backtest_rolling(),
+        _baseline_fixtures().head(1),
+        _baseline_elo(),
+    )
+    calls: list[int] = []
+
+    def _explode() -> None:
+        """Record that the store was consulted, then report nothing live."""
+        calls.append(1)
+        return None
+
+    monkeypatch.setattr(
+        prediction, "load_forward_defender_predictions", _explode
+    )
+
+    result = prediction._predict("2025-26", horizon_n=1, is_backtest=True)
+
+    assert calls == []
+    scored = dict(
+        zip(
+            result["position"].to_list(),
+            result["predicted_points"].to_list(),
+            strict=True,
+        )
+    )
+    assert scored["DEF"] == pytest.approx(_formula_points())
+    assert scored["MID"] == pytest.approx(_formula_points())
+
+
+def test_backtest_says_why_defenders_are_on_the_formula(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    """The replay path logs that DEF is formula-scored, not model-scored."""
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        _backtest_rolling(),
+        _baseline_fixtures().head(1),
+        _baseline_elo(),
+    )
+
+    with caplog.at_level(logging.INFO, logger=prediction.__name__):
+        prediction._predict("2025-26", horizon_n=1, is_backtest=True)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "DEF" in message and "backtest" in message.lower()
+        for message in messages
+    )
+
+
+def test_missing_defender_model_is_checked_before_reading_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The liveness check runs before the CSV reads and the ELO joins.
+
+    ``evaluation`` calls ``_predict`` once per pivot, so a check placed
+    after the artifact reads would re-read the whole prediction table
+    tens of times per season. Pointing the folder at an empty directory
+    makes the ordering observable: the CSV reads would raise first.
+    """
+    transformed = tmp_path / "transformed"
+    transformed.mkdir()
+    monkeypatch.setattr(prediction, "TRANSFORMED_DATA_FOLDER", transformed)
+    monkeypatch.setattr(database, "DATABASE_PATH", tmp_path / "test.duckdb")
+    monkeypatch.setattr(
+        prediction, "load_forward_defender_predictions", lambda: None
+    )
+
+    with pytest.raises(prediction.MissingProductionModelError):
+        prediction._predict("2025-26", horizon_n=1)
