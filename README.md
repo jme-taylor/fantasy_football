@@ -338,12 +338,16 @@ subsequent run works. Failing here is deliberate: the optimiser needs
 five defenders, so continuing would hand it an infeasible squad problem
 far from the cause.
 
-This does not affect `main(evaluate=True)`: the rolling-origin
-evaluation replays history through `_predict` with `is_backtest=True`,
-which skips the liveness check and keeps scoring defenders with the
-rolling-points formula, not the stored model. See the `TODO (JT)` above
-`run_evaluation()`'s call site in `main.py` for why the harness does not
-yet exercise the defender model itself.
+The evaluation replay itself is unaffected: it goes through `_predict`
+with `is_backtest=True`, which skips the liveness check and keeps
+scoring defenders with the rolling-points formula, not the stored
+model. See the `TODO (JT)` above `run_evaluation()`'s call site in
+`main.py` for why the harness does not yet exercise the defender model
+itself. But `evaluate=True` only adds that replay as an extra step
+before prediction — `main.py` still calls `predict_points()`
+unconditionally afterwards, so on a fresh, unpromoted database
+`main(evaluate=True)` hits the same hard-fail as `main(evaluate=False)`.
+It just gets there later, after paying for the full evaluation replay.
 
 ## Roadmap
 
