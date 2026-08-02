@@ -31,6 +31,11 @@ from fantasy_football.features.elo import build_team_elo
 from fantasy_football.features.fixtures import build_fixtures_enriched
 from fantasy_football.features.transformation import create_rolling_points_data
 from fantasy_football.logging_config import configure_logging
+from fantasy_football.modelling.defender import (
+    backfill_defender_points,
+    run_defender_model,
+    score_forward_defender_points,
+)
 from fantasy_football.modelling.evaluation import run_evaluation
 from fantasy_football.modelling.minutes import (
     backfill_minutes,
@@ -234,6 +239,17 @@ def main(
     run_minutes_model()
     backfill_minutes()
     score_forward_minutes()
+    # Defender features consume the forward minutes forecasts written
+    # just above, so this ordering is load-bearing, not cosmetic.
+    run_defender_model()
+    backfill_defender_points()
+    score_forward_defender_points()
+    # TODO (JT): run_evaluation replays history through _predict, which
+    # produces gameweek-grain formula predictions -- it does not
+    # exercise the defender model or the forward feature-carrying
+    # chain, so the expected_minutes train/serve skew noted in
+    # modelling/defender.py is invisible to it. Wiring it up means
+    # reworking the replay harness, not bolting onto it.
     if evaluate:
         run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None

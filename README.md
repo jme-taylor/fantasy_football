@@ -26,12 +26,13 @@ fantasy_football/
 │   │                      from one `schema` dict, generated DDL, and the
 │   │                      five operations (coerce, load, seasons_present,
 │   │                      write_immutable, upsert_current)
-│   ├── tables.py       — the nine table specs (player_season, player_week,
+│   ├── tables.py       — the ten table specs (player_season, player_week,
 │   │                      team_fixture, player_match, player_match_fpl,
 │   │                      player_match_opta, player_availability,
-│   │                      minutes_prediction, player_snapshot) and the
-│   │                      `TABLES` tuple; adding a table means adding a
-│   │                      spec here and nothing else
+│   │                      minutes_prediction, points_prediction,
+│   │                      player_snapshot) and the `TABLES` tuple; adding
+│   │                      a table means adding a spec here and nothing
+│   │                      else
 │   └── database.py     — `get_connection` and `reset_database`, both
 │                          driven by `TABLES`
 ├── extraction/         — ingest raw data into the DuckDB store
@@ -50,11 +51,16 @@ fantasy_football/
 │   ├── fixtures.py     — build the enriched fixtures table used as model features
 │   ├── elo.py          — build team Elo ratings (scraped via ScraperFC ClubElo)
 │   ├── valuation.py    — team-value share and positional value rank features
-│   └── availability.py — rolling minutes, chance-of-playing and positional-availability features
+│   ├── availability.py — rolling minutes, chance-of-playing and positional-availability features
+│   └── views.py        — register every session-scoped feature view
 ├── modelling/          — train, predict, evaluate
 │   ├── models.py       — per-position points models behind a shared interface
 │   ├── minutes.py      — end-to-end minutes-played classifier (features, CV,
 │                          MLflow registry) + production-model backfill to DB
+│   ├── defender.py     — end-to-end defender points model (features, CV,
+│                          MLflow registry, backfill and forward scoring)
+│   ├── folds.py        — expanding-window CV folds by season or gameweek
+│   ├── registry.py     — load the alias-promoted model from MLflow
 │   ├── prediction.py   — apply the models to produce per-(player, gameweek) predictions
 │   ├── metrics.py      — regression metrics (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
 │   └── evaluation.py   — replay historical gameweeks one step ahead and log to MLflow
@@ -77,7 +83,7 @@ only module that touches Arrow, `register`/`unregister`, and `.pl()`),
 `storage/table.py` builds on it with the `Table` descriptor (column order
 and dtypes from one `schema` dict, generated DDL, and the five operations
 `coerce`/`load`/`seasons_present`/`write_immutable`/`upsert_current`), and
-`storage/tables.py` declares the nine tables as `Table` specs gathered into
+`storage/tables.py` declares the ten tables as `Table` specs gathered into
 `TABLES`. `storage/database.py` reduces to `get_connection` and
 `reset_database`, both driven by `TABLES`. Extractors hand the layer Polars
 frames; downstream code reads frames back. The tables are:
@@ -112,6 +118,11 @@ frames; downstream code reads frames back. The tables are:
   `p_partial`, `p_sixty_plus`), the derived `expected_minutes`, and the
   `model_version` that produced them. Populated by the version-gated backfill
   (see [Minutes-played model](#minutes-played-model)).
+* **`points_prediction`** — per-position predicted points at match grain,
+  so a double gameweek is two rows summing to a gameweek total.
+  `prediction_kind` is `backfill` (in-sample, for eyeballing a candidate
+  model against actuals) or `forward` (the out-of-sample forecasts the
+  optimiser consumes).
 
 Completed (immutable) seasons are inserted once and skipped thereafter; the
 current season is upserted (delete-then-insert) every run so late corrections,
@@ -310,6 +321,29 @@ no-op.
 > replaced by automatically promoting a freshly trained version to `production`
 > only when it beats the current champion on a CV metric (e.g.
 > `logloss_appear`), removing the manual UI step.
+
+### Defender points model
+
+`modelling/defender.py` trains a random forest on match-grain defender
+rows and writes its predictions to `points_prediction`. Every run of
+`main.py` retrains and registers a new version under
+`defender_points_regressor`; **which version is live is a manual alias
+move in the MLflow UI.**
+
+Because there is no formula fallback for defenders, `main.py` cannot
+complete on a fresh database until a version has been promoted. The
+first run trains and registers, then fails at prediction time with a
+message naming the model and alias. Promote a version and every
+subsequent run works. Failing here is deliberate: the optimiser needs
+five defenders, so continuing would hand it an infeasible squad problem
+far from the cause.
+
+This does not affect `main(evaluate=True)`: the rolling-origin
+evaluation replays history through `_predict` with `is_backtest=True`,
+which skips the liveness check and keeps scoring defenders with the
+rolling-points formula, not the stored model. See the `TODO (JT)` above
+`run_evaluation()`'s call site in `main.py` for why the harness does not
+yet exercise the defender model itself.
 
 ## Roadmap
 
