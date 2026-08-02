@@ -28,8 +28,14 @@ from fantasy_football.constants import (
     MLFLOW_TRACKING_URI,
     PRECISION_K_BY_POSITION,
 )
+from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.features.views import register_feature_views
 from fantasy_football.modelling.folds import gameweek_folds
+from fantasy_football.modelling.forward import (
+    build_forward_fixtures,
+    last_played_gw,
+    latest_snapshot,
+)
 from fantasy_football.modelling.metrics import (
     mae,
     precision_at_k,
@@ -41,7 +47,12 @@ from fantasy_football.modelling.registry import load_production_model
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
+    FORWARD_KIND,
+    MINUTES_PREDICTION,
+    PLAYER_SNAPSHOT,
+    PLAYER_WEEK,
     POINTS_PREDICTION,
+    TEAM_FIXTURE,
     points_prediction_versions,
 )
 
@@ -114,6 +125,12 @@ _OWN_TEAM_COLUMNS = [
     "clean_sheet_rolling_5",
 ]
 _OPPOSITION_COLUMNS = ["xg_for_rolling_5", "goals_for_rolling_5"]
+_MINUTES_COLUMNS = [
+    "expected_minutes",
+    "p_zero",
+    "p_partial",
+    "p_sixty_plus",
+]
 
 # TODO (JT): expected_minutes is train/serve skewed. Training rows take
 # backfill-kind minutes predictions, which minutes.py documents as
@@ -585,5 +602,251 @@ def backfill_defender_points() -> None:
                 "Historic defender points already at version %s; skipping.",
                 prod_version,
             )
+    finally:
+        connection.close()
+
+
+def _asof_form(
+    left: pl.DataFrame,
+    right: pl.DataFrame,
+    by: list[str],
+    columns: list[str],
+) -> pl.DataFrame:
+    """Attach the most recent form row at or before each fixture.
+
+    Both sides are sorted on ``kickoff_time`` here rather than by the
+    caller, and polars' own sortedness check is turned off because it
+    cannot verify sortedness once ``by`` groups are given -- it would
+    only emit a warning, never a guarantee. A global sort on the as-of
+    key implies a sorted order within every ``by`` group, so grouping is
+    safe; the guarantee comes from the ``sort`` calls two lines above the
+    join, not from the check.
+
+    Parameters
+    ----------
+    left : pl.DataFrame
+        Forward fixtures, carrying ``kickoff_time`` and every column in
+        ``by``.
+    right : pl.DataFrame
+        A form frame carrying ``kickoff_time``, ``by`` and ``columns``.
+    by : list[str]
+        Columns matched exactly before the as-of comparison. They must
+        identify one subject -- a player or a club -- or a fixture would
+        inherit a stranger's form.
+    columns : list[str]
+        Form columns to bring across.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``left``, ordered by ``kickoff_time``, with the form columns
+        attached. Exactly one row per input row: an as-of join takes at
+        most one match, so a duplicated right-hand row cannot fan the
+        output out -- it only changes which value arrives.
+    """
+    absent = [pl.lit(None, dtype=pl.Float64).alias(name) for name in columns]
+    if right.is_empty():
+        return left.with_columns(absent)
+    slimmed = (
+        right.select(by + ["kickoff_time"] + columns)
+        .with_columns(pl.col("kickoff_time").cast(pl.Datetime("us")))
+        # A form row with no kickoff has no position in time, so it can
+        # neither be ordered nor as-of matched. team_form warns about
+        # these already; dropping them here keeps the join well defined.
+        .filter(pl.col("kickoff_time").is_not_null())
+        .sort("kickoff_time")
+    )
+    if slimmed.is_empty():
+        return left.with_columns(absent)
+    return (
+        left.with_columns(pl.col("kickoff_time").cast(pl.Datetime("us")))
+        .sort("kickoff_time")
+        .join_asof(
+            slimmed,
+            on="kickoff_time",
+            by=by,
+            strategy="backward",
+            check_sortedness=False,
+        )
+    )
+
+
+def build_forward_feature_frame(
+    connection: "DuckDBPyConnection",
+    forward_fixtures: pl.DataFrame,
+) -> pl.DataFrame:
+    """Attach model features to fixtures that have not been played.
+
+    The inclusive form views are used here, not the exclusive ones the
+    training frame reads. At a player's most recent appearance the
+    exclusive window has already dropped that appearance, so as-of
+    joining to it would make every live prediction one match stale --
+    and it is the most informative match. See
+    :func:`fantasy_football.features.team_form.window_frame`.
+
+    ``is_home`` and the opponent's *name* both come from ``team_fixture``,
+    keyed on ``(season, gw, team, kickoff_time)``, which identifies one
+    fixture leg. The opponent's name is what the form views are
+    partitioned by, and it is deliberately not recovered from
+    ``fpl_team_id``: FPL reissues team ids each season, so a club's id in
+    one season belongs to a different club in another, and that view has
+    no rows at all for a season before its first match is played.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection with the feature views registered.
+    forward_fixtures : pl.DataFrame
+        Defender rows from
+        :func:`fantasy_football.modelling.forward.build_forward_fixtures`,
+        carrying ``season``, ``gw``, ``element``, ``opponent``,
+        ``kickoff_time`` and ``team``.
+
+    Returns
+    -------
+    pl.DataFrame
+        One row per input fixture, with ``KEY_COLUMNS`` and ``FEATURES``.
+        Ordered by ``kickoff_time`` rather than by input order.
+    """
+    player_form = connection.sql(
+        "SELECT * FROM player_match_form_inclusive"
+    ).pl()
+    team_form = connection.sql("SELECT * FROM team_match_form_inclusive").pl()
+    fixtures = TEAM_FIXTURE.load(connection).select(
+        "season",
+        "gw",
+        "team",
+        "kickoff_time",
+        "is_home",
+        pl.col("opposition").alias("opponent_name"),
+    )
+    # prediction_kind is part of the minutes primary key, so both kinds
+    # can sit on one fixture; joining unfiltered would fan the row out.
+    minutes = MINUTES_PREDICTION.load(connection).filter(
+        pl.col("prediction_kind") == FORWARD_KIND
+    )
+
+    frame = forward_fixtures.join(
+        fixtures,
+        on=["season", "gw", "team", "kickoff_time"],
+        how="left",
+    ).join(
+        minutes.select(KEY_COLUMNS + _MINUTES_COLUMNS),
+        on=KEY_COLUMNS,
+        how="left",
+    )
+
+    # Element ids are unique only within a season, so season belongs in
+    # the key: without it, a player with no appearance yet this season
+    # would inherit the form of whoever held his id last season.
+    frame = _asof_form(
+        frame, player_form, ["season", "element"], _PLAYER_FORM_COLUMNS
+    )
+    # Club form deliberately is not season-scoped. The form views
+    # partition by club across seasons, so a club's first fixture of a
+    # season inherits the tail of its previous one.
+    frame = _asof_form(frame, team_form, ["team"], _OWN_TEAM_COLUMNS)
+    opposition = team_form.select(
+        pl.col("team").alias("opponent_name"),
+        "kickoff_time",
+        *_OPPOSITION_COLUMNS,
+    )
+    frame = _asof_form(
+        frame, opposition, ["opponent_name"], _OPPOSITION_COLUMNS
+    )
+
+    frame = frame.with_columns(pl.col("is_home").cast(pl.Float64))
+    missing = [name for name in FEATURES if name not in frame.columns]
+    if missing:
+        frame = frame.with_columns(
+            [pl.lit(None, dtype=pl.Float64).alias(name) for name in missing]
+        )
+        logger.warning(
+            "Forward defender features absent from the join: %s", missing
+        )
+    return frame.select(KEY_COLUMNS + FEATURES)
+
+
+def score_forward_defender_points() -> None:
+    """Score the production model over every unplayed fixture.
+
+    Builds fixture rows from the latest player snapshot crossed with the
+    season's remaining fixtures, filters to defenders, attaches features
+    from the inclusive form views and the forward minutes forecasts, and
+    stores the result as ``FORWARD_KIND``. These are the rows the
+    optimiser consumes. Only gameweeks at or after the first unplayed one
+    are rewritten, so a forecast for a gameweek that has kicked off stays
+    frozen and can still be scored against the result.
+
+    Does nothing when no production alias is set, or when the season has
+    no snapshot or no remaining fixtures.
+    """
+    production = get_production_model()
+    if production is None:
+        return
+    prod_version, model = production
+
+    connection = get_connection()
+    try:
+        register_feature_views(connection)
+        snapshot = latest_snapshot(
+            PLAYER_SNAPSHOT.load(connection), CURRENT_SEASON
+        )
+        if snapshot.is_empty():
+            logger.warning(
+                "No player snapshot for %s; skipping defender forward "
+                "scoring.",
+                CURRENT_SEASON,
+            )
+            return
+
+        from_gw = (
+            last_played_gw(PLAYER_WEEK.load(connection), CURRENT_SEASON) + 1
+        )
+        team_name_to_id = {team.name: team.id for team in FplAPI().get_teams()}
+        forward_fixtures = build_forward_fixtures(
+            snapshot,
+            TEAM_FIXTURE.load(connection),
+            CURRENT_SEASON,
+            from_gw,
+            team_name_to_id,
+        ).filter(pl.col("position") == POSITION)
+        if forward_fixtures.is_empty():
+            logger.info(
+                "No unplayed %s defender fixtures from gw %d.",
+                CURRENT_SEASON,
+                from_gw,
+            )
+            return
+
+        frame = build_forward_feature_frame(connection, forward_fixtures)
+        if frame.height != forward_fixtures.height:
+            logger.warning(
+                "Forward feature join changed row count from %d to %d; "
+                "some rostered defenders may have no prediction.",
+                forward_fixtures.height,
+                frame.height,
+            )
+
+        scored = score_defender_points(
+            frame, model, prod_version, FORWARD_KIND
+        )
+        POINTS_PREDICTION.replace_partition(
+            connection,
+            scored,
+            equals={
+                "season": CURRENT_SEASON,
+                "prediction_kind": FORWARD_KIND,
+            },
+            gw_from=from_gw,
+        )
+        logger.info(
+            "Stored %d forward defender rows for %s from gw %d at "
+            "version %s",
+            scored.height,
+            CURRENT_SEASON,
+            from_gw,
+            prod_version,
+        )
     finally:
         connection.close()
