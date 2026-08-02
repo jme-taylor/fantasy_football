@@ -2,7 +2,12 @@
 
 Match-grain like ``features/match_form.py``, and offset the same way: the
 window is ``ROWS BETWEEN n PRECEDING AND 1 PRECEDING``, so a team's form
-never includes the match it is attached to.
+never includes the match it is attached to. A second, inclusive frame is
+also registered, under ``team_match_form_inclusive``: it exists solely
+for the forward path, which as-of joins an unplayed fixture back to a
+team's most recent match and needs that match's own figures, not the
+form as of one match earlier. See :func:`window_frame` and
+:func:`register_team_form`.
 
 Two views are registered. ``team_match`` reduces the per-player FCI rows
 to one row per team per fixture, carrying xG and goals both for and
@@ -233,6 +238,11 @@ def form_sql(
         f"AS {measure_column_name(measure, rolling_window)}"
         for measure in TEAM_MEASURES
     )
+    # Under the inclusive frame, days_since_last_match is always 0,
+    # because the current match is inside its own window. The forward
+    # path recomputes staleness against the future fixture's kickoff and
+    # ignores this column, so the exclusive view is unaffected and its
+    # SQL text is unchanged.
     return f"""
 SELECT
     season,
@@ -245,9 +255,6 @@ SELECT
     {", ".join(TEAM_MEASURES)},
     {averages},
     count(*) OVER form AS form_matches,
-    -- Under the inclusive frame this is always 0, because the current
-    -- match is inside its own window. The forward path recomputes
-    -- staleness against the future fixture's kickoff and ignores it.
     date_diff('day', max(kickoff_time) OVER form, kickoff_time)
         AS days_since_last_match
 FROM {_MATCH_VIEW}
@@ -284,6 +291,11 @@ def register_team_form(
         f"CREATE OR REPLACE TEMP VIEW {view} AS "
         f"{form_sql(rolling_window, inclusive)}"
     )
+    # team_match is rebuilt identically by both calls this function makes
+    # per connection (exclusive, then inclusive); only warn once, on the
+    # first, so a real database doesn't log the same count twice.
+    if inclusive:
+        return
     unordered = connection.sql(
         f"SELECT count(*) FROM {_MATCH_VIEW} WHERE kickoff_time IS NULL"
     ).fetchone()[0]

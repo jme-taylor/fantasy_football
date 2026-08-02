@@ -295,6 +295,32 @@ def test_inclusive_view_registers_under_its_own_name(connection):
     assert "team_match_form_inclusive" in names
 
 
+def test_inclusive_view_rolling_measure_includes_the_current_match(
+    connection,
+) -> None:
+    """The inclusive frame's rolling measure reaches into its own match."""
+    register_team_form(connection, inclusive=True)
+    inclusive = connection.sql(
+        "SELECT form_matches, xg_for_rolling_5 "
+        "FROM team_match_form_inclusive "
+        "WHERE team = 'Man Utd' AND gw = 3"
+    ).fetchone()
+    # All three matches count, including gw3's own 1.0 xG for:
+    # (1.5 + 2.0 + 1.0) / 3 = 1.5.
+    assert inclusive[0] == 3
+    assert inclusive[1] == pytest.approx(1.5)
+
+    register_team_form(connection, inclusive=False)
+    exclusive = connection.sql(
+        "SELECT form_matches, xg_for_rolling_5 FROM team_match_form "
+        "WHERE team = 'Man Utd' AND gw = 3"
+    ).fetchone()
+    # Only the two prior matches count, excluding gw3's own 1.0:
+    # (1.5 + 2.0) / 2 = 1.75.
+    assert exclusive[0] == 2
+    assert exclusive[1] == pytest.approx(1.75)
+
+
 def test_each_club_windows_over_its_own_matches(connection) -> None:
     """Opponents' form must not bleed into a team's window."""
     frame = team_form.load_team_form(connection)

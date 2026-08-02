@@ -406,6 +406,66 @@ def test_inclusive_view_registers_under_its_own_name(connection):
     assert "player_match_form_inclusive" in names
 
 
+def test_inclusive_view_rolling_rate_includes_the_current_appearance(
+    tmp_path: Path,
+) -> None:
+    """The inclusive frame's per-90 rate reaches into its own row."""
+    connection = _build(
+        tmp_path, minutes=[90, 90, 90], tackles=[2, 4, 9], xg=[0.0] * 3
+    )
+    try:
+        register_match_form(connection, inclusive=True)
+        inclusive = connection.sql(
+            "SELECT form_matches, tackles_per90_rolling_5 "
+            "FROM player_match_form_inclusive WHERE gw = 3"
+        ).fetchone()
+        # All three appearances count, including gw3's own 9 tackles:
+        # (2 + 4 + 9) tackles / 270 minutes = 5.0 per 90.
+        assert inclusive[0] == 3
+        assert inclusive[1] == pytest.approx(5.0)
+
+        register_match_form(connection, inclusive=False)
+        exclusive = connection.sql(
+            "SELECT form_matches, tackles_per90_rolling_5 "
+            "FROM player_match_form WHERE gw = 3"
+        ).fetchone()
+        # Only the two prior appearances count, excluding gw3's own 9:
+        # (2 + 4) tackles / 180 minutes = 3.0 per 90.
+        assert exclusive[0] == 2
+        assert exclusive[1] == pytest.approx(3.0)
+    finally:
+        connection.close()
+
+
+def test_inclusive_view_season_to_date_includes_the_current_match(
+    tmp_path: Path,
+) -> None:
+    """The season-to-date total also reaches into the current match."""
+    connection = _build(
+        tmp_path,
+        minutes=[90, 90, 90],
+        tackles=[0, 0, 0],
+        xg=[0.0] * 3,
+        yellow_cards=[0, 0, 1],
+    )
+    try:
+        register_match_form(connection, inclusive=True)
+        inclusive_total = connection.sql(
+            "SELECT yellow_cards_season_to_date "
+            "FROM player_match_form_inclusive WHERE gw = 3"
+        ).fetchone()[0]
+        assert inclusive_total == 1
+
+        register_match_form(connection, inclusive=False)
+        exclusive_total = connection.sql(
+            "SELECT yellow_cards_season_to_date "
+            "FROM player_match_form WHERE gw = 3"
+        ).fetchone()[0]
+        assert exclusive_total == 0
+    finally:
+        connection.close()
+
+
 def test_running_total_starts_at_zero_not_null(tmp_path: Path) -> None:
     """A season's first appearance has genuinely accumulated nothing."""
     connection = _build(

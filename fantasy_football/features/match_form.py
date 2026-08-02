@@ -32,6 +32,12 @@ instead, which is the honest answer.
 
 The window frame is ``ROWS BETWEEN n PRECEDING AND 1 PRECEDING``, so the
 current match is excluded by construction -- there is no shift to forget.
+A second, inclusive frame is also registered, under
+``player_match_form_inclusive``: it exists solely for the forward path,
+which as-of joins an unplayed fixture back to a player's most recent
+appearance and needs that appearance's own figures, not the form as of
+one match earlier. See ``team_form.window_frame`` and
+:func:`register_match_form`.
 """
 
 import logging
@@ -354,6 +360,11 @@ def form_sql(
         if inclusive
         else "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
     )
+    # Under the inclusive frame, days_since_last_appearance is always 0,
+    # because the current appearance is inside its own window. The
+    # forward path recomputes staleness against the future fixture's
+    # kickoff and ignores this column, so the exclusive view is
+    # unaffected and its SQL text is unchanged.
     return f"""
 WITH appearances AS (
     SELECT
@@ -398,9 +409,6 @@ SELECT
     {totals},
     count(*) OVER form AS form_matches,
     sum(a.minutes) OVER form AS form_minutes,
-    -- Under the inclusive frame this is always 0, because the current
-    -- appearance is inside its own window. The forward path recomputes
-    -- staleness against the future fixture's kickoff and ignores it.
     date_diff('day', max(a.kickoff_time) OVER form, a.kickoff_time)
         AS days_since_last_appearance
 FROM appearances AS a
