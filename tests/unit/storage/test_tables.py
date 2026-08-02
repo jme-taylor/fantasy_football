@@ -173,8 +173,8 @@ def test_generated_ddl_matches_legacy_ddl(table, legacy):
 
 
 def test_tables_tuple_covers_every_spec():
-    """``TABLES`` holds all nine specs, so loops cannot miss one."""
-    assert len(TABLES) == 9
+    """``TABLES`` holds all ten specs, so loops cannot miss one."""
+    assert len(TABLES) == 10
     assert {t.name for t in TABLES} == {
         "player_week",
         "team_fixture",
@@ -183,6 +183,7 @@ def test_tables_tuple_covers_every_spec():
         "player_match_opta",
         "player_availability",
         "minutes_prediction",
+        "points_prediction",
         "player_season",
         "player_snapshot",
     }
@@ -337,3 +338,68 @@ def test_both_new_tables_have_executable_ddl(db):
     for table in (PLAYER_MATCH_FPL, PLAYER_MATCH_OPTA):
         stored = engine.table_columns(db, table.name)
         assert stored == set(table.columns)
+
+
+def test_points_prediction_is_registered():
+    """The points_prediction table is in TABLES so it gets created and reset."""
+    from fantasy_football.storage.tables import POINTS_PREDICTION, TABLES
+
+    assert POINTS_PREDICTION in TABLES
+
+
+def test_points_prediction_round_trips(db):
+    """A points_prediction row round-trips through the table's DDL."""
+    from fantasy_football.storage.tables import (
+        FORWARD_KIND,
+        POINTS_PREDICTION,
+    )
+
+    frame = pl.DataFrame(
+        {
+            "season": ["2026-27"],
+            "gw": [5],
+            "element": [101],
+            "opponent": [7],
+            "position": ["DEF"],
+            "predicted_points": [4.25],
+            "model_version": ["3"],
+            "prediction_kind": [FORWARD_KIND],
+        }
+    )
+    POINTS_PREDICTION.replace_partition(
+        db,
+        frame,
+        equals={"season": "2026-27", "prediction_kind": FORWARD_KIND},
+    )
+
+    stored = POINTS_PREDICTION.load(db)
+    assert stored.height == 1
+    assert stored["predicted_points"][0] == 4.25
+
+
+def test_points_prediction_versions_filters_by_season(db):
+    """``points_prediction_versions`` restricts to the given seasons."""
+    from fantasy_football.storage.tables import (
+        BACKFILL_KIND,
+        POINTS_PREDICTION,
+        points_prediction_versions,
+    )
+
+    frame = pl.DataFrame(
+        {
+            "season": ["2025-26", "2026-27"],
+            "gw": [1, 1],
+            "element": [1, 1],
+            "opponent": [2, 2],
+            "position": ["DEF", "DEF"],
+            "predicted_points": [1.0, 2.0],
+            "model_version": ["1", "2"],
+            "prediction_kind": [BACKFILL_KIND, BACKFILL_KIND],
+        }
+    )
+    POINTS_PREDICTION.replace_partition(
+        db, frame, equals={"prediction_kind": BACKFILL_KIND}
+    )
+
+    assert points_prediction_versions(db) == {"1", "2"}
+    assert points_prediction_versions(db, seasons=["2025-26"]) == {"1"}

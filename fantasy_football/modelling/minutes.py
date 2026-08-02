@@ -50,6 +50,8 @@ from fantasy_football.modelling.forward import (
 from fantasy_football.modelling.registry import load_production_model
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.tables import (
+    BACKFILL_KIND,
+    FORWARD_KIND,
     MINUTES_PREDICTION,
     PLAYER_AVAILABILITY,
     PLAYER_MATCH,
@@ -70,12 +72,6 @@ BUCKET_ZERO = "0_minutes"
 BUCKET_PARTIAL = "1_to_59_minutes"
 BUCKET_SIXTY_PLUS = "60_minutes_plus"
 MINUTES_BUCKETS = [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
-
-# How a stored prediction was produced. Backfilled rows are in-sample --
-# the champion scored its own training seasons. Forward rows are genuine
-# out-of-sample forecasts for fixtures that had not been played.
-BACKFILL_KIND = "backfill"
-FORWARD_KIND = "forward"
 
 # Model inputs. The first block is contemporaneous -- everything knowable at
 # the deadline. The second reaches across the summer break through player_code
