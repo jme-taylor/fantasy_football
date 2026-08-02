@@ -345,6 +345,45 @@ def test_own_team_and_opposition_form_are_not_swapped(connection) -> None:
     assert row["goals_for_rolling_5"].item() == pytest.approx(1.0)
 
 
+def test_model_frame_takes_only_backfill_minutes_predictions(
+    connection,
+) -> None:
+    """Both minutes kinds on one fixture still give one training row.
+
+    ``prediction_kind`` is part of the minutes primary key, so a fixture
+    that has been forward-scored and then backfilled carries two rows.
+    Joining without the filter fans the training row out -- duplicating
+    it in training and CV, and violating the points_prediction primary
+    key on backfill insert.
+    """
+    _seed_defender_frame(connection)
+    for kind, expected in ((BACKFILL_KIND, 11.0), (FORWARD_KIND, 77.0)):
+        _append(
+            MINUTES_PREDICTION,
+            connection,
+            [
+                {
+                    "season": SEASON,
+                    "gw": 2,
+                    "element": 1,
+                    "opponent": TEAM_IDS[ARSENAL],
+                    "p_zero": 0.1,
+                    "p_partial": 0.2,
+                    "p_sixty_plus": 0.7,
+                    "expected_minutes": expected,
+                    "model_version": "1",
+                    "prediction_kind": kind,
+                }
+            ],
+        )
+
+    frame = defender.build_model_frame(connection)
+    row = frame.filter(pl.col("gw") == 2)
+
+    assert row.height == 1
+    assert row["expected_minutes"].item() == pytest.approx(11.0)
+
+
 def _synthetic_frame(
     n_gws: int = 14, n_players: int = 12, season: str = "2026-27"
 ) -> pl.DataFrame:

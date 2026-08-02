@@ -190,11 +190,16 @@ INNER JOIN player_season AS s
     ON  m.element = s.element
     AND m.season  = s.season
     AND s.position = '{POSITION}'
+-- prediction_kind is part of the minutes primary key, so a fixture that
+-- was forward-scored before it was played and backfilled afterwards
+-- carries both kinds. Joining unfiltered would fan the training row out.
+-- Backfill is the right kind here: see the train/serve skew TODO above.
 LEFT JOIN minutes_prediction AS mn
     ON  m.season   = mn.season
     AND m.gw       = mn.gw
     AND m.element  = mn.element
     AND m.opponent = mn.opponent
+    AND mn.prediction_kind = '{BACKFILL_KIND}'
 LEFT JOIN player_match_form AS mf
     ON  m.season   = mf.season
     AND m.gw       = mf.gw
