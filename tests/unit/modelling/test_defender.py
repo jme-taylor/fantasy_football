@@ -388,20 +388,33 @@ def test_fold_metrics_constant_mean_prediction_has_zero_skill():
 
     The skill-score baseline *is* the fold mean, so a constant-mean
     prediction has identical MAE to the baseline: 1 - mae/mae == 0.0.
+
+    This fixture's mae (1.5) and rmse (~1.77951) differ from each other,
+    so pinning both catches an "mae"/"rmse" key swap in fold_metrics --
+    a swap is invisible to skill_score alone, since skill_score reads
+    predicted/actual directly rather than the dict's mae/rmse entries.
+    Derivation: targets are element % 7 for element in 1..12, i.e.
+    [1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5], mean 3.0. Absolute deviations
+    from 3.0 are [2, 1, 0, 1, 2, 3, 3, 2, 1, 0, 1, 2]; their mean is
+    18 / 12 = 1.5 (mae) and the root-mean-square is
+    sqrt(38 / 12) = 1.7795130420052185 (rmse).
     """
     test_df = _synthetic_frame(n_gws=1)
     mean_target = float(np.mean(test_df[defender.TARGET].to_list()))
     predicted = [mean_target] * test_df.height
     metrics = defender.fold_metrics(test_df, predicted)
+    assert metrics["mae"] == pytest.approx(1.5)
+    assert metrics["rmse"] == pytest.approx(1.7795130420052185)
     assert metrics["skill_score"] == pytest.approx(0.0)
 
 
 def test_fold_metrics_perfect_and_reversed_ranking_spearman():
     """A perfectly ordered prediction scores spearman == 1.0.
 
-    Element values in _synthetic_frame are unique per row within a
-    gameweek, so using them directly as the prediction reproduces the
-    actual ranking exactly, and negating them reverses it exactly.
+    Feeding the actual target values back in as the "prediction"
+    guarantees an identical ordering (so it is perfectly rank-
+    correlated with itself) regardless of repeats in the target, and
+    negating them reverses every pairwise order.
     """
     test_df = _synthetic_frame(n_gws=1)
     actual = test_df[defender.TARGET].to_list()

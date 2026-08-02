@@ -332,6 +332,15 @@ def cross_validate(
             shared &= set(metrics)
         for key in sorted(shared):
             values = [metrics[key] for metrics in per_fold]
+            n_nan = sum(1 for value in values if np.isnan(value))
+            if n_nan:
+                logger.warning(
+                    "%d of %d folds had a nan %s; the aggregate is "
+                    "degenerate.",
+                    n_nan,
+                    len(values),
+                    key,
+                )
             agg[f"{key}_mean"] = float(np.mean(values))
             agg[f"{key}_std"] = float(np.std(values))
     return per_fold, agg
