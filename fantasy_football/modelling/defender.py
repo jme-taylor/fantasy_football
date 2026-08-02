@@ -11,7 +11,7 @@ in :class:`fantasy_football.modelling.models.StoredPredictionModel`.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import mlflow
@@ -29,7 +29,10 @@ from fantasy_football.constants import (
     PRECISION_K_BY_POSITION,
 )
 from fantasy_football.extraction.fpl import FplAPI
-from fantasy_football.features.match_form import rolling_identity_sql
+from fantasy_football.features.match_form import (
+    covered_seasons,
+    rolling_identity_sql,
+)
 from fantasy_football.features.views import register_feature_views
 from fantasy_football.modelling.folds import gameweek_folds
 from fantasy_football.modelling.forward import (
@@ -328,6 +331,53 @@ def fold_metrics(
     }
 
 
+def covered_folds(
+    keys: "Iterable[tuple[str, int]]", min_train_gws: int = MIN_TRAIN_GWS
+) -> list[tuple[list[tuple[str, int]], tuple[str, int]]]:
+    """Expanding-window folds whose test gameweek has every feature.
+
+    Eleven of the twenty features derive from FCI's Opta stats, which
+    only exist from the season :func:`covered_seasons` reports. Training
+    deliberately spans every season anyway (see the scoring-regime TODO
+    above), but a fold *testing* an earlier gameweek is scoring a model
+    the imputer has silently stripped down: with those columns entirely
+    null in the training slice, ``SimpleImputer`` drops them and the
+    forest fits on the nine that remain. Such folds measure a different
+    model than the one being registered, and averaging them into the
+    aggregate metrics buries the signal the promotion decision needs.
+
+    Only the *test* side is restricted. A covered fold still trains on
+    every earlier gameweek, uncovered seasons included, which is what
+    the deployed model does.
+
+    Parameters
+    ----------
+    keys : Iterable[tuple[str, int]]
+        ``(season, gw)`` pairs present in the model frame.
+    min_train_gws : int, optional
+        Minimum gameweeks in the training side of the first fold.
+
+    Returns
+    -------
+    list[tuple[list[tuple[str, int]], tuple[str, int]]]
+        ``(train_keys, test_key)`` pairs. Empty when no gameweek in
+        ``keys`` falls in a covered season.
+    """
+    covered = set(covered_seasons())
+    every = gameweek_folds(keys, min_train_gws=min_train_gws)
+    kept = [(train, test) for train, test in every if test[0] in covered]
+    if len(kept) != len(every):
+        logger.info(
+            "Cross-validating on %d of %d gameweek folds; dropped %d whose "
+            "test gameweek predates full feature coverage (%s).",
+            len(kept),
+            len(every),
+            len(every) - len(kept),
+            ", ".join(sorted(covered)),
+        )
+    return kept
+
+
 def cross_validate(
     model_df: pl.DataFrame,
     folds: list[tuple[list[tuple[str, int]], tuple[str, int]]],
@@ -426,7 +476,7 @@ def run_defender_model() -> dict[str, float]:
     finally:
         connection.close()
 
-    folds = gameweek_folds(
+    folds = covered_folds(
         list(zip(model_df["season"], model_df["gw"])),
         min_train_gws=MIN_TRAIN_GWS,
     )

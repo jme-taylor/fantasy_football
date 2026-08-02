@@ -1535,3 +1535,37 @@ def test_forward_frame_scores_through_a_fitted_pipeline(connection) -> None:
     assert scored.height == 1
     assert scored["predicted_points"].dtype == pl.Float64
     assert scored["predicted_points"].item() is not None
+
+
+def test_covered_folds_drops_test_gameweeks_without_the_full_features(
+    caplog,
+) -> None:
+    """Folds testing a season that predates FCI coverage are excluded."""
+    keys = [("2016-17", gw) for gw in range(1, 15)]
+    keys += [("2025-26", gw) for gw in range(1, 4)]
+
+    with caplog.at_level("INFO", logger="fantasy_football.modelling.defender"):
+        folds = defender.covered_folds(keys, min_train_gws=2)
+
+    assert {test[0] for _train, test in folds} == {"2025-26"}
+    assert "2016-17" in caplog.text or "dropped" in caplog.text.lower()
+
+
+def test_covered_folds_still_train_on_uncovered_seasons() -> None:
+    """A covered test gameweek trains on every earlier gameweek."""
+    keys = [("2016-17", gw) for gw in range(1, 6)]
+    keys += [("2025-26", 1), ("2025-26", 2)]
+
+    folds = defender.covered_folds(keys, min_train_gws=2)
+
+    first_train, first_test = folds[0]
+    assert first_test == ("2025-26", 1)
+    assert ("2016-17", 1) in first_train
+    assert len(first_train) == 5
+
+
+def test_covered_folds_returns_empty_when_nothing_is_covered() -> None:
+    """No covered test gameweek means no folds, not a crash."""
+    keys = [("2016-17", gw) for gw in range(1, 15)]
+
+    assert defender.covered_folds(keys, min_train_gws=2) == []
