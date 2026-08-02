@@ -29,6 +29,7 @@ from fantasy_football.constants import (
     PRECISION_K_BY_POSITION,
 )
 from fantasy_football.extraction.fpl import FplAPI
+from fantasy_football.features.match_form import rolling_identity_sql
 from fantasy_football.features.views import register_feature_views
 from fantasy_football.modelling.folds import gameweek_folds
 from fantasy_football.modelling.forward import (
@@ -118,6 +119,17 @@ _PLAYER_FORM_COLUMNS = [
     "red_cards_per90_rolling_5",
     "yellow_cards_season_to_date",
     "red_cards_season_to_date",
+]
+# The two player-form columns that reset each season. Everything else in
+# _PLAYER_FORM_COLUMNS is a rolling rate that deliberately spans seasons.
+_PLAYER_SEASON_TO_DATE_COLUMNS = [
+    "yellow_cards_season_to_date",
+    "red_cards_season_to_date",
+]
+_PLAYER_ROLLING_COLUMNS = [
+    column
+    for column in _PLAYER_FORM_COLUMNS
+    if column not in _PLAYER_SEASON_TO_DATE_COLUMNS
 ]
 _OWN_TEAM_COLUMNS = [
     "xg_against_rolling_5",
@@ -676,6 +688,45 @@ def _asof_form(
     )
 
 
+def _attach_rolling_identity(
+    connection: "DuckDBPyConnection", frame: pl.DataFrame
+) -> pl.DataFrame:
+    """Add the form views' ``rolling_identity`` to forward fixture rows.
+
+    Resolved through ``player_season`` by the same expression the view
+    uses, rather than reimplemented here, so serve-time identity cannot
+    drift from the identity the rolling window partitions by. A player
+    with no ``player_season`` row falls back to the view's own
+    ``(season, element)`` form, which the LEFT JOIN reaches because the
+    fallback branch reads its season and element from the fixture side.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection holding ``player_season``.
+    frame : pl.DataFrame
+        Forward fixture rows carrying ``season`` and ``element``.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``frame`` with a non-null ``rolling_identity`` string column.
+        ``player_season`` is keyed on ``(season, element)``, so the join
+        cannot add rows.
+    """
+    keys = frame.select("season", "element").unique()
+    connection.register("_forward_identity_keys", keys)
+    identities = connection.sql(
+        "SELECT k.season, k.element, "
+        f"{rolling_identity_sql('ps', 'k')} AS rolling_identity "
+        "FROM _forward_identity_keys AS k "
+        "LEFT JOIN player_season AS ps "
+        "ON ps.season = k.season AND ps.element = k.element"
+    ).pl()
+    connection.unregister("_forward_identity_keys")
+    return frame.join(identities, on=["season", "element"], how="left")
+
+
 def build_forward_feature_frame(
     connection: "DuckDBPyConnection",
     forward_fixtures: pl.DataFrame,
@@ -688,6 +739,13 @@ def build_forward_feature_frame(
     joining to it would make every live prediction one match stale --
     and it is the most informative match. See
     :func:`fantasy_football.features.team_form.window_frame`.
+
+    Player form is as-of joined on ``rolling_identity`` -- the key the
+    form view itself windows on -- so serve matches train: a player whose
+    most recent appearance was last season carries it forward, exactly as
+    his first training row of a season does. The two ``*_season_to_date``
+    columns are the exception and are matched within the season, because
+    they reset; see :func:`_attach_rolling_identity`.
 
     ``is_home`` and the opponent's *name* both come from ``team_fixture``,
     keyed on ``(season, gw, team, kickoff_time)``, which identifies one
@@ -741,11 +799,32 @@ def build_forward_feature_frame(
         how="left",
     )
 
-    # Element ids are unique only within a season, so season belongs in
-    # the key: without it, a player with no appearance yet this season
-    # would inherit the form of whoever held his id last season.
+    # rolling_identity, not (season, element). The form view windows on
+    # rolling_identity with no season term, so in training a player's
+    # first row of a season carries the tail of his previous one; keying
+    # the as-of join on season would match nothing until his first
+    # appearance and leave every player-form feature null at exactly the
+    # pre-season squad build this model exists to serve. player_code is
+    # globally stable, so it still keeps a reissued element id from
+    # inheriting the previous holder's form -- which is what the season
+    # term was really protecting.
+    frame = _attach_rolling_identity(connection, frame)
     frame = _asof_form(
-        frame, player_form, ["season", "element"], _PLAYER_FORM_COLUMNS
+        frame, player_form, ["rolling_identity"], _PLAYER_ROLLING_COLUMNS
+    )
+    # The season-to-date counts do reset, so they are matched inside the
+    # season and default to 0 -- the same value training's coalesce gives
+    # a season's first appearance.
+    frame = _asof_form(
+        frame,
+        player_form,
+        ["rolling_identity", "season"],
+        _PLAYER_SEASON_TO_DATE_COLUMNS,
+    ).with_columns(
+        [
+            pl.col(column).fill_null(0.0)
+            for column in _PLAYER_SEASON_TO_DATE_COLUMNS
+        ]
     )
     # Club form deliberately is not season-scoped. The form views
     # partition by club across seasons, so a club's first fixture of a

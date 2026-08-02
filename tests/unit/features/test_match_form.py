@@ -221,6 +221,22 @@ def test_card_stats_are_validated_against_the_fpl_table() -> None:
         match_form.validate_stats(("yellow_cards",))
 
 
+def test_view_exposes_the_rolling_identity_it_partitions_on(
+    connection,
+) -> None:
+    """rolling_identity is a column, not just a window key.
+
+    The forward-scoring path as-of joins an unplayed fixture back to the
+    player's most recent appearance and has to match on the same key the
+    window partitions by; if the view only computed it internally, that
+    join would fall back to ``element`` and a player with no appearance
+    yet this season would match nothing.
+    """
+    frame = match_form.load_match_form(connection)
+    assert "rolling_identity" in frame.columns
+    assert frame["rolling_identity"].unique().to_list() == ["999"]
+
+
 def test_first_match_has_no_prior_form(connection) -> None:
     """A window with nothing preceding it is null, not zero."""
     frame = match_form.load_match_form(connection)

@@ -8,6 +8,9 @@ import pytest
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 
+from fantasy_football.features.transformation import (
+    _FALLBACK_IDENTITY_PREFIX,
+)
 from fantasy_football.features.views import register_feature_views
 from fantasy_football.modelling import defender
 from fantasy_football.modelling.folds import gameweek_folds
@@ -708,7 +711,13 @@ def _stub_view(connection, name: str, frame: pl.DataFrame) -> None:
 
 
 def _stub_player_form(connection, rows: dict) -> pl.DataFrame:
-    """Stub ``player_match_form_inclusive``, null-filling absent columns."""
+    """Stub ``player_match_form_inclusive``, null-filling absent columns.
+
+    ``rolling_identity`` defaults to the view's own no-player-code
+    fallback for the row's ``(season, element)``, so a stub that states
+    no identity behaves exactly like a player with no ``player_season``
+    row.
+    """
     frame = pl.DataFrame(rows).with_columns(
         [
             pl.lit(None, dtype=pl.Float64).alias(name)
@@ -716,6 +725,13 @@ def _stub_player_form(connection, rows: dict) -> pl.DataFrame:
             if name not in rows
         ]
     )
+    if "rolling_identity" not in rows:
+        frame = frame.with_columns(
+            rolling_identity=pl.lit(_FALLBACK_IDENTITY_PREFIX)
+            + pl.col("season")
+            + pl.lit("_")
+            + pl.col("element").cast(pl.Utf8)
+        )
     _stub_view(connection, "player_match_form_inclusive", frame)
     return frame
 
@@ -1326,6 +1342,176 @@ def test_forward_frame_never_inherits_a_previous_holder_of_the_id(
     )
 
     assert frame["xg_per90_rolling_5"].to_list() == [None]
+
+
+def test_forward_frame_carries_form_across_the_season_boundary(
+    connection,
+) -> None:
+    """Last season's form serves a player who has not played this one.
+
+    The training view windows on ``rolling_identity`` with no season
+    term, so a player's first row of a season carries the tail of his
+    previous one. Keying the forward as-of join on ``(season, element)``
+    instead would match nothing before his first appearance -- so every
+    defender at a pre-season squad build would arrive with all ten
+    player-form features null and be median-imputed, which is precisely
+    the moment this model exists to serve.
+    """
+    _append(
+        PLAYER_SEASON,
+        connection,
+        [
+            {"season": "2024-25", "element": 9, "player_code": 777},
+            {"season": SEASON, "element": 1, "player_code": 777},
+        ],
+    )
+    register_feature_views(connection)
+    _stub_player_form(
+        connection,
+        {
+            "season": ["2024-25"],
+            "element": [9],
+            "rolling_identity": ["777"],
+            "kickoff_time": [GW1_KICKOFF - timedelta(days=365)],
+            "xg_per90_rolling_5": [7.0],
+        },
+    )
+
+    frame = defender.build_forward_feature_frame(
+        connection, _forward_frame([_forward_fixture()])
+    )
+
+    assert frame["xg_per90_rolling_5"].to_list() == [7.0]
+
+
+def test_forward_frame_never_inherits_a_reused_id_with_player_codes(
+    connection,
+) -> None:
+    """Sharing an element id across seasons is not sharing an identity.
+
+    Element 1 belonged to player_code 111 in 2024-25 and to 222 in
+    2025-26. Carrying form across the season boundary must not carry it
+    across footballers, and ``player_code`` -- not ``season`` -- is what
+    keeps the two apart.
+    """
+    _append(
+        PLAYER_SEASON,
+        connection,
+        [
+            {"season": "2024-25", "element": 1, "player_code": 111},
+            {"season": SEASON, "element": 1, "player_code": 222},
+        ],
+    )
+    register_feature_views(connection)
+    _stub_player_form(
+        connection,
+        {
+            "season": ["2024-25"],
+            "element": [1],
+            "rolling_identity": ["111"],
+            "kickoff_time": [GW1_KICKOFF - timedelta(days=365)],
+            "xg_per90_rolling_5": [7.0],
+        },
+    )
+
+    frame = defender.build_forward_feature_frame(
+        connection, _forward_frame([_forward_fixture()])
+    )
+
+    assert frame["xg_per90_rolling_5"].to_list() == [None]
+
+
+def test_forward_frame_gives_a_player_with_no_history_a_null_row(
+    connection,
+) -> None:
+    """A player with no appearance anywhere still gets a row, all nulls."""
+    register_feature_views(connection)
+    _stub_player_form(
+        connection,
+        {
+            "season": [SEASON],
+            "element": [2],
+            "kickoff_time": [GW2_KICKOFF],
+            "xg_per90_rolling_5": [0.4],
+        },
+    )
+
+    frame = defender.build_forward_feature_frame(
+        connection, _forward_frame([_forward_fixture(element=1)])
+    )
+
+    assert frame.height == 1
+    assert frame["xg_per90_rolling_5"].to_list() == [None]
+
+
+def test_forward_frame_starts_the_season_to_date_counts_at_zero(
+    connection,
+) -> None:
+    """Carrying form over a season boundary does not carry card counts.
+
+    The rolling rates span seasons; the season-to-date totals reset, and
+    training coalesces an empty season window to 0. A player whose most
+    recent appearance is last season must therefore arrive with 0 cards
+    this season, not last season's closing count and not a null that the
+    imputer turns into a mid-season booking tally.
+    """
+    _append(
+        PLAYER_SEASON,
+        connection,
+        [
+            {"season": "2024-25", "element": 9, "player_code": 777},
+            {"season": SEASON, "element": 1, "player_code": 777},
+        ],
+    )
+    register_feature_views(connection)
+    _stub_player_form(
+        connection,
+        {
+            "season": ["2024-25"],
+            "element": [9],
+            "rolling_identity": ["777"],
+            "kickoff_time": [GW1_KICKOFF - timedelta(days=365)],
+            "xg_per90_rolling_5": [7.0],
+            "yellow_cards_season_to_date": [8.0],
+            "red_cards_season_to_date": [1.0],
+        },
+    )
+
+    frame = defender.build_forward_feature_frame(
+        connection, _forward_frame([_forward_fixture()])
+    )
+
+    assert frame["xg_per90_rolling_5"].to_list() == [7.0]
+    assert frame["yellow_cards_season_to_date"].to_list() == [0.0]
+    assert frame["red_cards_season_to_date"].to_list() == [0.0]
+
+
+def test_forward_frame_takes_this_season_to_date_counts_when_present(
+    connection,
+) -> None:
+    """An appearance this season supplies its own running card totals."""
+    _append(
+        PLAYER_SEASON,
+        connection,
+        [{"season": SEASON, "element": 1, "player_code": 777}],
+    )
+    register_feature_views(connection)
+    _stub_player_form(
+        connection,
+        {
+            "season": ["2024-25", SEASON],
+            "element": [9, 1],
+            "rolling_identity": ["777", "777"],
+            "kickoff_time": [GW1_KICKOFF - timedelta(days=365), GW2_KICKOFF],
+            "yellow_cards_season_to_date": [8.0, 3.0],
+        },
+    )
+
+    frame = defender.build_forward_feature_frame(
+        connection, _forward_frame([_forward_fixture()])
+    )
+
+    assert frame["yellow_cards_season_to_date"].to_list() == [3.0]
 
 
 def test_forward_frame_scores_through_a_fitted_pipeline(connection) -> None:

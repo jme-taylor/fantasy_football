@@ -290,7 +290,7 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
     )
 
 
-def _identity_sql() -> str:
+def rolling_identity_sql(identity: str = "s", row: str = "m") -> str:
     """Return the SQL mirroring ``add_rolling_identity_column``.
 
     Partitioning on ``player_code`` alone would pool every player with a
@@ -299,12 +299,31 @@ def _identity_sql() -> str:
     is scoped to ``(season, element)`` because ``element`` is unique only
     within a season, and prefixed so it can never collide with a real
     ``player_code``, which renders as bare digits.
+
+    This is public because the forward-scoring path has to resolve the
+    same key for a player who has not appeared yet, and resolving it a
+    second way would let serve-time identity drift from the identity the
+    view windows on.
+
+    Parameters
+    ----------
+    identity : str, optional
+        Alias of the relation supplying ``player_code`` -- usually
+        ``player_season``.
+    row : str, optional
+        Alias of the relation supplying ``season`` and ``element`` for
+        the row being keyed. May be the same alias as ``identity``.
+
+    Returns
+    -------
+    str
+        A CASE expression yielding a VARCHAR identity.
     """
     return (
-        "CASE WHEN s.player_code IS NOT NULL "
-        "THEN CAST(s.player_code AS VARCHAR) "
-        f"ELSE '{_FALLBACK_IDENTITY_PREFIX}' || m.season || '_' "
-        "|| CAST(m.element AS VARCHAR) END"
+        f"CASE WHEN {identity}.player_code IS NOT NULL "
+        f"THEN CAST({identity}.player_code AS VARCHAR) "
+        f"ELSE '{_FALLBACK_IDENTITY_PREFIX}' || {row}.season || '_' "
+        f"|| CAST({row}.element AS VARCHAR) END"
     )
 
 
@@ -376,7 +395,7 @@ WITH appearances AS (
         m.kickoff_time,
         m.minutes,
         m.total_points,
-        {_identity_sql()} AS rolling_identity,
+        {rolling_identity_sql()} AS rolling_identity,
         {stat_columns}
     FROM player_match AS m
     LEFT JOIN player_season AS s
@@ -403,6 +422,11 @@ SELECT
     a.opponent,
     a.is_home,
     a.kickoff_time,
+    -- Selected, not just windowed on: the forward path as-of joins an
+    -- unplayed fixture back to the player's last appearance and has to
+    -- match on the same key the window partitions by, or a player with
+    -- no appearance yet this season matches nothing.
+    a.rolling_identity,
     a.minutes,
     a.total_points,
     {rates},
