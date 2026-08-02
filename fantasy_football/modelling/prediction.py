@@ -410,6 +410,54 @@ class MissingProductionModelError(RuntimeError):
     """Raised when a position has no live model to serve predictions."""
 
 
+class UncoveredPositionError(RuntimeError):
+    """Raised when a model-served position leaves rows unpredicted."""
+
+
+# How many uncovered rows the error names before it stops listing them.
+UNCOVERED_SAMPLE_N = 10
+
+
+def _check_defender_coverage(scored: pl.DataFrame) -> None:
+    """Raise if any defender row came back without a prediction.
+
+    :class:`~fantasy_football.modelling.models.StoredPredictionModel`
+    returns null where nothing is stored, and there is deliberately no
+    per-row fallback to the formula -- so a gap has to fail rather than
+    degrade. Without this it fails anyway, but as a ``TypeError`` raised
+    inside pulp while building the LP, which names neither the position
+    nor the rows.
+
+    Parameters
+    ----------
+    scored : pl.DataFrame
+        Output of :func:`_apply_models`, carrying ``position``,
+        ``predicted_points``, ``season``, ``gw`` and ``player_id``.
+
+    Raises
+    ------
+    UncoveredPositionError
+        When a ``DEF`` row has a null ``predicted_points``.
+    """
+    uncovered = scored.filter(
+        (pl.col("position") == DEFENDER_POSITION)
+        & pl.col("predicted_points").is_null()
+    ).sort(["season", "gw", "player_id"])
+    if uncovered.is_empty():
+        return
+    sample = uncovered.select("season", "gw", "player_id").rows()[
+        :UNCOVERED_SAMPLE_N
+    ]
+    raise UncoveredPositionError(
+        f"{uncovered.height} {DEFENDER_POSITION} row(s) have no stored "
+        f"prediction, e.g. {sample} as (season, gw, element). "
+        f"{DEFENDER_POSITION} is served by {DEFENDER_REGISTERED_MODEL} "
+        f"with no per-row fallback, so this is a coverage gap in the "
+        f"forward scoring run, not a degradation to absorb. Re-run "
+        f"score_forward_defender_points for these gameweeks."
+    )
+
+
 def load_forward_defender_predictions() -> pl.DataFrame | None:
     """Return stored forward defender predictions, or None if there are none.
 
@@ -557,6 +605,10 @@ def _predict(
         put two uncalibrated scales side by side and make the
         optimiser's comparison between them meaningless. So the choice
         is made once, here, for the whole run.
+    UncoveredPositionError
+        When this is a live run and a defender reaches the end of
+        scoring with no stored prediction. See
+        :func:`_check_defender_coverage`.
     """
     models = _models_for_run(is_backtest)
     rolling = pl.read_csv(
@@ -623,6 +675,11 @@ def _predict(
         fx = fx.with_columns(pl.col(col).fill_null(median_elo))
 
     fx = _apply_models(fx, baselines, models)
+    # Live runs only: on the backtest path DEF is formula-scored, so a
+    # null there means something else entirely and is not this check's
+    # business. See _models_for_run.
+    if not is_backtest:
+        _check_defender_coverage(fx)
     return fx
 
 

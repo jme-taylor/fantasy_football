@@ -77,7 +77,8 @@ class StoredPredictionModel:
     model-scored players in one column would put two uncalibrated
     scales side by side and make the optimiser's comparison between
     them meaningless, invisibly. A null here is a coverage bug and must
-    read as one.
+    read as one -- ``prediction._check_defender_coverage`` turns it into
+    a named error before the optimiser ever sees the column.
 
     Attributes
     ----------

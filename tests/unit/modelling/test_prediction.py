@@ -1314,6 +1314,104 @@ def test_predict_scores_defenders_from_the_stored_predictions(
     assert scored["MID"] == pytest.approx(formula)
 
 
+def test_predict_raises_when_a_defender_has_no_stored_prediction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An uncovered defender fails here, not deep inside pulp.
+
+    There is deliberately no per-row fallback, so a defender with no
+    stored row reaches the optimiser as a null and raises a TypeError
+    from inside the LP build -- far from the cause. The gap is a
+    coverage bug and has to read as one.
+    """
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26", "2025-26"],
+            "name": ["D1", "D2"],
+            "position": ["DEF", "DEF"],
+            "team": ["Arsenal", "Arsenal"],
+            "element": [101, 103],
+            "player_code": [901, 903],
+            "gw": [10, 10],
+            "total_points": [6, 6],
+            "total_points_rolling_5": [4.0, 4.0],
+        }
+    )
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        rolling,
+        _baseline_fixtures().head(1),
+        _baseline_elo(),
+    )
+    monkeypatch.setattr(
+        prediction,
+        "load_forward_defender_predictions",
+        lambda: pl.DataFrame(
+            {
+                "season": ["2025-26"],
+                "gw": [11],
+                "element": [101],
+                "predicted_points": [5.0],
+            }
+        ),
+    )
+
+    with pytest.raises(prediction.UncoveredPositionError) as excinfo:
+        prediction._predict("2025-26", horizon_n=1)
+
+    message = str(excinfo.value)
+    assert "DEF" in message
+    assert "('2025-26', 11, 103)" in message
+    assert "('2025-26', 11, 101)" not in message
+
+
+def test_predict_names_only_a_handful_of_uncovered_defenders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The error caps the listed rows but still reports the full count."""
+    elements = list(range(101, 121))
+    rolling = pl.DataFrame(
+        {
+            "season": ["2025-26"] * len(elements),
+            "name": [f"D{e}" for e in elements],
+            "position": ["DEF"] * len(elements),
+            "team": ["Arsenal"] * len(elements),
+            "element": elements,
+            "player_code": [e + 800 for e in elements],
+            "gw": [10] * len(elements),
+            "total_points": [6] * len(elements),
+            "total_points_rolling_5": [4.0] * len(elements),
+        }
+    )
+    _setup_artifacts(
+        tmp_path,
+        monkeypatch,
+        rolling,
+        _baseline_fixtures().head(1),
+        _baseline_elo(),
+    )
+    monkeypatch.setattr(
+        prediction,
+        "load_forward_defender_predictions",
+        lambda: pl.DataFrame(
+            {
+                "season": ["2025-26"],
+                "gw": [11],
+                "element": [999],
+                "predicted_points": [5.0],
+            }
+        ),
+    )
+
+    with pytest.raises(prediction.UncoveredPositionError) as excinfo:
+        prediction._predict("2025-26", horizon_n=1)
+
+    message = str(excinfo.value)
+    assert f"{len(elements)} DEF" in message
+    assert message.count("('2025-26', 11,") == prediction.UNCOVERED_SAMPLE_N
+
+
 def _backtest_rolling() -> pl.DataFrame:
     """Return one DEF and one MID at the same club, on the same baseline."""
     return pl.DataFrame(
