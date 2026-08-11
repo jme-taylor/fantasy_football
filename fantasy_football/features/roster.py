@@ -27,18 +27,16 @@ def latest_snapshot(snapshot: pl.DataFrame, season: str) -> pl.DataFrame:
     Parameters
     ----------
     snapshot : pl.DataFrame
-        Rows from ``PLAYER_SNAPSHOT.load()``.
+        Rows from "PLAYER_SNAPSHOT.load()".
     season : str
         The season to filter to.
 
     Returns
     -------
     pl.DataFrame
-        The rows sharing the maximum ``captured_at``, or an empty frame.
+        The rows sharing the maximum "captured_at"
     """
     seasonal = snapshot.filter(pl.col("season") == season)
-    if seasonal.is_empty():
-        return seasonal
     newest = seasonal["captured_at"].max()
     return seasonal.filter(pl.col("captured_at") == newest)
 

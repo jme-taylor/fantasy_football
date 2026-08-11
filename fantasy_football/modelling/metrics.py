@@ -4,11 +4,16 @@ None of these functions touch MLflow, files, or position grouping. Callers
 slice their data by position and pass plain sequences or a small DataFrame.
 """
 
+import logging
 from collections.abc import Sequence
+from dataclasses import asdict, dataclass
+from typing import Protocol
 
 import numpy as np
 import polars as pl
 from sklearn.metrics import mean_poisson_deviance
+
+logger = logging.getLogger(__name__)
 
 _POISSON_FLOOR = 1e-6
 
@@ -198,3 +203,101 @@ def precision_at_k(
     if not precisions:
         return float("nan")
     return float(np.mean(precisions))
+
+
+class Metrics(Protocol):
+    """One fold's scores, flattenable for MLflow.
+
+    Every predictor's fold scoring returns something satisfying this, so
+    :func:`aggregate` and the MLflow logging in
+    :class:`fantasy_football.modelling.predictor.Predictor` stay ignorant
+    of which model produced the numbers.
+    """
+
+    def as_dict(self) -> dict[str, float]:
+        """Return the metric names and values, one level deep."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class PointsMetrics:
+    """Scores for a points regressor over one fold.
+
+    Shared by every position. ``k`` is deliberately absent: it varies by
+    position, so carrying it here would give each position a different
+    metric name and make MLflow runs incomparable. Log it as a param.
+    """
+
+    mae: float
+    rmse: float
+    skill_score: float
+    spearman: float
+    precision_at_k: float
+
+    def as_dict(self) -> dict[str, float]:
+        """Return the metric names and values, one level deep."""
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class MinutesMetrics:
+    """Scores for the minutes classifier over one fold.
+
+    The two AUCs are optional because a fold whose test split has only one
+    class present cannot have an AUC at all. They are dropped from
+    :meth:`as_dict` when absent rather than logged as nan, which keeps
+    :func:`aggregate` from producing a degenerate mean.
+    """
+
+    logloss_appear: float
+    brier_appear: float
+    logloss_60: float
+    brier_60: float
+    e_min_mae: float
+    auc_appear: float | None = None
+    auc_60: float | None = None
+
+    def as_dict(self) -> dict[str, float]:
+        """Return the metric names and values, omitting absent AUCs."""
+        return {
+            key: value
+            for key, value in asdict(self).items()
+            if value is not None
+        }
+
+
+def aggregate(per_fold: Sequence[Metrics]) -> dict[str, float]:
+    """Mean and standard deviation of every metric across folds.
+
+    Only metrics present in *every* fold are aggregated, so a metric that
+    one fold could not compute does not silently average over a subset.
+
+    Parameters
+    ----------
+    per_fold : Sequence[Metrics]
+        One entry per scored fold.
+
+    Returns
+    -------
+    dict[str, float]
+        ``{metric}_mean`` and ``{metric}_std`` for each shared metric.
+        Empty when ``per_fold`` is empty.
+    """
+    if not per_fold:
+        return {}
+    rows = [metrics.as_dict() for metrics in per_fold]
+    shared = set(rows[0]).intersection(*(set(row) for row in rows[1:]))
+    agg: dict[str, float] = {}
+    for key in sorted(shared):
+        values = [row[key] for row in rows]
+        n_nan = sum(1 for value in values if np.isnan(value))
+        if n_nan:
+            logger.warning(
+                "%d of %d folds had a nan %s; the aggregate is degenerate.",
+                n_nan,
+                len(values),
+                key,
+            )
+        agg[f"{key}_mean"] = float(np.mean(values))
+        agg[f"{key}_std"] = float(np.std(values))
+    return agg

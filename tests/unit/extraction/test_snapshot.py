@@ -1,13 +1,16 @@
 """Tests for the point-in-time FPL player snapshot."""
 
+import logging
 from datetime import datetime
 
 import duckdb
+import polars as pl
 import pytest_mock
 
 from fantasy_football.extraction.snapshot import (
     build_snapshot,
     load_player_snapshot,
+    warn_unidentified_snapshot,
 )
 from fantasy_football.fpl_types import FplPlayer, FplTeamInfo
 from fantasy_football.storage.tables import PLAYER_SNAPSHOT
@@ -87,3 +90,48 @@ def test_load_player_snapshot_writes_normalised_rows(
     assert stored.height == 2
     assert set(stored["position"].to_list()) == {"GK", "FWD"}
     assert stored["captured_at"].to_list() == [captured, captured]
+
+
+def test_warn_unidentified_snapshot_reports_the_coverage_gap(caplog) -> None:
+    """Snapshot elements with no player_season row are counted and logged."""
+    snapshot = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 3,
+            "element": [1, 2, 3],
+        }
+    )
+    player_season = pl.DataFrame(
+        {
+            "season": ["2026-27", "2026-27"],
+            "element": [1, 2],
+            "player_code": [111, None],
+        },
+        schema_overrides={"player_code": pl.Int64},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        missing = warn_unidentified_snapshot(
+            snapshot, player_season, "2026-27"
+        )
+
+    # Element 2 has a row but a null player_code, so it is unusable too.
+    assert missing == 2
+    assert "2 of 3" in caplog.text
+
+
+def test_warn_unidentified_snapshot_silent_when_fully_covered(
+    caplog,
+) -> None:
+    """Full identity coverage logs nothing and reports zero."""
+    snapshot = pl.DataFrame({"season": ["2026-27"], "element": [1]})
+    player_season = pl.DataFrame(
+        {"season": ["2026-27"], "element": [1], "player_code": [111]}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        missing = warn_unidentified_snapshot(
+            snapshot, player_season, "2026-27"
+        )
+
+    assert missing == 0
+    assert caplog.text == ""

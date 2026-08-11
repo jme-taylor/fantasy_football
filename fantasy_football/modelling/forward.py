@@ -53,6 +53,7 @@ def last_played_gw(player_week: pl.DataFrame, season: str) -> int:
     return int(stored["gw"].max() or 0)
 
 
+# TODO (JT): Do something with DI and team_fixture here
 def build_forward_fixtures(
     snapshot: pl.DataFrame,
     team_fixture: pl.DataFrame,

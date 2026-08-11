@@ -29,18 +29,24 @@ from fantasy_football.extraction.seasons import (
 from fantasy_football.extraction.snapshot import load_player_snapshot
 from fantasy_football.features.elo import build_team_elo
 from fantasy_football.features.fixtures import build_fixtures_enriched
+from fantasy_football.features.match_form import covered_seasons
 from fantasy_football.features.transformation import create_rolling_points_data
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.modelling.defender import (
-    backfill_defender_points,
-    run_defender_model,
-    score_forward_defender_points,
+    DEFENDER_SPEC,
+    DefenderPointsPredictor,
 )
-from fantasy_football.modelling.evaluation import run_evaluation
+from fantasy_football.modelling.folds import (
+    ExpandingGameweekFoldStrategy,
+    SeasonFoldStrategy,
+)
+from fantasy_football.modelling.forwards import (
+    FORWARD_SPEC,
+    ForwardPointsPredictor,
+)
 from fantasy_football.modelling.minutes import (
-    backfill_minutes,
-    run_minutes_model,
-    score_forward_minutes,
+    MINUTES_SPEC,
+    MinutesPredictor,
 )
 from fantasy_football.modelling.prediction import predict_points
 from fantasy_football.optimisation.optimiser import optimise_plan
@@ -230,28 +236,57 @@ def main(
         load_player_identity_data(connection, CURRENT_SEASON)
         load_player_snapshot(CURRENT_SEASON, connection)
         check_prior_season_loaded(connection, CURRENT_SEASON)
+        create_rolling_points_data(CURRENT_SEASON)
+        build_fixtures_enriched(CURRENT_SEASON)
+        build_team_elo()
+
+        # TODO(JT): Add a single method to predictor to do all of these in one
+        minutes_predictor = MinutesPredictor(
+            experiment_name="minutes_played_classification",
+            params={},
+            model_spec=MINUTES_SPEC,
+            connection=connection,
+            fold_strategy=SeasonFoldStrategy(),
+        )
+        minutes_predictor.train_and_register_model()
+        minutes_predictor.backfill_model_predictions()
+        minutes_predictor.predict_forward()
+
+        defender_predictor = DefenderPointsPredictor(
+            experiment_name="def-points-model",
+            params={},
+            model_spec=DEFENDER_SPEC,
+            connection=connection,
+            fold_strategy=ExpandingGameweekFoldStrategy(
+                test_seasons=covered_seasons()
+            ),
+        )
+        defender_predictor.train_and_register_model()
+        defender_predictor.backfill_model_predictions()
+        defender_predictor.predict_forward()
+
+        forward_predictor = ForwardPointsPredictor(
+            experiment_name="fwd-points-model",
+            params={},
+            model_spec=FORWARD_SPEC,
+            connection=connection,
+            fold_strategy=ExpandingGameweekFoldStrategy(
+                test_seasons=covered_seasons()
+            ),
+        )
+        forward_predictor.train_and_register_model()
+        forward_predictor.backfill_model_predictions()
+        forward_predictor.predict_forward()
+
     finally:
         connection.close()
 
-    create_rolling_points_data(CURRENT_SEASON)
-    build_fixtures_enriched(CURRENT_SEASON)
-    build_team_elo()
-    run_minutes_model()
-    backfill_minutes()
-    score_forward_minutes()
-    # Defender features consume the forward minutes forecasts written
-    # just above, so this ordering is load-bearing, not cosmetic.
-    run_defender_model()
-    backfill_defender_points()
-    score_forward_defender_points()
     # TODO (JT): run_evaluation replays history through _predict, which
     # produces gameweek-grain formula predictions -- it does not
     # exercise the defender model or the forward feature-carrying
     # chain, so the expected_minutes train/serve skew noted in
     # modelling/defender.py is invisible to it. Wiring it up means
     # reworking the replay harness, not bolting onto it.
-    if evaluate:
-        run_evaluation()
     team = load_team_file(team_file) if team_file is not None else None
     as_of_gw = team.gameweek - 1 if team is not None else None
     predict_points(CURRENT_SEASON, as_of_gw=as_of_gw)

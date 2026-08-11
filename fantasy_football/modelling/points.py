@@ -1,0 +1,503 @@
+"""Shared machinery for the per-position points regressors.
+
+Every position predicts the same target (``total_points``) from the same
+shape of features: the player's own rolling form, his club's rolling
+form, the opposition's rolling form, and the minutes forecast. What
+differs between positions is only *which* columns are used -- a defender
+cares about clean sheets and xG conceded, a forward about xG for -- and
+which rows are in scope.
+
+Subclasses therefore declare column lists and nothing else. Everything
+that reads those lists lives here, so a fix to the as-of join or the
+partition scoping lands on every position at once rather than being
+copied four times.
+"""
+
+import logging
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, ClassVar, override
+
+import numpy as np
+import polars as pl
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+
+from fantasy_football.constants import PRECISION_K_BY_POSITION
+from fantasy_football.features.match_form import rolling_identity_sql
+from fantasy_football.features.views import register_feature_views
+from fantasy_football.modelling.folds import Fold
+from fantasy_football.modelling.metrics import (
+    PointsMetrics,
+    mae,
+    precision_at_k,
+    rmse,
+    skill_score,
+    spearman_by_gw,
+)
+from fantasy_football.modelling.predictor import Predictor
+from fantasy_football.storage.tables import (
+    BACKFILL_KIND,
+    FORWARD_KIND,
+    MINUTES_PREDICTION,
+    TEAM_FIXTURE,
+)
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
+
+logger = logging.getLogger(__name__)
+
+TARGET = "total_points"
+
+# Match-grain keys. They identify a row and are never model inputs.
+KEY_COLUMNS = ["season", "gw", "element", "opponent"]
+
+# The player-form columns that reset each season. Everything else a
+# position lists in ``PLAYER_FORM_COLUMNS`` is a rolling rate that
+# deliberately spans seasons.
+SEASON_TO_DATE_COLUMNS = [
+    "yellow_cards_season_to_date",
+    "red_cards_season_to_date",
+]
+
+
+def asof_form(
+    left: pl.DataFrame,
+    right: pl.DataFrame,
+    by: list[str],
+    columns: list[str],
+) -> pl.DataFrame:
+    """Attach the most recent form row at or before each fixture.
+
+    Parameters
+    ----------
+    left : pl.DataFrame
+        Forward fixtures, carrying ``kickoff_time`` and every column in
+        ``by``.
+    right : pl.DataFrame
+        A form frame carrying ``kickoff_time``, ``by`` and ``columns``.
+    by : list[str]
+        Columns matched exactly before the as-of comparison. They must
+        identify one subject -- a player or a club -- or a fixture would
+        inherit a stranger's form.
+    columns : list[str]
+        Form columns to bring across.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``left``, ordered by ``kickoff_time``, with the form columns
+        attached. Exactly one row per input row: an as-of join takes at
+        most one match, so a duplicated right-hand row cannot fan the
+        output out -- it only changes which value arrives.
+    """
+    absent = [pl.lit(None, dtype=pl.Float64).alias(name) for name in columns]
+    if right.is_empty():
+        return left.with_columns(absent)
+    # Drop rows with no kickoff time
+    slimmed = (
+        right.select(by + ["kickoff_time"] + columns)
+        .with_columns(pl.col("kickoff_time").cast(pl.Datetime("us")))
+        .filter(pl.col("kickoff_time").is_not_null())
+        .sort("kickoff_time")
+    )
+    if slimmed.is_empty():
+        return left.with_columns(absent)
+    return (
+        left.with_columns(pl.col("kickoff_time").cast(pl.Datetime("us")))
+        .sort("kickoff_time")
+        .join_asof(
+            slimmed,
+            on="kickoff_time",
+            by=by,
+            strategy="backward",
+            check_sortedness=False,
+        )
+    )
+
+
+def attach_rolling_identity(
+    connection: "DuckDBPyConnection", frame: pl.DataFrame
+) -> pl.DataFrame:
+    """Add the form views' ``rolling_identity`` to forward fixture rows.
+
+    Resolved through ``player_season`` by the same expression the view
+    uses, rather than reimplemented here, so serve-time identity cannot
+    drift from the identity the rolling window partitions by. A player
+    with no ``player_season`` row falls back to the view's own
+    ``(season, element)`` form, which the LEFT JOIN reaches because the
+    fallback branch reads its season and element from the fixture side.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection holding ``player_season``.
+    frame : pl.DataFrame
+        Forward fixture rows carrying ``season`` and ``element``.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``frame`` with a non-null ``rolling_identity`` string column.
+        ``player_season`` is keyed on ``(season, element)``, so the join
+        cannot add rows.
+    """
+    keys = frame.select("season", "element").unique()
+    connection.register("_forward_identity_keys", keys)
+    identities = connection.sql(
+        "SELECT k.season, k.element, "
+        f"{rolling_identity_sql('ps', 'k')} AS rolling_identity "
+        "FROM _forward_identity_keys AS k "
+        "LEFT JOIN player_season AS ps "
+        "ON ps.season = k.season AND ps.element = k.element"
+    ).pl()
+    connection.unregister("_forward_identity_keys")
+    return frame.join(identities, on=["season", "element"], how="left")
+
+
+class PositionPointsPredictor(Predictor):
+    """Points regressor for one FPL position.
+
+    Subclasses set the six class variables below and inherit everything
+    else. ``POSITION`` must match the ``position`` on the subclass's
+    :class:`~fantasy_football.modelling.predictor.ModelSpec`, since that
+    is what keeps each position's rows in ``points_prediction`` from
+    overwriting another's.
+    """
+
+    #: The ``player_season.position`` value this model serves.
+    POSITION: ClassVar[str]
+    #: Model inputs, in the order the frame presents them.
+    FEATURES: ClassVar[list[str]]
+    #: Per-player form columns read from the player form views.
+    PLAYER_FORM_COLUMNS: ClassVar[list[str]]
+    #: Form columns describing the player's own club.
+    OWN_TEAM_COLUMNS: ClassVar[list[str]]
+    #: Form columns describing the club he is playing against.
+    OPPOSITION_COLUMNS: ClassVar[list[str]]
+    #: Columns taken from the minutes model's predictions.
+    MINUTES_COLUMNS: ClassVar[list[str]]
+
+    @property
+    def season_to_date_columns(self) -> list[str]:
+        """Return the player-form columns that reset each season."""
+        return [
+            column
+            for column in self.PLAYER_FORM_COLUMNS
+            if column in SEASON_TO_DATE_COLUMNS
+        ]
+
+    @property
+    def player_rolling_columns(self) -> list[str]:
+        """Return the player-form columns that span seasons."""
+        return [
+            column
+            for column in self.PLAYER_FORM_COLUMNS
+            if column not in SEASON_TO_DATE_COLUMNS
+        ]
+
+    def model_frame_sql(self) -> str:
+        """Return the SELECT behind this position's model frame.
+
+        Joins the match-grain target on ``player_match`` to the minutes
+        forecast, the player's rolling form, and both teams' rolling
+        form. ``player_week`` supplies the player's club for the season,
+        which is what resolves which side of ``team_match_form`` is his
+        own.
+
+        Returns
+        -------
+        str
+            A SELECT over ``player_match`` and the registered feature
+            views.
+        """
+        minutes = ",\n    ".join(
+            f"mn.{column}" for column in self.MINUTES_COLUMNS
+        )
+        own = ",\n    ".join(
+            f"own.{column} AS {column}" for column in self.OWN_TEAM_COLUMNS
+        )
+        opposition = ",\n    ".join(
+            f"opp.{column} AS {column}" for column in self.OPPOSITION_COLUMNS
+        )
+        player = ",\n    ".join(
+            f"mf.{column} AS {column}" for column in self.PLAYER_FORM_COLUMNS
+        )
+        return f"""
+SELECT
+    m.season,
+    m.gw,
+    m.element,
+    m.opponent,
+    m.{TARGET},
+    m.is_home,
+    {minutes},
+    {player},
+    {own},
+    {opposition}
+FROM player_match AS m
+INNER JOIN player_season AS s
+    ON  m.element = s.element
+    AND m.season  = s.season
+    AND s.position = '{self.POSITION}'
+-- prediction_kind is part of the minutes primary key, so a fixture that
+-- was forward-scored before it was played and backfilled afterwards
+-- carries both kinds. Joining unfiltered would fan the training row out.
+-- Backfill is the right kind here: see the train/serve skew TODO in the
+-- subclass module.
+LEFT JOIN minutes_prediction AS mn
+    ON  m.season   = mn.season
+    AND m.gw       = mn.gw
+    AND m.element  = mn.element
+    AND m.opponent = mn.opponent
+    AND mn.prediction_kind = '{BACKFILL_KIND}'
+LEFT JOIN player_match_form AS mf
+    ON  m.season   = mf.season
+    AND m.gw       = mf.gw
+    AND m.element  = mf.element
+    AND m.opponent = mf.opponent
+LEFT JOIN player_week AS pw
+    ON  pw.season  = m.season
+    AND pw.gw      = m.gw
+    AND pw.element = m.element
+LEFT JOIN fpl_team_id AS opp_id
+    ON  opp_id.season  = m.season
+    AND opp_id.team_id = m.opponent
+LEFT JOIN team_match_form AS own
+    ON  own.season     = m.season
+    AND own.gw         = m.gw
+    AND own.team       = pw.team
+    AND own.opposition = opp_id.team
+LEFT JOIN team_match_form AS opp
+    ON  opp.season     = m.season
+    AND opp.gw         = m.gw
+    AND opp.team       = opp_id.team
+    AND opp.opposition = pw.team
+WHERE m.minutes IS NOT NULL
+"""
+
+    @override
+    def build_training_data(self) -> pl.DataFrame:
+        """Build this position's training frame from the store.
+
+        Registers the feature views first, so callers do not have to
+        remember to.
+
+        Returns
+        -------
+        pl.DataFrame
+            One row per played fixture leg at this position, with
+            ``KEY_COLUMNS``, ``TARGET`` and ``FEATURES``, in that order.
+        """
+        register_feature_views(self.connection)
+        frame = self.connection.sql(self.model_frame_sql()).pl()
+        return frame.select(KEY_COLUMNS + [TARGET] + self.FEATURES)
+
+    def make_pipeline(self) -> Pipeline:
+        """Build the median-imputing random-forest pipeline.
+
+        Imputation lives inside the pipeline so it refits per fold on
+        training data only. There is deliberately no scaler: it is a
+        no-op for trees, and the notebook only carried one because it
+        started with a linear model.
+
+        Returns
+        -------
+        sklearn.pipeline.Pipeline
+            Unfitted pipeline ending in a ``RandomForestRegressor``.
+        """
+        return Pipeline(
+            [
+                ("impute", SimpleImputer(strategy="median")),
+                ("model", RandomForestRegressor(n_jobs=-1)),
+            ]
+        )
+
+    def fold_metrics(
+        self, test_df: pl.DataFrame, predicted: Sequence[float]
+    ) -> PointsMetrics:
+        """Score one fold's predictions against its actuals.
+
+        The baseline for the skill score is the mean target over the
+        fold, i.e. "predict the average player at this position every
+        time". Ranking metrics matter more than MAE here: the optimiser
+        only needs the order to be right.
+
+        Parameters
+        ----------
+        test_df : pl.DataFrame
+            The fold's held-out rows, carrying ``KEY_COLUMNS`` and
+            ``TARGET``.
+        predicted : Sequence[float]
+            Predictions aligned to ``test_df`` row order.
+
+        Returns
+        -------
+        PointsMetrics
+            The fold's scores.
+        """
+        actual = test_df[TARGET].to_list()
+        baseline = [float(np.mean(actual))] * len(actual)
+        ranked = test_df.select(
+            pl.col("gw"),
+            pl.col("element").alias("player_id"),
+            pl.Series("predicted_points", predicted),
+            pl.col(TARGET).alias("actual"),
+        )
+        return PointsMetrics(
+            mae=mae(predicted, actual),
+            rmse=rmse(predicted, actual),
+            skill_score=skill_score(predicted, actual, baseline),
+            spearman=spearman_by_gw(ranked),
+            # TODO (JT): Make k a few different values
+            precision_at_k=precision_at_k(
+                ranked, k=PRECISION_K_BY_POSITION[self.POSITION]
+            ),
+        )
+
+    @override
+    def build_forward_data(
+        self, forward_fixtures: pl.DataFrame
+    ) -> pl.DataFrame:
+        """Build features for this position's unplayed fixtures.
+
+        Parameters
+        ----------
+        forward_fixtures : pl.DataFrame
+            Rows from
+            :func:`fantasy_football.modelling.forward.build_forward_fixtures`,
+            covering every position.
+
+        Returns
+        -------
+        pl.DataFrame
+            One row per in-scope fixture, with ``KEY_COLUMNS`` and
+            ``FEATURES``.
+        """
+        # The training frame restricts to this position in SQL, so the
+        # forward path must too. Without it every rostered player is
+        # scored and stamped POSITION, and the other positions' models
+        # collide with these rows in points_prediction.
+        forward_fixtures = forward_fixtures.filter(
+            pl.col("position") == self.POSITION
+        )
+        player_form = self.connection.sql(
+            "SELECT * FROM player_match_form_inclusive"
+        ).pl()
+        team_form = self.connection.sql(
+            "SELECT * FROM team_match_form_inclusive"
+        ).pl()
+        fixtures = TEAM_FIXTURE.load(self.connection).select(
+            "season",
+            "gw",
+            "team",
+            "kickoff_time",
+            "is_home",
+            pl.col("opposition").alias("opponent_name"),
+        )
+        minutes = MINUTES_PREDICTION.load(self.connection).filter(
+            pl.col("prediction_kind") == FORWARD_KIND
+        )
+        frame = forward_fixtures.join(
+            fixtures,
+            on=["season", "gw", "team", "kickoff_time"],
+            how="left",
+        ).join(
+            minutes.select(KEY_COLUMNS + self.MINUTES_COLUMNS),
+            on=KEY_COLUMNS,
+            how="left",
+        )
+
+        frame = attach_rolling_identity(self.connection, frame)
+        # Rolling rates carry across the season boundary, so they match
+        # on identity alone. The season-to-date counts must not, so they
+        # match on identity *and* season and coalesce to zero -- a player
+        # whose last appearance was last season starts this one on nil,
+        # not on last season's closing tally.
+        frame = asof_form(
+            frame,
+            player_form,
+            ["rolling_identity"],
+            self.player_rolling_columns,
+        )
+        frame = asof_form(
+            frame,
+            player_form,
+            ["rolling_identity", "season"],
+            self.season_to_date_columns,
+        ).with_columns(
+            [
+                pl.col(column).fill_null(0.0)
+                for column in self.season_to_date_columns
+            ]
+        )
+
+        frame = asof_form(frame, team_form, ["team"], self.OWN_TEAM_COLUMNS)
+        opposition = team_form.select(
+            pl.col("team").alias("opponent_name"),
+            "kickoff_time",
+            *self.OPPOSITION_COLUMNS,
+        )
+        frame = asof_form(
+            frame, opposition, ["opponent_name"], self.OPPOSITION_COLUMNS
+        )
+        frame = frame.with_columns(pl.col("is_home").cast(pl.Float64))
+        missing = [name for name in self.FEATURES if name not in frame.columns]
+        if missing:
+            frame = frame.with_columns(
+                [
+                    pl.lit(None, dtype=pl.Float64).alias(name)
+                    for name in missing
+                ]
+            )
+            logger.warning(
+                "Forward %s features absent from the join: %s",
+                self.POSITION,
+                missing,
+            )
+        return frame.select(KEY_COLUMNS + self.FEATURES)
+
+    @override
+    def fit_predict_fold(self, fold: Fold) -> PointsMetrics:
+        """Fit on the fold's train split and score its test split."""
+        pipe = self.make_pipeline()
+        pipe.fit(
+            fold.train.select(self.FEATURES).to_pandas(),
+            fold.train[TARGET].to_list(),
+        )
+        predicted = pipe.predict(fold.test.select(self.FEATURES).to_pandas())
+        return self.fold_metrics(fold.test, list(predicted))
+
+    @override
+    def train_final(self, feature_frame: pl.DataFrame) -> Pipeline:
+        """Fit the pipeline on every row in ``feature_frame``."""
+        pipe = self.make_pipeline()
+        pipe.fit(
+            feature_frame.select(self.FEATURES).to_pandas(),
+            feature_frame[TARGET].to_list(),
+        )
+        return pipe
+
+    @override
+    def build_prediction_rows(
+        self,
+        feature_frame: pl.DataFrame,
+        model: Pipeline,
+        version: str,
+        kind: str,
+    ) -> pl.DataFrame:
+        """Score ``feature_frame`` and shape the rows for storage."""
+        predicted = model.predict(
+            feature_frame.select(self.FEATURES).to_pandas()
+        )
+        return (
+            feature_frame.select(KEY_COLUMNS)
+            .with_columns(
+                position=pl.lit(self.POSITION),
+                predicted_points=pl.Series(predicted).cast(pl.Float64),
+                model_version=pl.lit(version),
+                prediction_kind=pl.lit(kind),
+            )
+            .select(self.model_spec.table.columns)
+        )

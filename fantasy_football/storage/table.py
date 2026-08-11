@@ -220,7 +220,9 @@ class Table:
         return self.enrich(frame)
 
     def seasons_present(
-        self, connection: "duckdb.DuckDBPyConnection"
+        self,
+        connection: "duckdb.DuckDBPyConnection",
+        equals: dict[str, object] | None = None,
     ) -> set[str]:
         """Return the seasons already stored in this table.
 
@@ -228,13 +230,18 @@ class Table:
         ----------
         connection : duckdb.DuckDBPyConnection
             An open connection.
+        equals : dict[str, object] | None, optional
+            Restrict to rows matching these column-to-value predicates.
+            A prediction table shared by several models needs this to
+            ask "which seasons has *my* model stored", rather than
+            reading another model's rows as its own.
 
         Returns
         -------
         set[str]
             Distinct ``season`` values currently stored.
         """
-        return engine.distinct(connection, self.name, "season")
+        return engine.distinct(connection, self.name, "season", equals)
 
     def write_immutable(
         self,

@@ -23,6 +23,21 @@ def _dummy_github_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GITHUB_API_KEY", "test-token")
 
 
+@pytest.fixture(autouse=True)
+def _dummy_mlflow_tracking_uri(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Point MLflow at a throwaway store so ``Predictor`` can be constructed.
+
+    ``Predictor.__init__`` raises when ``MLFLOW_TRACKING_URI`` is unset. A
+    local ``.env`` supplies it in development but CI has none, and a real
+    URI would let a test write to the developer's tracking store.
+    """
+    monkeypatch.setenv(
+        "MLFLOW_TRACKING_URI", f"sqlite:///{tmp_path / 'mlflow.db'}"
+    )
+
+
 @pytest.fixture
 def db(tmp_path: Path) -> Iterator[duckdb.DuckDBPyConnection]:
     """Open an on-disk connection with every table created, then close it.
