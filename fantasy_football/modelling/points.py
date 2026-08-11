@@ -159,7 +159,7 @@ def attach_rolling_identity(
 class PositionPointsPredictor(Predictor):
     """Points regressor for one FPL position.
 
-    Subclasses set the six class variables below and inherit everything
+    Subclasses set the class variables below and inherit everything
     else. ``POSITION`` must match the ``position`` on the subclass's
     :class:`~fantasy_football.modelling.predictor.ModelSpec`, since that
     is what keeps each position's rows in ``points_prediction`` from
@@ -178,6 +178,22 @@ class PositionPointsPredictor(Predictor):
     OPPOSITION_COLUMNS: ClassVar[list[str]]
     #: Columns taken from the minutes model's predictions.
     MINUTES_COLUMNS: ClassVar[list[str]]
+    #: Prefix applied to the opposition copies of the team form columns.
+    #: Both sides come from ``team_match_form``, so a position that reads
+    #: the same measure for its own club and the opposition -- the
+    #: midfielder does -- would otherwise emit two columns of one name.
+    #: Empty for positions whose two lists are disjoint, which keeps
+    #: their feature names, and therefore their registered models,
+    #: exactly as they were.
+    OPPOSITION_PREFIX: ClassVar[str] = ""
+
+    @property
+    def opposition_feature_names(self) -> list[str]:
+        """Return the opposition form columns as the model sees them."""
+        return [
+            f"{self.OPPOSITION_PREFIX}{column}"
+            for column in self.OPPOSITION_COLUMNS
+        ]
 
     @property
     def season_to_date_columns(self) -> list[str]:
@@ -219,7 +235,12 @@ class PositionPointsPredictor(Predictor):
             f"own.{column} AS {column}" for column in self.OWN_TEAM_COLUMNS
         )
         opposition = ",\n    ".join(
-            f"opp.{column} AS {column}" for column in self.OPPOSITION_COLUMNS
+            f"opp.{column} AS {alias}"
+            for column, alias in zip(
+                self.OPPOSITION_COLUMNS,
+                self.opposition_feature_names,
+                strict=True,
+            )
         )
         player = ",\n    ".join(
             f"mf.{column} AS {column}" for column in self.PLAYER_FORM_COLUMNS
@@ -437,10 +458,17 @@ WHERE m.minutes IS NOT NULL
         opposition = team_form.select(
             pl.col("team").alias("opponent_name"),
             "kickoff_time",
-            *self.OPPOSITION_COLUMNS,
+            *[
+                pl.col(column).alias(alias)
+                for column, alias in zip(
+                    self.OPPOSITION_COLUMNS,
+                    self.opposition_feature_names,
+                    strict=True,
+                )
+            ],
         )
         frame = asof_form(
-            frame, opposition, ["opponent_name"], self.OPPOSITION_COLUMNS
+            frame, opposition, ["opponent_name"], self.opposition_feature_names
         )
         frame = frame.with_columns(pl.col("is_home").cast(pl.Float64))
         missing = [name for name in self.FEATURES if name not in frame.columns]

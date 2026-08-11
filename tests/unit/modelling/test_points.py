@@ -25,6 +25,10 @@ from fantasy_football.modelling.forwards import (
     FORWARD_SPEC,
     ForwardPointsPredictor,
 )
+from fantasy_football.modelling.midfielder import (
+    MIDFIELDER_SPEC,
+    MidfielderPointsPredictor,
+)
 from fantasy_football.modelling.points import KEY_COLUMNS, TARGET
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
@@ -52,6 +56,7 @@ from tests.unit.modelling.conftest import (
 SPECS = {
     DefenderPointsPredictor: DEFENDER_SPEC,
     ForwardPointsPredictor: FORWARD_SPEC,
+    MidfielderPointsPredictor: MIDFIELDER_SPEC,
 }
 
 
@@ -648,7 +653,7 @@ def test_forward_frame_resolves_the_opponent_by_name_not_reused_id(
         forward_frame([forward_fixture(position=predictor.POSITION)])
     )
 
-    for column in predictor.OPPOSITION_COLUMNS:
+    for column in predictor.opposition_feature_names:
         assert frame[column].item() == pytest.approx(0.5)
 
 

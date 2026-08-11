@@ -44,6 +44,10 @@ from fantasy_football.modelling.forwards import (
     FORWARD_SPEC,
     ForwardPointsPredictor,
 )
+from fantasy_football.modelling.midfielder import (
+    MIDFIELDER_SPEC,
+    MidfielderPointsPredictor,
+)
 from fantasy_football.modelling.minutes import (
     MINUTES_SPEC,
     MinutesPredictor,
@@ -278,6 +282,19 @@ def main(
         forward_predictor.backfill_model_predictions()
         forward_predictor.predict_forward()
 
+        midfielder_predictor = MidfielderPointsPredictor(
+            experiment_name="mid-points-model",
+            params={},
+            model_spec=MIDFIELDER_SPEC,
+            connection=connection,
+            fold_strategy=ExpandingGameweekFoldStrategy(
+                test_seasons=covered_seasons()
+            ),
+        )
+        midfielder_predictor.train_and_register_model()
+        midfielder_predictor.backfill_model_predictions()
+        midfielder_predictor.predict_forward()
+
     finally:
         connection.close()
 
@@ -318,4 +335,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(rebuild=True)
+    main(rebuild=False)
