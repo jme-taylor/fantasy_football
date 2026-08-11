@@ -1,32 +1,40 @@
-import logging
 from datetime import date, datetime, timedelta
-from unittest import mock
+from typing import cast
 
+import duckdb
 import numpy as np
 import polars as pl
-import pytest_mock
+import pytest
 from sklearn.pipeline import Pipeline
 
-from fantasy_football.constants import (
-    MINUTES_REGISTERED_MODEL,
-    MLFLOW_TRACKING_URI,
+from fantasy_football.modelling.folds import (
+    Fold,
+    FoldTestKey,
+    SeasonFoldStrategy,
 )
+from fantasy_football.modelling.metrics import MinutesMetrics
 from fantasy_football.modelling.minutes import (
     BUCKET_PARTIAL,
     BUCKET_SIXTY_PLUS,
     BUCKET_ZERO,
     FEATURES,
     MINUTES_BUCKETS,
+    MINUTES_SPEC,
+    MinutesPredictor,
     boundary_metrics,
     build_feature_frame,
     build_model_frame,
     create_minutes_bucket,
-    cross_validate,
     make_pipeline,
-    run_minutes_model,
-    season_folds,
-    train_final,
-    warn_unidentified_snapshot,
+    score_minutes,
+)
+from fantasy_football.storage.tables import (
+    MINUTES_PREDICTION,
+    PLAYER_AVAILABILITY,
+    PLAYER_MATCH,
+    PLAYER_SEASON,
+    PLAYER_WEEK,
+    TEAM_FIXTURE,
 )
 
 
@@ -174,26 +182,13 @@ def test_build_model_frame_joins_features_onto_matches() -> None:
         assert column in model_frame.columns
 
 
-def test_season_folds_expanding_window() -> None:
-    """Each fold trains on all prior seasons and tests on the next one."""
-    seasons = ["2022-23", "2023-24", "2024-25", "2025-26"]
-
-    folds = season_folds(seasons)
-
-    assert folds == [
-        (["2022-23"], "2023-24"),
-        (["2022-23", "2023-24"], "2024-25"),
-        (["2022-23", "2023-24", "2024-25"], "2025-26"),
-    ]
-
-
 def test_boundary_metrics_perfect_predictions() -> None:
     """Confident, correct probabilities give ~0 loss and AUC 1.0."""
     classes = (
         MINUTES_BUCKETS  # ["0_minutes", "1_to_59_minutes", "60_minutes_plus"]
     )
     y_true = [BUCKET_ZERO, BUCKET_SIXTY_PLUS]
-    true_minutes = [0, 90]
+    true_minutes = [0.0, 90.0]
     # rows: benched (col 0), full shift (col 2).
     proba = np.array([[0.99, 0.005, 0.005], [0.005, 0.005, 0.99]])
 
@@ -210,7 +205,7 @@ def test_boundary_metrics_skips_auc_when_single_class() -> None:
     """AUC is omitted for a boundary whose test rows are all one class."""
     classes = MINUTES_BUCKETS
     y_true = [BUCKET_SIXTY_PLUS, BUCKET_SIXTY_PLUS]  # all appear, all 60+
-    true_minutes = [90, 75]
+    true_minutes = [90.0, 75.0]
     proba = np.array([[0.01, 0.04, 0.95], [0.02, 0.03, 0.95]])
 
     m = boundary_metrics(y_true, proba, classes, true_minutes)
@@ -304,63 +299,6 @@ def _synthetic_model_df(
     return pl.DataFrame(rows)
 
 
-def test_cross_validate_returns_per_fold_and_aggregate() -> None:
-    """One metric dict per fold, plus mean/std aggregates over shared keys."""
-    seasons = ["2022-23", "2023-24", "2024-25"]
-    df = _synthetic_model_df(seasons)
-    folds = season_folds(seasons)
-
-    per_fold, agg = cross_validate(df, folds)
-
-    assert len(per_fold) == len(folds)
-    assert "logloss_60_mean" in agg
-    assert "logloss_60_std" in agg
-    # Learnable signal -> better-than-chance appearance separation.
-    assert agg["logloss_appear_mean"] < 0.69
-
-
-def test_train_final_fits_on_all_rows() -> None:
-    """train_final returns a fitted pipeline that predicts probabilities."""
-    df = _synthetic_model_df(["2022-23", "2023-24"])
-
-    model = train_final(df)
-
-    assert isinstance(model, Pipeline)
-    proba = model.predict_proba(df.select(FEATURES).to_pandas())
-    assert proba.shape[0] == df.height
-
-
-def test_run_minutes_model_logs_to_mlflow() -> None:
-    """run_minutes_model logs params, metrics and the model, returns aggregates."""
-    df = _synthetic_model_df(["2022-23", "2023-24", "2024-25"])
-
-    with (
-        mock.patch(
-            "fantasy_football.modelling.minutes.assemble_model_frame",
-            return_value=df,
-        ),
-        mock.patch("fantasy_football.modelling.minutes.mlflow") as mlflow_mock,
-    ):
-        mlflow_mock.start_run.return_value.__enter__ = mock.Mock()
-        mlflow_mock.start_run.return_value.__exit__ = mock.Mock(
-            return_value=False
-        )
-
-        agg = run_minutes_model()
-
-    assert "logloss_60_mean" in agg
-    mlflow_mock.set_tracking_uri.assert_called_once_with(MLFLOW_TRACKING_URI)
-    mlflow_mock.set_experiment.assert_called_once()
-    mlflow_mock.log_params.assert_called_once()
-    assert mlflow_mock.log_metric.called  # per-fold metrics
-    mlflow_mock.log_metrics.assert_called_once_with(agg)
-    mlflow_mock.sklearn.log_model.assert_called_once()
-    _, log_model_kwargs = mlflow_mock.sklearn.log_model.call_args
-    assert (
-        log_model_kwargs["registered_model_name"] == MINUTES_REGISTERED_MODEL
-    )
-
-
 def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
     """A DGW (two opponents same gw/element) produces two model-frame rows."""
     feature_frame = build_feature_frame(
@@ -425,17 +363,6 @@ def test_build_model_frame_carries_opponent_for_match_grain() -> None:
     assert element_1["opponent"].to_list() == [10, 20]
 
 
-from types import SimpleNamespace  # noqa: E402
-
-from mlflow.exceptions import MlflowException  # noqa: E402
-
-from fantasy_football.modelling.minutes import (  # noqa: E402
-    get_production_model,
-    score_forward_minutes,
-    score_minutes,
-)
-
-
 class _StubModel:
     """Minimal stand-in for a fitted pipeline: fixed classes and proba."""
 
@@ -445,6 +372,17 @@ class _StubModel:
 
     def predict_proba(self, _x: object) -> np.ndarray:
         return self._proba
+
+
+def _stub_model(classes: list[str], proba: np.ndarray) -> Pipeline:
+    """Return a ``_StubModel`` typed as the ``Pipeline`` callers declare.
+
+    ``score_minutes`` and ``build_prediction_rows`` annotate their model as
+    a fitted ``Pipeline`` but only ever touch ``predict_proba`` and
+    ``classes_``, both of which the stub provides. Stating that once here
+    keeps the call sites free of type-checker suppressions.
+    """
+    return cast(Pipeline, _StubModel(classes, proba))
 
 
 def _scoring_frame() -> pl.DataFrame:
@@ -462,9 +400,11 @@ def _scoring_frame() -> pl.DataFrame:
 def test_score_minutes_full_three_classes() -> None:
     """All three classes present: probs preserved, expected minutes derived."""
     proba = np.array([[0.1, 0.2, 0.7], [0.5, 0.3, 0.2]])
-    model = _StubModel([BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS], proba)
+    model = _stub_model(
+        [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS], proba
+    )
 
-    out = score_minutes(_scoring_frame(), model)  # type: ignore
+    out = score_minutes(_scoring_frame(), model)
 
     assert out["p_zero"].to_list() == [0.1, 0.5]
     assert out["p_partial"].to_list() == [0.2, 0.3]
@@ -482,385 +422,15 @@ def test_score_minutes_missing_class_gives_zero_column() -> None:
     """A class absent from classes_ yields a zero probability column."""
     # classes_ omits BUCKET_PARTIAL — proba has two columns.
     proba = np.array([[0.3, 0.7]])
-    model = _StubModel([BUCKET_ZERO, BUCKET_SIXTY_PLUS], proba)
+    model = _stub_model([BUCKET_ZERO, BUCKET_SIXTY_PLUS], proba)
     frame = _scoring_frame().head(1)
 
-    out = score_minutes(frame, model)  # type: ignore
+    out = score_minutes(frame, model)
 
     assert out["p_partial"].to_list() == [0.0]
     assert out["p_zero"].to_list() == [0.3]
     assert out["p_sixty_plus"].to_list() == [0.7]
     assert out["expected_minutes"].to_list() == [0.7 * 75]
-
-
-def test_get_production_model_returns_version_and_model() -> None:
-    """get_production_model returns the aliased version string and model."""
-    stub_model = _StubModel([BUCKET_ZERO], np.array([[1.0]]))
-    with mock.patch(
-        "fantasy_football.modelling.minutes.load_production_model",
-        return_value=("7", stub_model),
-    ):
-        version, model = get_production_model()
-
-    assert version == "7"
-    assert model is stub_model
-
-
-def test_get_production_model_returns_none_without_an_alias(
-    mocker: pytest_mock.MockerFixture,
-) -> None:
-    """The documented no-alias behaviour must actually hold."""
-    client = mocker.Mock()
-    client.get_model_version_by_alias.side_effect = MlflowException("no alias")
-    mocker.patch("mlflow.tracking.MlflowClient", return_value=client)
-    mocker.patch("mlflow.set_tracking_uri")
-
-    assert get_production_model() is None
-
-
-def test_score_forward_minutes_noops_without_an_alias(
-    mocker: pytest_mock.MockerFixture,
-) -> None:
-    """No production model means no forward rows and no exception."""
-    mocker.patch(
-        "fantasy_football.modelling.minutes.get_production_model",
-        return_value=None,
-    )
-    assemble = mocker.patch(
-        "fantasy_football.modelling.minutes.assemble_model_frame"
-    )
-
-    score_forward_minutes()
-
-    assemble.assert_not_called()
-
-
-import duckdb  # noqa: E402
-
-from fantasy_football.constants import CURRENT_SEASON  # noqa: E402
-from fantasy_football.modelling.minutes import (
-    _score_and_store,  # noqa: E402
-    backfill_minutes,  # noqa: E402
-)
-from fantasy_football.storage.database import get_connection  # noqa: E402
-from fantasy_football.storage.tables import (  # noqa: E402
-    MINUTES_PREDICTION,
-    PLAYER_SNAPSHOT,
-    PLAYER_WEEK,
-    TEAM_FIXTURE,
-)
-
-
-class _ConstantModel:
-    """Returns the same 3-class probabilities for every input row."""
-
-    def __init__(self) -> None:
-        self.classes_ = np.asarray(
-            [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
-        )
-
-    def predict_proba(self, x: object) -> np.ndarray:
-        return np.tile([0.1, 0.2, 0.7], (len(x), 1))  # type: ignore
-
-
-def _backfill_model_frame() -> pl.DataFrame:
-    """Return a frame spanning one historic season and the current season."""
-    seasons = ["2024-25", CURRENT_SEASON]
-    rows = []
-    for season in seasons:
-        row = {
-            "season": season,
-            "gw": 1,
-            "element": 5,
-            "opponent": 12,
-            "minutes": 90,
-            "minutes_bucket": BUCKET_SIXTY_PLUS,
-        }
-        for feature in FEATURES:
-            row[feature] = 1.0 if feature != "position" else "MID"
-        rows.append(row)
-    return pl.DataFrame(rows)
-
-
-def _patched_backfill(tmp_path, prod_version, db_name="bf.duckdb"):
-    """Context helpers: patched deps around a real temp DuckDB."""
-    db_path = tmp_path / db_name
-    return (
-        db_path,
-        mock.patch(
-            "fantasy_football.modelling.minutes.get_production_model",
-            return_value=(prod_version, _ConstantModel()),
-        ),
-        mock.patch(
-            "fantasy_football.modelling.minutes.assemble_model_frame",
-            return_value=_backfill_model_frame(),
-        ),
-        mock.patch(
-            "fantasy_football.modelling.minutes.get_connection",
-            side_effect=lambda: get_connection(db_path),
-        ),
-    )
-
-
-def test_backfill_minutes_populates_all_seasons_when_empty(tmp_path) -> None:
-    """First backfill scores every season and stamps the production version."""
-    db_path, p_ver, p_frame, p_conn = _patched_backfill(
-        tmp_path, prod_version="2"
-    )
-    with p_ver, p_frame, p_conn:
-        backfill_minutes()
-
-    conn = get_connection(db_path)
-    try:
-        out = MINUTES_PREDICTION.load(conn)
-    finally:
-        conn.close()
-    assert set(out["season"].to_list()) == {"2024-25", CURRENT_SEASON}
-    assert set(out["model_version"].to_list()) == {"2"}
-
-
-def test_backfill_minutes_skips_historic_when_version_matches(
-    tmp_path,
-) -> None:
-    """Matching version leaves historic rows untouched, refreshes current."""
-    db_path, p_ver, p_frame, p_conn = _patched_backfill(
-        tmp_path, prod_version="2"
-    )
-    # Pre-seed historic season with a sentinel expected_minutes at version 2.
-    seed_conn = get_connection(db_path)
-    try:
-        seeded = pl.DataFrame(
-            [
-                {
-                    "season": "2024-25",
-                    "gw": 1,
-                    "element": 5,
-                    "opponent": 12,
-                    "p_zero": 0.0,
-                    "p_partial": 0.0,
-                    "p_sixty_plus": 1.0,
-                    "expected_minutes": 999.0,
-                    "model_version": "2",
-                    "prediction_kind": "backfill",
-                    "snapshot_captured_at": None,
-                }
-            ]
-        )
-        MINUTES_PREDICTION.upsert_current(seed_conn, seeded, "2024-25")
-    finally:
-        seed_conn.close()
-
-    with p_ver, p_frame, p_conn:
-        backfill_minutes()
-
-    conn = get_connection(db_path)
-    try:
-        out = MINUTES_PREDICTION.load(conn)
-    finally:
-        conn.close()
-    historic = out.filter(pl.col("season") == "2024-25")
-    # Untouched sentinel proves historic was not rewritten.
-    assert historic["expected_minutes"].to_list() == [999.0]
-    # Current season still scored.
-    assert out.filter(pl.col("season") == CURRENT_SEASON).height == 1
-
-
-def test_backfill_minutes_rebuilds_historic_on_version_change(
-    tmp_path,
-) -> None:
-    """A new production version triggers a full historic rewrite."""
-    db_path, p_ver, p_frame, p_conn = _patched_backfill(
-        tmp_path, prod_version="3"
-    )
-    seed_conn = get_connection(db_path)
-    try:
-        seeded = pl.DataFrame(
-            [
-                {
-                    "season": "2024-25",
-                    "gw": 1,
-                    "element": 5,
-                    "opponent": 12,
-                    "p_zero": 0.0,
-                    "p_partial": 0.0,
-                    "p_sixty_plus": 1.0,
-                    "expected_minutes": 999.0,
-                    "model_version": "2",
-                    "prediction_kind": "backfill",
-                    "snapshot_captured_at": None,
-                }
-            ]
-        )
-        MINUTES_PREDICTION.upsert_current(seed_conn, seeded, "2024-25")
-    finally:
-        seed_conn.close()
-
-    with p_ver, p_frame, p_conn:
-        backfill_minutes()
-
-    conn = get_connection(db_path)
-    try:
-        out = MINUTES_PREDICTION.load(conn)
-    finally:
-        conn.close()
-    assert set(out["model_version"].to_list()) == {"3"}
-    historic = out.filter(pl.col("season") == "2024-25")
-    # Sentinel overwritten by a fresh score.
-    assert historic["expected_minutes"].to_list() != [999.0]
-
-
-def test_score_forward_minutes_freezes_already_played_gameweeks(
-    tmp_path, mocker: pytest_mock.MockerFixture
-) -> None:
-    """A played gameweek's stored forecast survives a fresh forward score.
-
-    GW1 has been played (player_week has a row for it), so
-    ``from_gw = last_played_gw + 1 == 2``. A forward row is pre-seeded at
-    GW1 -- below that floor -- as a sentinel. If ``replace_partition``
-    were called without ``gw_from`` (or with the wrong value), the delete
-    would remove every stored forward row for the season before
-    inserting only the fresh GW2 rows, destroying the GW1 sentinel. This
-    test fails under that regression and passes only when the freeze
-    rule is actually honoured.
-    """
-    db_path = tmp_path / "forward.duckdb"
-    connection = get_connection(db_path)
-    try:
-        PLAYER_WEEK.append(
-            connection,
-            pl.DataFrame(
-                {
-                    "season": [CURRENT_SEASON],
-                    "gw": [1],
-                    "element": [5],
-                    "name": ["Test Player"],
-                    "position": ["MID"],
-                    "team": ["Arsenal"],
-                    "bonus": [0],
-                    "minutes": [90],
-                    "round": [1],
-                    "total_points": [6],
-                    "value": [100],
-                }
-            ),
-        )
-        TEAM_FIXTURE.append(
-            connection,
-            pl.DataFrame(
-                {
-                    "season": [CURRENT_SEASON, CURRENT_SEASON],
-                    "gw": [1, 2],
-                    "team": ["Arsenal", "Arsenal"],
-                    "is_home": [True, False],
-                    "opposition": ["Everton", "Chelsea"],
-                    "kickoff_time": [
-                        datetime(2026, 8, 15, 15, 0),
-                        datetime(2026, 8, 22, 15, 0),
-                    ],
-                }
-            ),
-        )
-        PLAYER_SNAPSHOT.append(
-            connection,
-            pl.DataFrame(
-                {
-                    "season": [CURRENT_SEASON],
-                    "captured_at": [datetime(2026, 8, 20, 9, 0)],
-                    "element": [5],
-                    "value": [100],
-                    "team": ["Arsenal"],
-                    "position": ["MID"],
-                    "chance_of_playing_this_round": [100],
-                }
-            ),
-        )
-        # Sentinel: a forward row already stored for GW1 -- below the
-        # floor -- must survive untouched.
-        MINUTES_PREDICTION.append(
-            connection,
-            pl.DataFrame(
-                {
-                    "season": [CURRENT_SEASON],
-                    "gw": [1],
-                    "element": [5],
-                    "opponent": [8],
-                    "p_zero": [0.0],
-                    "p_partial": [0.0],
-                    "p_sixty_plus": [1.0],
-                    "expected_minutes": [999.0],
-                    "model_version": ["1"],
-                    "prediction_kind": ["forward"],
-                    "snapshot_captured_at": [datetime(2026, 8, 13, 9, 0)],
-                }
-            ),
-        )
-    finally:
-        connection.close()
-
-    chelsea = SimpleNamespace(id=8, code=8, name="Chelsea", short_name="CHE")
-    everton = SimpleNamespace(id=7, code=7, name="Everton", short_name="EVE")
-    mocker.patch(
-        "fantasy_football.modelling.minutes.get_production_model",
-        return_value=("2", _ConstantModel()),
-    )
-    mocker.patch(
-        "fantasy_football.modelling.minutes.get_connection",
-        side_effect=lambda: get_connection(db_path),
-    )
-    fpl_api = mocker.Mock()
-    fpl_api.get_teams.return_value = [chelsea, everton]
-    mocker.patch(
-        "fantasy_football.modelling.minutes.FplAPI", return_value=fpl_api
-    )
-
-    score_forward_minutes()
-
-    conn = get_connection(db_path)
-    try:
-        out = MINUTES_PREDICTION.load(conn)
-    finally:
-        conn.close()
-
-    gw1 = out.filter(pl.col("gw") == 1)
-    # The sentinel below the floor was never touched.
-    assert gw1["expected_minutes"].to_list() == [999.0]
-    assert gw1["model_version"].to_list() == ["1"]
-    # GW2 -- the unplayed fixture -- was freshly scored.
-    gw2 = out.filter(pl.col("gw") == 2)
-    assert gw2.height == 1
-    assert gw2["model_version"].to_list() == ["2"]
-    assert gw2["prediction_kind"].to_list() == ["forward"]
-
-
-def _model_frame_fixture(season: str = "2025-26") -> pl.DataFrame:
-    """Build a minimal model frame: identifiers plus every FEATURES column."""
-    rows = {
-        "season": [season, season],
-        "gw": [1, 1],
-        "element": [5, 6],
-        "opponent": [12, 12],
-    }
-    for feature in FEATURES:
-        rows[feature] = [1.0, 2.0] if feature != "position" else ["MID", "FWD"]
-    return pl.DataFrame(rows)
-
-
-def test_backfill_rows_are_stamped_as_backfill(
-    db: duckdb.DuckDBPyConnection, mocker: pytest_mock.MockerFixture
-) -> None:
-    """Backfilled rows must be distinguishable from forward forecasts."""
-    frame = _model_frame_fixture()
-    model = mocker.Mock()
-    model.predict_proba.return_value = np.tile(
-        [0.1, 0.2, 0.7], (frame.height, 1)
-    )
-    model.classes_ = MINUTES_BUCKETS
-
-    _score_and_store(db, frame, "2025-26", model, "3")
-
-    stored = MINUTES_PREDICTION.load(db)
-    assert set(stored["prediction_kind"].to_list()) == {"backfill"}
-    assert stored["snapshot_captured_at"].null_count() == stored.height
 
 
 def test_num_features_includes_history_and_cold_start() -> None:
@@ -890,11 +460,6 @@ def test_num_features_includes_history_and_cold_start() -> None:
 
 def test_build_feature_frame_emits_every_declared_feature() -> None:
     """Every name in FEATURES exists as a column on the built frame."""
-    from fantasy_football.modelling.minutes import (
-        FEATURES,
-        build_feature_frame,
-    )
-
     player_week = pl.DataFrame(
         {
             "season": ["2023-24", "2023-24"],
@@ -1073,46 +638,239 @@ def test_build_feature_frame_freezes_rolling_minutes_across_forward_gws() -> (
     assert all(by_gw[gw] == 65.0 for gw in forward_gws)
 
 
-def test_warn_unidentified_snapshot_reports_the_coverage_gap(caplog) -> None:
-    """Snapshot elements with no player_season row are counted and logged."""
-    snapshot = pl.DataFrame(
-        {
-            "season": ["2026-27"] * 3,
-            "element": [1, 2, 3],
-        }
+SEEDED_SEASON = "2024-25"
+
+
+def _seed_minutes_tables(connection: duckdb.DuckDBPyConnection) -> None:
+    """Write the five source tables ``MinutesPredictor`` reads.
+
+    Two Arsenal midfielders over two played gameweeks, plus an unplayed
+    GW3 fixture for the forward-data path to reach.
+    """
+    kickoffs = [datetime(2024, 8, 17, 15, 0), datetime(2024, 8, 24, 15, 0)]
+    PLAYER_WEEK.append(
+        connection,
+        pl.DataFrame(
+            {
+                "season": [SEEDED_SEASON] * 4,
+                "gw": [1, 1, 2, 2],
+                "element": [5, 6, 5, 6],
+                "name": ["A", "B", "A", "B"],
+                "position": ["MID"] * 4,
+                "team": ["Arsenal"] * 4,
+                "bonus": [0] * 4,
+                "minutes": [90, 0, 75, 20],
+                "round": [1, 1, 2, 2],
+                "total_points": [6, 0, 5, 1],
+                "value": [70, 50, 70, 50],
+            }
+        ),
     )
-    player_season = pl.DataFrame(
-        {
-            "season": ["2026-27", "2026-27"],
-            "element": [1, 2],
-            "player_code": [111, None],
-        },
-        schema_overrides={"player_code": pl.Int64},
+    PLAYER_MATCH.append(
+        connection,
+        pl.DataFrame(
+            {
+                "season": [SEEDED_SEASON] * 4,
+                "gw": [1, 1, 2, 2],
+                "element": [5, 6, 5, 6],
+                "opponent": [12, 12, 13, 13],
+                "is_home": [True, True, False, False],
+                "minutes": [90, 0, 75, 20],
+                "total_points": [6, 0, 5, 1],
+                "kickoff_time": [kickoffs[0]] * 2 + [kickoffs[1]] * 2,
+            }
+        ),
+    )
+    PLAYER_AVAILABILITY.append(
+        connection,
+        pl.DataFrame(
+            {
+                "season": [SEEDED_SEASON] * 4,
+                "gw": [1, 1, 2, 2],
+                "element": [5, 6, 5, 6],
+                "chance_of_playing_this_round": [100, 75, 100, 100],
+            }
+        ),
+    )
+    PLAYER_SEASON.append(
+        connection,
+        pl.DataFrame(
+            {
+                "season": [SEEDED_SEASON] * 2,
+                "element": [5, 6],
+                "player_code": [101, 102],
+                "web_name": ["A", "B"],
+                "first_name": ["Player", "Player"],
+                "second_name": ["A", "B"],
+                "position": ["MID", "MID"],
+                "team_code": [3, 3],
+                "region": [1, 1],
+                "birth_date": [date(1995, 1, 1)] * 2,
+                "team_join_date": [date(2020, 1, 1)] * 2,
+            },
+            schema_overrides={
+                "birth_date": pl.Date,
+                "team_join_date": pl.Date,
+            },
+        ),
+    )
+    TEAM_FIXTURE.append(
+        connection,
+        pl.DataFrame(
+            {
+                "season": [SEEDED_SEASON] * 3,
+                "gw": [1, 2, 3],
+                "team": ["Arsenal"] * 3,
+                "is_home": [True, False, True],
+                "opposition": ["Everton", "Chelsea", "Fulham"],
+                "kickoff_time": [*kickoffs, datetime(2024, 8, 31, 15, 0)],
+            }
+        ),
     )
 
-    with caplog.at_level(logging.WARNING):
-        missing = warn_unidentified_snapshot(
-            snapshot, player_season, "2026-27"
-        )
 
-    # Element 2 has a row but a null player_code, so it is unusable too.
-    assert missing == 2
-    assert "2 of 3" in caplog.text
+@pytest.fixture
+def predictor(db: duckdb.DuckDBPyConnection) -> MinutesPredictor:
+    """Return a ``MinutesPredictor`` bound to the seeded temporary database."""
+    _seed_minutes_tables(db)
+    return MinutesPredictor(
+        experiment_name="test-minutes",
+        params={"model": "logistic_regression"},
+        model_spec=MINUTES_SPEC,
+        connection=db,
+        fold_strategy=SeasonFoldStrategy(),
+    )
 
 
-def test_warn_unidentified_snapshot_silent_when_fully_covered(
-    caplog,
+def test_build_training_data_returns_a_scorable_model_frame(
+    predictor: MinutesPredictor,
 ) -> None:
-    """Full identity coverage logs nothing and reports zero."""
-    snapshot = pl.DataFrame({"season": ["2026-27"], "element": [1]})
-    player_season = pl.DataFrame(
-        {"season": ["2026-27"], "element": [1], "player_code": [111]}
+    """Training data comes back at match grain with the target and features."""
+    frame = predictor.build_training_data()
+
+    # One row per stored player_match row -- the target's grain.
+    assert frame.height == 4
+    for column in ["season", "gw", "element", "opponent", "minutes_bucket"]:
+        assert column in frame.columns
+    for feature in FEATURES:
+        assert feature in frame.columns
+    buckets = {
+        (row["element"], row["gw"]): row["minutes_bucket"]
+        for row in frame.iter_rows(named=True)
+    }
+    assert buckets[(5, 1)] == BUCKET_SIXTY_PLUS
+    assert buckets[(6, 1)] == BUCKET_ZERO
+    assert buckets[(6, 2)] == BUCKET_PARTIAL
+
+
+def test_build_forward_data_gives_every_forward_fixture_features(
+    predictor: MinutesPredictor,
+) -> None:
+    """Each unplayed fixture gets one feature row, keyed to its opponent."""
+    forward_fixtures = pl.DataFrame(
+        {
+            "season": [SEEDED_SEASON] * 2,
+            "gw": [3, 3],
+            "element": [5, 6],
+            "opponent": [14, 14],
+            "kickoff_time": [datetime(2024, 8, 31, 15, 0)] * 2,
+            "minutes": [None, None],
+            "position": ["MID", "MID"],
+            "team": ["Arsenal", "Arsenal"],
+            "value": [70, 50],
+            "chance_of_playing_this_round": [100, 100],
+        },
+        schema_overrides={"minutes": pl.Int64},
     )
 
-    with caplog.at_level(logging.WARNING):
-        missing = warn_unidentified_snapshot(
-            snapshot, player_season, "2026-27"
-        )
+    frame = predictor.build_forward_data(forward_fixtures)
 
-    assert missing == 0
-    assert caplog.text == ""
+    assert frame.height == 2
+    assert frame["gw"].to_list() == [3, 3]
+    assert frame["opponent"].to_list() == [14, 14]
+    for feature in FEATURES:
+        assert feature in frame.columns
+    # The rolling window is frozen at the last played match, not null.
+    rolling = {
+        row["element"]: row["avg_minutes_rolling_5"]
+        for row in frame.iter_rows(named=True)
+    }
+    assert rolling[5] == 82.5  # (90 + 75) / 2
+
+
+def test_fit_predict_fold_returns_minutes_metrics(
+    predictor: MinutesPredictor,
+) -> None:
+    """One fold scores into a MinutesMetrics carrying every boundary metric."""
+    df = _synthetic_model_df(["2022-23", "2023-24"])
+    fold = Fold(
+        train=df.filter(pl.col("season") == "2022-23"),
+        test=df.filter(pl.col("season") == "2023-24"),
+        test_key=FoldTestKey(season="2023-24"),
+    )
+
+    metrics = predictor.fit_predict_fold(fold)
+
+    assert isinstance(metrics, MinutesMetrics)
+    scores = metrics.as_dict()
+    for key in [
+        "logloss_appear",
+        "brier_appear",
+        "logloss_60",
+        "brier_60",
+        "e_min_mae",
+    ]:
+        assert key in scores
+    # Learnable signal -> better-than-chance appearance separation.
+    assert scores["logloss_appear"] < 0.69
+
+
+def test_train_final_fits_on_all_rows(predictor: MinutesPredictor) -> None:
+    """train_final returns a fitted pipeline that predicts probabilities."""
+    df = _synthetic_model_df(["2022-23", "2023-24"])
+
+    model = predictor.train_final(df)
+
+    assert isinstance(model, Pipeline)
+    proba = model.predict_proba(df.select(FEATURES).to_pandas())
+    assert proba.shape[0] == df.height
+
+
+def test_build_prediction_rows_matches_the_stored_table(
+    predictor: MinutesPredictor,
+) -> None:
+    """Rows come back in exactly the table's column order, ready to store.
+
+    ``build_prediction_rows`` ends in ``.select(table.columns)``, so a
+    column added to ``MINUTES_PREDICTION`` -- or dropped from
+    ``score_minutes`` -- breaks here rather than at write time.
+    """
+    frame = _scoring_frame()
+    model = _stub_model(
+        MINUTES_BUCKETS, np.tile([0.1, 0.2, 0.7], (frame.height, 1))
+    )
+
+    rows = predictor.build_prediction_rows(frame, model, "7", "backfill")
+
+    assert rows.columns == MINUTES_PREDICTION.columns
+    assert rows["model_version"].to_list() == ["7", "7"]
+    assert rows["prediction_kind"].to_list() == ["backfill", "backfill"]
+    assert rows["snapshot_captured_at"].null_count() == rows.height
+
+
+def test_build_prediction_rows_are_storable(
+    predictor: MinutesPredictor, db: duckdb.DuckDBPyConnection
+) -> None:
+    """The rows survive a real write, proving the schema actually lines up."""
+    frame = _scoring_frame()
+    model = _stub_model(
+        MINUTES_BUCKETS, np.tile([0.1, 0.2, 0.7], (frame.height, 1))
+    )
+
+    rows = predictor.build_prediction_rows(frame, model, "7", "forward")
+    MINUTES_PREDICTION.append(db, rows)
+
+    stored = MINUTES_PREDICTION.load(db)
+    assert stored.height == 2
+    expected = 0.2 * 30 + 0.7 * 75
+    assert stored["expected_minutes"].to_list() == [expected, expected]

@@ -236,12 +236,6 @@ def seasons_covering(
     -------
     tuple[str, ...]
         The intersection of the columns' coverage, sorted.
-
-    Raises
-    ------
-    KeyError
-        If a column is absent from the map. An unknown column is a
-        programming error and must not silently return no seasons.
     """
     names = list(columns)
     if not names:

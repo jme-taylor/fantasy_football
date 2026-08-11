@@ -162,6 +162,7 @@ def distinct(
     connection: duckdb.DuckDBPyConnection,
     table_name: str,
     column: str,
+    equals: dict[str, object] | None = None,
 ) -> set:
     """Return the distinct values of one column.
 
@@ -176,13 +177,20 @@ def distinct(
         The table to read.
     column : str
         The column whose distinct values are returned.
+    equals : dict[str, object] | None, optional
+        Column-to-value equality predicates restricting which rows are
+        considered, combined with AND. Defaults to None, meaning every
+        row.
 
     Returns
     -------
     set
         Distinct values, possibly including ``None``.
     """
-    rows = connection.execute(
-        f"SELECT DISTINCT {column} FROM {table_name}"
-    ).fetchall()
+    query = f"SELECT DISTINCT {column} FROM {table_name}"
+    params: list[object] = []
+    if equals:
+        query += " WHERE " + " AND ".join(f"{name} = ?" for name in equals)
+        params = list(equals.values())
+    rows = connection.execute(query, params).fetchall()
     return {row[0] for row in rows}

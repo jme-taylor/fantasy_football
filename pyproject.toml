@@ -25,7 +25,7 @@ dev = [
     "pytest>=8.3.5,<9",
     "pytest-mock>=3.14.0,<4",
     "pytest-cov>=6.1.1",
-    "ty>=0.0.1a5",
+    "ty==0.0.70",
     "ipykernel>=6.29.5",
     "matplotlib>=3.10.3",
     "seaborn>=0.13.2",
@@ -55,3 +55,6 @@ markers = [
     "integration: hits live network data sources; deselected by default",
 ]
 addopts = "-m 'not integration'"
+
+[tool.ty.src]
+exclude = ["notebooks"]

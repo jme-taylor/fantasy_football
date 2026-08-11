@@ -454,7 +454,7 @@ def _check_defender_coverage(scored: pl.DataFrame) -> None:
         f"{DEFENDER_POSITION} is served by {DEFENDER_REGISTERED_MODEL} "
         f"with no per-row fallback, so this is a coverage gap in the "
         f"forward scoring run, not a degradation to absorb. Re-run "
-        f"score_forward_defender_points for these gameweeks."
+        f"DefenderPointsPredictor.predict_forward for these gameweeks."
     )
 
 
