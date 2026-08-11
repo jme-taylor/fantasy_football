@@ -458,7 +458,11 @@ def stub_team_form(stub_view) -> Callable[..., pl.DataFrame]:
     def stub(
         connection, rows: dict, predictor: PositionPointsPredictor
     ) -> pl.DataFrame:
-        columns = predictor.OWN_TEAM_COLUMNS + predictor.OPPOSITION_COLUMNS
+        # A position may read the same measure for both clubs -- the
+        # midfielder reads all five -- and the view holds one copy.
+        columns = dict.fromkeys(
+            predictor.OWN_TEAM_COLUMNS + predictor.OPPOSITION_COLUMNS
+        )
         frame = pl.DataFrame(rows).with_columns(
             [
                 pl.lit(None, dtype=pl.Float64).alias(name)
