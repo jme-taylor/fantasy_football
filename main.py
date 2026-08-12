@@ -248,8 +248,8 @@ def main(
         load_player_snapshot(CURRENT_SEASON, connection)
         check_prior_season_loaded(connection, CURRENT_SEASON)
         create_rolling_points_data(CURRENT_SEASON)
-        build_fixtures_enriched(CURRENT_SEASON)
-        build_team_elo()
+        #build_fixtures_enriched(CURRENT_SEASON)
+        #build_team_elo()
 
         # TODO(JT): Add a single method to predictor to do all of these in
         # one. Five near-identical train/backfill/forward blocks now, one
