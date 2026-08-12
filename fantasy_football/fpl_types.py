@@ -301,28 +301,6 @@ class FplPlayerFixtures:
 
 
 @dataclass(config=config, frozen=True)
-class PlayerExpectedPoints:
-    """Class for storing a player's expected points.
-
-    Attributes
-    ----------
-    player : FplPlayer
-        The player's information
-    fixture : TeamFixture
-        The fixture the player is playing in
-    rolling_points : float
-        The player's rolling points average
-    expected_points : float
-        The player's expected points for the fixture
-    """
-
-    player: FplPlayer
-    fixture: TeamFixture
-    rolling_points: float
-    expected_points: float
-
-
-@dataclass(config=config, frozen=True)
 class PlayerGameweekExpectedPoints:
     """Class for storing a player's expected points over a gameweek.
 

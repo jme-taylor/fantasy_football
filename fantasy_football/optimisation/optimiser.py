@@ -1,18 +1,25 @@
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import polars as pl
 import pulp
 from pydantic import TypeAdapter
 
 from fantasy_football.constants import TRANSFORMED_DATA_FOLDER
-from fantasy_football.features.roster import current_roster
 from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
 )
+from fantasy_football.optimisation.inputs import (
+    forward_gameweeks,
+    load_optimiser_inputs,
+)
 from fantasy_football.optimisation.plan_report import write_plan_report
-from fantasy_football.storage.tables import PLAYER_WEEK
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +37,14 @@ DEFAULT_HORIZON = 8
 
 @dataclass
 class GameweekPlan:
-    """The optimiser's decisions for a single gameweek."""
+    """The optimiser's decisions for a single gameweek, keyed on element id."""
 
     gw: int
-    squad: list[str]
-    starting_xi: list[str]
-    captain: str
-    transfers_in: list[str]
-    transfers_out: list[str]
+    squad: list[int]
+    starting_xi: list[int]
+    captain: int
+    transfers_in: list[int]
+    transfers_out: list[int]
     hits: int
     free_transfers: int
     expected_points: float
@@ -52,8 +59,14 @@ class Plan:
     gameweeks: list[GameweekPlan] = field(default_factory=list)
     total_expected_points: float = 0.0
 
-    def to_frame(self) -> pl.DataFrame:
+    def to_frame(self, names: Mapping[int, str]) -> pl.DataFrame:
         """Return one row per gameweek summarising the plan.
+
+        Parameters
+        ----------
+        names : Mapping[int, str]
+            Element id to display name. Ids are the plan's identity; names
+            exist so the frame is readable.
 
         Returns
         -------
@@ -62,15 +75,19 @@ class Plan:
             columns for the squad, starting XI, captain, transfers, hits,
             free transfers, and expected points.
         """
+
+        def render(elements: list[int]) -> str:
+            return ", ".join(names.get(e, str(e)) for e in elements)
+
         return pl.DataFrame(
             [
                 {
                     "gw": g.gw,
-                    "squad": ", ".join(g.squad),
-                    "starting_xi": ", ".join(g.starting_xi),
-                    "captain": g.captain,
-                    "transfers_in": ", ".join(g.transfers_in),
-                    "transfers_out": ", ".join(g.transfers_out),
+                    "squad": render(g.squad),
+                    "starting_xi": render(g.starting_xi),
+                    "captain": names.get(g.captain, str(g.captain)),
+                    "transfers_in": render(g.transfers_in),
+                    "transfers_out": render(g.transfers_out),
                     "hits": g.hits,
                     "free_transfers": g.free_transfers,
                     "expected_points": g.expected_points,
@@ -80,96 +97,82 @@ class Plan:
         )
 
 
-def _load_prices(season: str, start_gw: int) -> dict[str, int]:
-    """Return each player's price (tenths) as of the latest GW <= start_gw.
+def _by_element(predictions: pl.DataFrame, column: str) -> dict:
+    """Return a column keyed on element id.
 
     Parameters
     ----------
-    season: str
-        The season whose player-week data to read.
-    start_gw: int
-        The pivot gameweek treated as "now".
+    predictions : pl.DataFrame
+        The optimiser's input rows, one per (element, gameweek).
+    column : str
+        The column to read.
 
     Returns
     -------
-    dict[str, int]
-        Mapping of player name to price in tenths of a million. Falls back to
-        the latest snapshot capture when the season has no player-week rows.
+    dict
+        Element id to that column's value. A player's price, name and
+        position are constant across the horizon, so collapsing their
+        gameweek rows loses nothing.
     """
-    merged = PLAYER_WEEK.load().filter(
-        (pl.col("season") == season) & (pl.col("gw") <= start_gw)
-    )
-    if merged.is_empty():
-        # Pre-season: no gameweek has been played, so player_week has nothing
-        # to price from. The FPL bootstrap snapshot carries the launch prices.
-        # This condition also fires mid-season if player_week is missing
-        # rows for gameweeks <= start_gw (a data-load gap), in which case the
-        # fallback quietly substitutes *current* snapshot prices for a *past*
-        # gameweek's prices -- hence the warning below.
-        logger.warning(
-            "No player_week rows for season=%s at or before start_gw=%d; "
-            "falling back to current snapshot prices from current_roster(). "
-            "If this is not pre-season GW1, prices may be stale relative to "
-            "the requested gameweek.",
-            season,
-            start_gw,
-        )
-        roster = current_roster(season)
-        return dict(
-            zip(
-                roster["name"].to_list(),
-                roster["value"].to_list(),
-                strict=True,
-            )
-        )
-    latest_gw = merged.group_by("name").agg(pl.col("gw").max().alias("gw"))
-    latest = merged.join(latest_gw, on=["name", "gw"], how="inner")
     return dict(
         zip(
-            latest["name"].to_list(),
-            latest["value"].to_list(),
+            predictions["element"].to_list(),
+            predictions[column].to_list(),
             strict=True,
         )
     )
 
 
 def _validate_initial_squad(
-    initial_squad: list[str],
+    initial_squad: list[int],
     predictions: pl.DataFrame,
-    prices: dict[str, int],
+    prices: dict[int, int],
+    names: Mapping[int, str],
     budget: int = BUDGET,
 ) -> None:
     """Validate a carried-in squad, raising ValueError with named offenders.
 
-    Checks, in order: data availability (price + prediction rows), squad size
-    and position split, the per-club cap, and the budget. Each failure raises
-    a ValueError naming the offending players, clubs, or value.
+    Checks, in order: data availability (price + prediction rows), duplicates,
+    squad size and position split, the per-club cap, and the budget. Each
+    failure raises a ValueError naming the offending players, clubs, or value.
+    Offenders are reported by name -- the squad is keyed on element id, but an
+    error message full of ids is not actionable.
 
     Parameters
     ----------
-    initial_squad : list[str]
-        The carried-in squad (player names).
+    initial_squad : list[int]
+        The carried-in squad (element ids).
     predictions : pl.DataFrame
         Prediction rows for the horizon (filtered to the optimised weeks).
-    prices : dict[str, int]
-        Player price in tenths of a million.
+    prices : dict[int, int]
+        Player price in tenths of a million, keyed on element id.
+    names : Mapping[int, str]
+        Element id to display name, for error messages.
     budget : int, optional
         The effective budget ceiling. Defaults to BUDGET (1000).
     """
-    known = set(predictions["name"].to_list())
+
+    def label(element: int) -> str:
+        return f"{names.get(element, '?')} ({element})"
+
+    known = set(predictions["element"].to_list())
     missing_pred = sorted(p for p in initial_squad if p not in known)
     missing_price = sorted(p for p in initial_squad if p not in prices)
     if missing_pred or missing_price:
         raise ValueError(
-            "initial_squad players missing data: "
-            f"no predictions for {missing_pred}, no price for {missing_price}"
+            "initial_squad players missing data: no predictions for "
+            f"{[label(p) for p in missing_pred]}, no price for "
+            f"{[label(p) for p in missing_price]}"
         )
 
     duplicates = sorted(
         {p for p in initial_squad if initial_squad.count(p) > 1}
     )
     if duplicates:
-        raise ValueError(f"initial_squad has duplicate players: {duplicates}")
+        raise ValueError(
+            f"initial_squad has duplicate players: "
+            f"{[label(p) for p in duplicates]}"
+        )
 
     if len(initial_squad) != SQUAD_SIZE:
         raise ValueError(
@@ -177,8 +180,10 @@ def _validate_initial_squad(
             f"got {len(initial_squad)}"
         )
 
-    pos = dict(zip(predictions["name"], predictions["position"], strict=False))
-    club = dict(zip(predictions["name"], predictions["team"], strict=False))
+    pos = dict(
+        zip(predictions["element"], predictions["position"], strict=False)
+    )
+    club = dict(zip(predictions["element"], predictions["team"], strict=False))
 
     counts = {position: 0 for position in SQUAD_BY_POSITION}
     for p in initial_squad:
@@ -207,10 +212,10 @@ def _validate_initial_squad(
 
 def _build_problem(
     predictions: pl.DataFrame,
-    prices: dict[str, int],
+    prices: dict[int, int],
     weeks: list[int],
     start_gw: int,
-    initial_squad: list[str] | None = None,
+    initial_squad: list[int] | None = None,
     free_transfers: int = 1,
     bench_weight: float = BENCH_WEIGHT,
     budget: int = BUDGET,
@@ -233,14 +238,14 @@ def _build_problem(
     Parameters
     ----------
     predictions : pl.DataFrame
-        Rows of (name, position, team, gw, predicted_points).
-    prices : dict[str, int]
-        Mapping of player name to price in tenths of a million.
+        Rows of (element, position, team, gw, predicted_points).
+    prices : dict[int, int]
+        Player price in tenths of a million, keyed on element id.
     weeks : list[int]
         Gameweek numbers to optimise over.
     start_gw : int
         The first gameweek of the horizon.
-    initial_squad : list[str] or None, optional
+    initial_squad : list[int] or None, optional
         Players already owned before the horizon starts. When provided,
         start_gw uses the carried-in squad as the baseline and applies
         the transfer identity (own = initial + buy - sell). When None,
@@ -262,26 +267,26 @@ def _build_problem(
         ``own``, ``start``, ``cap``, ``buy``, ``sell``, ``ft``,
         ``paid``, ``points``, and ``pos``.
     """
-    players = predictions["name"].unique().to_list()
-    pos = dict(zip(predictions["name"], predictions["position"], strict=False))
-    club = dict(zip(predictions["name"], predictions["team"], strict=False))
+    players = predictions["element"].unique().to_list()
+    pos = dict(
+        zip(predictions["element"], predictions["position"], strict=False)
+    )
+    club = dict(zip(predictions["element"], predictions["team"], strict=False))
     points = {
-        (row["name"], row["gw"]): row["predicted_points"]
+        (row["element"], row["gw"]): row["predicted_points"]
         for row in predictions.iter_rows(named=True)
     }
-    idx = {name: i for i, name in enumerate(players)}
 
     prob = pulp.LpProblem("fpl_optimisation", pulp.LpMaximize)
 
     own, start, cap, buy, sell = {}, {}, {}, {}, {}
     for t in weeks:
         for p in players:
-            i = idx[p]
-            own[p, t] = pulp.LpVariable(f"own_{i}_{t}", cat="Binary")
-            start[p, t] = pulp.LpVariable(f"start_{i}_{t}", cat="Binary")
-            cap[p, t] = pulp.LpVariable(f"cap_{i}_{t}", cat="Binary")
-            buy[p, t] = pulp.LpVariable(f"buy_{i}_{t}", cat="Binary")
-            sell[p, t] = pulp.LpVariable(f"sell_{i}_{t}", cat="Binary")
+            own[p, t] = pulp.LpVariable(f"own_{p}_{t}", cat="Binary")
+            start[p, t] = pulp.LpVariable(f"start_{p}_{t}", cat="Binary")
+            cap[p, t] = pulp.LpVariable(f"cap_{p}_{t}", cat="Binary")
+            buy[p, t] = pulp.LpVariable(f"buy_{p}_{t}", cat="Binary")
+            sell[p, t] = pulp.LpVariable(f"sell_{p}_{t}", cat="Binary")
 
     ft, paid, transfers = {}, {}, {}
     for t in weeks:
@@ -399,7 +404,7 @@ def _extract_plan(
     variables: dict,
     weeks: list[int],
     start_gw: int,
-    initial_squad: list[str] | None = None,
+    initial_squad: list[int] | None = None,
 ) -> Plan:
     """Convert solved MILP variables into a Plan.
 
@@ -411,7 +416,7 @@ def _extract_plan(
         The gameweeks that were optimised, in any order.
     start_gw: int
         The first gameweek of the horizon.
-    initial_squad: list[str] or None, optional
+    initial_squad: list[int] or None, optional
         The squad carried into the horizon. Controls whether start_gw transfers
         are reported: when None (free build), start_gw transfers are blanked
         (the opening squad is just "bought", not transferred into). When
@@ -429,8 +434,8 @@ def _extract_plan(
 
     def chosen(container, t):
         return [
-            name
-            for (name, week), var in container.items()
+            element
+            for (element, week), var in container.items()
             if week == t and round(var.value()) == 1
         ]
 
@@ -445,9 +450,9 @@ def _extract_plan(
         ins = [] if blank_start else chosen(buy, t)
         outs = [] if blank_start else chosen(sell, t)
         hits = int(round(paid[t].value())) * HIT_COST
-        xi_pts = sum(points.get((n, t), 0.0) for n in xi)
+        xi_pts = sum(points.get((e, t), 0.0) for e in xi)
         captain_pts = points.get((captain, t), 0.0)
-        bench_pts = sum(points.get((n, t), 0.0) for n in squad if n not in xi)
+        bench_pts = sum(points.get((e, t), 0.0) for e in squad if e not in xi)
         expected = xi_pts + captain_pts + BENCH_WEIGHT * bench_pts - hits
         total += expected
         gameweeks.append(
@@ -473,19 +478,19 @@ def _extract_plan(
 
 def _to_gameweek_plans(
     plan: Plan,
-    player_id_map: dict[str, int],
-    points: dict[tuple[str, int], float],
+    names: Mapping[int, str],
+    points: dict[tuple[int, int], float],
 ) -> list[GameWeekPlan]:
-    """Convert an internal name-based Plan into typed GameWeekPlans.
+    """Convert an internal element-keyed Plan into typed GameWeekPlans.
 
     Parameters
     ----------
     plan : Plan
-        The solved internal plan (player names).
-    player_id_map : dict[str, int]
-        Mapping of player name to FPL element id.
-    points : dict[tuple[str, int], float]
-        Mapping of (name, gw) to predicted points.
+        The solved internal plan (element ids).
+    names : Mapping[int, str]
+        Mapping of element id to display name.
+    points : dict[tuple[int, int], float]
+        Mapping of (element, gw) to predicted points.
 
     Returns
     -------
@@ -496,16 +501,16 @@ def _to_gameweek_plans(
     Raises
     ------
     KeyError
-        If a planned player has no id in ``player_id_map``.
+        If a planned player has no name in ``names``.
     """
 
-    def to_player(name: str, gw: int) -> PlayerGameweekExpectedPoints:
-        if name not in player_id_map:
-            raise KeyError(f"No player_id for {name!r}")
+    def to_player(element: int, gw: int) -> PlayerGameweekExpectedPoints:
+        if element not in names:
+            raise KeyError(f"No name for element {element}")
         return PlayerGameweekExpectedPoints(
-            player_id=player_id_map[name],
-            player_name=name,
-            expected_points=points.get((name, gw), 0.0),
+            player_id=element,
+            player_name=names[element],
+            expected_points=points.get((element, gw), 0.0),
         )
 
     plans: list[GameWeekPlan] = []
@@ -513,11 +518,11 @@ def _to_gameweek_plans(
         plans.append(
             GameWeekPlan(
                 gameweek=g.gw,
-                squad=[to_player(n, g.gw) for n in g.squad],
-                starting_xi=[to_player(n, g.gw) for n in g.starting_xi],
+                squad=[to_player(e, g.gw) for e in g.squad],
+                starting_xi=[to_player(e, g.gw) for e in g.starting_xi],
                 captain=to_player(g.captain, g.gw),
-                transfers_in=[to_player(n, g.gw) for n in g.transfers_in],
-                transfers_out=[to_player(n, g.gw) for n in g.transfers_out],
+                transfers_in=[to_player(e, g.gw) for e in g.transfers_in],
+                transfers_out=[to_player(e, g.gw) for e in g.transfers_out],
                 hits=g.hits,
                 free_transfers=g.free_transfers,
                 expected_points=g.expected_points,
@@ -526,31 +531,88 @@ def _to_gameweek_plans(
     return plans
 
 
+def _resolve_weeks(
+    season: str,
+    start_gw: int,
+    horizon: int,
+    connection: "DuckDBPyConnection | None",
+) -> list[int]:
+    """Return the horizon's gameweeks, checking start_gw against the data.
+
+    Forward predictions always begin at the gameweek after the last played
+    one, so ``start_gw`` is not free: it has to be the first gameweek that
+    has been predicted for. A team file naming any other gameweek is stale
+    (or the pipeline has not been re-run), and silently optimising the wrong
+    week is worse than refusing to.
+
+    Parameters
+    ----------
+    season : str
+        The season being optimised.
+    start_gw : int
+        The requested first gameweek.
+    horizon : int
+        Number of gameweeks to plan from start_gw inclusive.
+    connection : duckdb.DuckDBPyConnection | None
+        An open connection, or None to open one.
+
+    Returns
+    -------
+    list[int]
+        The gameweeks to optimise.
+
+    Raises
+    ------
+    ValueError
+        When nothing has been predicted, or start_gw is not the first
+        predicted gameweek.
+    """
+    available = forward_gameweeks(season, connection)
+    if not available:
+        raise ValueError(
+            f"No forward predictions stored for {season}. Run the points "
+            f"models' predict_forward before optimising."
+        )
+    if start_gw != available[0]:
+        raise ValueError(
+            f"start_gw {start_gw} is not the first predicted gameweek "
+            f"({available[0]}) for {season}. Forward predictions start after "
+            f"the last played gameweek, so either the team file is for a "
+            f"gameweek that has already been played, or the pipeline needs "
+            f"re-running."
+        )
+    return [
+        gw for gw in range(start_gw, start_gw + horizon) if gw in available
+    ]
+
+
 def optimise_plan(
     season: str,
     start_gw: int,
     horizon: int | None = None,
-    initial_squad: list[str] | None = None,
+    initial_squad: list[int] | None = None,
     free_transfers: int = 1,
     bank: int = 0,
+    connection: "DuckDBPyConnection | None" = None,
 ) -> list[GameWeekPlan]:
     """Optimise the squad/XI/captain/transfers over a future horizon.
 
-    Loads predictions and prices, builds and solves the MILP, then writes
-    and returns the plans.
+    Loads predictions and prices from the database, builds and solves the
+    MILP, then writes and returns the plans.
 
     Parameters
     ----------
     season: str
-        The season to optimise (e.g. "2025-26").
+        The season to optimise (e.g. "2026-27").
     start_gw: int
-        The gameweek treated as "now"; the first gameweek of the horizon.
+        The gameweek treated as "now"; the first gameweek of the horizon. Must
+        be the first gameweek with forward predictions.
     horizon: int | None
         Number of gameweeks to plan from start_gw inclusive. Defaults to
         DEFAULT_HORIZON, clamped to the gameweeks available in predictions.
-    initial_squad: list[str] | None
-        Required when start_gw > 1: the team carried into that gameweek.
-        Ignored at GW1 (free build).
+    initial_squad: list[int] | None
+        Required when start_gw > 1: the element ids carried into that
+        gameweek. Ignored at GW1 (free build).
     free_transfers: int
         Free transfers available at start_gw (1..MAX_FREE_TRANSFERS).
         Ignored at start_gw == 1 (a free build always opens with one free transfer).
@@ -558,6 +620,8 @@ def optimise_plan(
         Money in the bank (tenths of a million) added to the carried-in
         squad's value to form the budget. Ignored for a free build
         (start_gw == 1). Defaults to 0.
+    connection: duckdb.DuckDBPyConnection | None
+        An open connection. When None, one is opened per table read.
 
     Returns
     -------
@@ -584,38 +648,29 @@ def optimise_plan(
             "(the team carried into that gameweek)."
         )
 
-    predictions = pl.read_csv(
-        TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv")
-    )
     if horizon is None:
         horizon = DEFAULT_HORIZON
-    weeks = [
-        gw
-        for gw in range(start_gw, start_gw + horizon)
-        if gw in predictions["gw"].to_list()
-    ]
-    if not weeks:
-        raise ValueError(
-            f"No prediction rows for gameweeks "
-            f"{start_gw}..{start_gw + horizon - 1}"
-        )
-    predictions = predictions.filter(pl.col("gw").is_in(weeks))
-    prices = _load_prices(season, start_gw)
+    weeks = _resolve_weeks(season, start_gw, horizon, connection)
+    predictions = load_optimiser_inputs(season, weeks, connection)
+
+    # TODO(JT): prices are the current market value, so the optimiser assumes
+    # a player can be sold for what they now cost. FPL sells at purchase price
+    # plus half the profit, so any squad player who has risen is worth less
+    # than this thinks and the budget is over-estimated. Fixing it needs
+    # per-player purchase prices carried in the team file.
+    prices = _by_element(predictions, "value")
+    names = _by_element(predictions, "name")
+    positions = _by_element(predictions, "position")
+
     if initial_squad is not None:
         # Any squad player missing a price is caught with a clear error in
         # _validate_initial_squad below; the guard just avoids a KeyError here.
         budget = sum(prices[p] for p in initial_squad if p in prices) + bank
-        _validate_initial_squad(initial_squad, predictions, prices, budget)
+        _validate_initial_squad(
+            initial_squad, predictions, prices, names, budget
+        )
     else:
         budget = BUDGET
-    missing = set(predictions["name"].to_list()) - set(prices)
-    if missing:
-        logger.warning(
-            "Dropping %d players with no price: %s",
-            len(missing),
-            sorted(missing)[:5],
-        )
-        predictions = predictions.filter(~pl.col("name").is_in(list(missing)))
 
     prob, variables = _build_problem(
         predictions,
@@ -631,15 +686,8 @@ def optimise_plan(
         raise RuntimeError(f"Solver finished with status {status!r}")
     plan = _extract_plan(variables, weeks, start_gw, initial_squad)
 
-    player_id_map = dict(
-        zip(
-            predictions["name"].to_list(),
-            predictions["player_id"].to_list(),
-            strict=True,
-        )
-    )
     points = variables["points"]
-    gameweek_plans = _to_gameweek_plans(plan, player_id_map, points)
+    gameweek_plans = _to_gameweek_plans(plan, names, points)
 
     TRANSFORMED_DATA_FOLDER.mkdir(exist_ok=True, parents=True)
     adapter = TypeAdapter(GameWeekPlan)
@@ -648,13 +696,6 @@ def optimise_plan(
         for gw_plan in gameweek_plans:
             f.write(adapter.dump_json(gw_plan))
             f.write(b"\n")
-    positions = dict(
-        zip(
-            predictions["name"].to_list(),
-            predictions["position"].to_list(),
-            strict=True,
-        )
-    )
     write_plan_report(
         gameweek_plans,
         positions,

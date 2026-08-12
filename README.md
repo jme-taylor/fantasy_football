@@ -10,8 +10,10 @@ A personal project to automatically pick my Fantasy Premier League (FPL) team. T
 
 This is an early-stage work in progress. `main.py` is the entry point that
 refreshes the current season's data into a DuckDB store, derives feature
-tables, trains the minutes-played model, predicts points, and runs the
-optimiser. The package is organised by domain:
+views, trains the minutes-played and per-position points models, writes their
+forward predictions to the database, and runs the optimiser on top of them.
+Mid-season the optimiser needs a team file naming the squad being carried in;
+without one it logs and skips, leaving the rest of the run intact. The package is organised by domain:
 
 ```text
 fantasy_football/
@@ -47,24 +49,26 @@ fantasy_football/
 │   ├── fixtures.py     — load team-fixture rows (historic Vaastav, current FPL API) into team_fixture
 │   └── seasons.py      — season-string conversions and data-source routing
 ├── features/           — derive model-ready features
-│   ├── transformation.py — transform player_week into the rolling/feature dataset
-│   ├── fixtures.py     — build the enriched fixtures table used as model features
-│   ├── elo.py          — build team Elo ratings (scraped via ScraperFC ClubElo)
+│   ├── naming.py       — shared rolling-column and identity naming helpers
+│   ├── roster.py       — who is in the league now, with club, position and price
+│   ├── match_form.py   — per-appearance rolling form views
+│   ├── team_form.py    — per-match team form views
+│   ├── elo.py          — build team Elo ratings (scraped via ScraperFC ClubElo);
+│                          not yet wired into the position models
 │   ├── valuation.py    — team-value share and positional value rank features
 │   ├── availability.py — rolling minutes, chance-of-playing and positional-availability features
 │   └── views.py        — register every session-scoped feature view
-├── modelling/          — train, predict, evaluate
-│   ├── models.py       — per-position points models behind a shared interface
+├── modelling/          — train and predict
 │   ├── minutes.py      — end-to-end minutes-played classifier (features, CV,
 │                          MLflow registry) + production-model backfill to DB
 │   ├── defender.py     — end-to-end defender points model (features, CV,
 │                          MLflow registry, backfill and forward scoring)
+│   ├── goalkeeper.py, midfielder.py, forwards.py — the same for the other positions
 │   ├── folds.py        — expanding-window CV folds by season or gameweek
 │   ├── registry.py     — load the alias-promoted model from MLflow
-│   ├── prediction.py   — apply the models to produce per-(player, gameweek) predictions
-│   ├── metrics.py      — regression metrics (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
-│   └── evaluation.py   — replay historical gameweeks one step ahead and log to MLflow
+│   └── metrics.py      — regression metrics (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
 └── optimisation/       — build the plan
+    ├── inputs.py       — assemble the optimiser's inputs from points_prediction + roster
     ├── optimiser.py    — linear-programming optimiser → squad, XI, captain, transfers
     ├── plan_report.py  — format the optimiser output into readable decisions
     └── team_input.py   — load and resolve a carried-in squad
@@ -129,9 +133,11 @@ current season is upserted (delete-then-insert) every run so late corrections,
 new gameweeks, and injury news refresh cleanly. `main(rebuild=True)` drops and
 reloads everything as a recovery escape hatch.
 
-A handful of derived feature tables (`rolling_points.csv`,
-`fixtures_enriched.csv`, `team_elo.csv`, `predictions.csv`) are still written as
-CSVs under `data/transformed/`.
+The optimiser reads `points_prediction` directly: forward-kind rows summed
+from match to gameweek grain, joined onto the current roster for name, club,
+position and price. Its own output (`optimisation_plan.jsonl` and
+`optimisation_plan.md`) is written under `data/transformed/`, alongside the
+`team_elo.csv` cache.
 
 ## Data sources
 
@@ -260,7 +266,7 @@ and swallowed. This is deliberate fail-fast behaviour, but it has a sharp
 first-run consequence: `backfill_minutes()` calls `get_production_model()`,
 which raises if the `production` alias has never been set, so a fresh clone
 with no manually-promoted alias will abort `main()` on its very first run,
-before `predict_points` executes. The first run after cloning must include a
+before the points models run. The first run after cloning must include a
 manual promotion of a trained version to `production` in the MLflow UI (see
 [Registry, promotion and backfill](#registry-promotion-and-backfill)) before
 `main()` can complete.
@@ -338,16 +344,9 @@ subsequent run works. Failing here is deliberate: the optimiser needs
 five defenders, so continuing would hand it an infeasible squad problem
 far from the cause.
 
-The evaluation replay itself is unaffected: it goes through `_predict`
-with `is_backtest=True`, which skips the liveness check and keeps
-scoring defenders with the rolling-points formula, not the stored
-model. See the `TODO (JT)` above `run_evaluation()`'s call site in
-`main.py` for why the harness does not yet exercise the defender model
-itself. But `evaluate=True` only adds that replay as an extra step
-before prediction — `main.py` still calls `predict_points()`
-unconditionally afterwards, so on a fresh, unpromoted database
-`main(evaluate=True)` hits the same hard-fail as `main(evaluate=False)`.
-It just gets there later, after paying for the full evaluation replay.
+The same applies to every other position: each is served from its own
+registered model's forward predictions, and the optimiser's input loader
+fails when a whole position has none for a gameweek in the horizon.
 
 ## Roadmap
 
@@ -365,7 +364,7 @@ The high-level milestones are:
   * [X] Choose regression metrics suited to low, zero-inflated FPL points (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
   * [X] Stand up MLflow tracking with simple start/stop scripts
   * [X] Baseline-score each position's model using the current rolling-points formula
-  * [X] Wire evaluation logging into the main pipeline run (`main(evaluate=True)`)
+  * [ ] Replace the removed rolling-origin replay with a harness that scores all four position models on one scale
 * [~] Build a minutes-played model to feed appearance probabilities into the points models
   * [X] Per-fixture `player_match` table and point-in-time `player_availability` table
   * [X] Availability / valuation features
@@ -378,11 +377,12 @@ The high-level milestones are:
 * [ ] Dig into the worst-performing position and investigate its scoring errors
 * [ ] Identify and incorporate additional features to improve the model
 
-The current baseline (the rolling-points formula, scored per position over all
-historical gameweeks) only narrowly beats predicting each player's recent
-average — its value is in *ranking* players (Spearman ≈ 0.6–0.8 by position)
-rather than predicting exact point totals. Improving on that baseline is the
-focus of the next milestones.
+The rolling-points formula that used to serve as the baseline (scored per
+position over all historical gameweeks) only narrowly beat predicting each
+player's recent average — its value was in *ranking* players (Spearman ≈
+0.6–0.8 by position) rather than predicting exact point totals. It has been
+removed now that every position is served by its own model; beating that
+recorded bar is the focus of the next milestones.
 
 ### Looking further ahead
 
@@ -441,26 +441,24 @@ uv run python main.py
 * `rebuild` (default `False`) — drop and reload every season from scratch
   (full refresh / recovery escape hatch). The default loads only missing
   immutable seasons and upserts the current season.
-* `team_file` — path to a name-authored team JSON; optimisation then carries
-  in that squad from its gameweek instead of free-building.
-* `evaluate` (default `False`) — run the rolling-origin model evaluation
-  (logging metrics to MLflow) before predicting and optimising.
+* `team_file` — path to a name-authored team JSON naming the squad carried
+  into the upcoming gameweek. Required to optimise once the season is under
+  way; without one, mid-season runs log and skip optimisation, leaving the
+  ingest, training and prediction work of that run intact. At GW1 the
+  optimiser free-builds and needs no team file.
 
 ### Evaluating the models with MLflow
 
-Each position (GK, DEF, MID, FWD) has its own points model. The evaluation
-harness replays every historical gameweek one step ahead, compares each
-model's predictions to the actual points scored, and records the metrics in
-MLflow — one experiment per position (`gk-points-model`, `def-points-model`,
-`mid-points-model`, `fwd-points-model`). The minutes model logs to its own
-experiment (`minutes_played_classification`).
+Each position (GK, DEF, MID, FWD) has its own points model, and each is
+evaluated by its own expanding-window cross-validation during training,
+logged to MLflow — one experiment per position (`gk-points-model`,
+`def-points-model`, `mid-points-model`, `fwd-points-model`). The minutes
+model logs to its own experiment (`minutes_played_classification`).
 
-Run an evaluation (this writes runs to a local SQLite store at
-`models/mlflow.db`):
-
-```bash
-uv run python -m fantasy_football.modelling.evaluation
-```
+There is currently no harness that scores the four positions against each
+other on one scale; the rolling-origin replay that used to do so measured
+the deleted rolling-points formula rather than the models, and was removed
+with it.
 
 Browse the results in the MLflow UI using the helper scripts:
 

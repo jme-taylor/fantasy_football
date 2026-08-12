@@ -11,11 +11,24 @@ from fantasy_football.optimisation.plan_report import (
     write_plan_report,
 )
 
+# Stable element id per name, assigned on first use. The report keys on
+# ids, so the tests need a name-to-id map they can build positions from.
+_IDS: dict[str, int] = {}
+
+
+def _id(name: str) -> int:
+    return _IDS.setdefault(name, len(_IDS) + 1)
+
 
 def _p(name: str, pts: float) -> PlayerGameweekExpectedPoints:
     return PlayerGameweekExpectedPoints(
-        player_id=hash(name) % 1000, player_name=name, expected_points=pts
+        player_id=_id(name), player_name=name, expected_points=pts
     )
+
+
+def _by_id(positions: dict[str, str]) -> dict[int, str]:
+    """Rekey a name-to-position map onto element ids."""
+    return {_id(name): position for name, position in positions.items()}
 
 
 def test_ordered_rows_groups_by_position_then_points_desc() -> None:
@@ -26,12 +39,14 @@ def test_ordered_rows_groups_by_position_then_points_desc() -> None:
         _p("Mid1", 9.0),
         _p("Mid2", 2.0),
     ]
-    positions = {
-        "Striker": "FWD",
-        "Keeper": "GK",
-        "Mid1": "MID",
-        "Mid2": "MID",
-    }
+    positions = _by_id(
+        {
+            "Striker": "FWD",
+            "Keeper": "GK",
+            "Mid1": "MID",
+            "Mid2": "MID",
+        }
+    )
 
     rows = _ordered_rows(players, positions)
 
@@ -44,9 +59,9 @@ def test_ordered_rows_groups_by_position_then_points_desc() -> None:
 
 
 def test_ordered_rows_missing_position_renders_as_question_mark() -> None:
-    """A name absent from the positions map gets a '?' position and sorts last."""
+    """An id absent from the positions map gets '?' and sorts last."""
     players = [_p("Known", 5.0), _p("Unknown", 9.0)]
-    positions = {"Known": "MID"}
+    positions = _by_id({"Known": "MID"})
 
     rows = _ordered_rows(players, positions)
 
@@ -56,7 +71,7 @@ def test_ordered_rows_missing_position_renders_as_question_mark() -> None:
     ]
 
 
-def _gw_plan() -> tuple[GameWeekPlan, dict[str, str]]:
+def _gw_plan() -> tuple[GameWeekPlan, dict[int, str]]:
     salah = _p("Salah", 8.2)
     vicario = _p("Vicario", 4.1)
     vvd = _p("Van Dijk", 5.4)
@@ -81,24 +96,26 @@ def _gw_plan() -> tuple[GameWeekPlan, dict[str, str]]:
         _p("Enzo", 5.8),
     ]
     squad = xi + [bench_gk, bench_def, bench_mid, bench_fwd]
-    positions = {
-        "Vicario": "GK",
-        "Van Dijk": "DEF",
-        "Munoz": "DEF",
-        "Timber": "DEF",
-        "Salah": "MID",
-        "Kudus": "MID",
-        "Semenyo": "MID",
-        "Gibbs-White": "MID",
-        "Mateta": "FWD",
-        "Gyokeres": "FWD",
-        "Enzo": "MID",
-        "King": "GK",
-        "Lewis": "DEF",
-        "Smith Rowe": "MID",
-        "Pedro": "FWD",
-        "Milenkovic": "DEF",
-    }
+    positions = _by_id(
+        {
+            "Vicario": "GK",
+            "Van Dijk": "DEF",
+            "Munoz": "DEF",
+            "Timber": "DEF",
+            "Salah": "MID",
+            "Kudus": "MID",
+            "Semenyo": "MID",
+            "Gibbs-White": "MID",
+            "Mateta": "FWD",
+            "Gyokeres": "FWD",
+            "Enzo": "MID",
+            "King": "GK",
+            "Lewis": "DEF",
+            "Smith Rowe": "MID",
+            "Pedro": "FWD",
+            "Milenkovic": "DEF",
+        }
+    )
     plan = GameWeekPlan(
         gameweek=5,
         squad=squad,

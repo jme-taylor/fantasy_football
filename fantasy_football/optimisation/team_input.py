@@ -1,11 +1,14 @@
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import polars as pl
 from pydantic import ConfigDict, TypeAdapter
 from pydantic.dataclasses import dataclass
 
-from fantasy_football.storage.tables import PLAYER_WEEK
+from fantasy_football.features.roster import current_roster
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 config = ConfigDict(extra="forbid")
 
@@ -49,18 +52,27 @@ def load_team_file(path: "Path | str") -> TeamFile:
     return TypeAdapter(TeamFile).validate_python(data)
 
 
-def resolve_names_to_ids(names: list[str], season: str) -> list[int]:
+def resolve_names_to_ids(
+    names: list[str],
+    season: str,
+    connection: "DuckDBPyConnection | None" = None,
+) -> list[int]:
     """Map full player names to FPL element ids for a season.
 
-    The mapping is built from that season's player-week data (the ``name``
-    and ``element`` columns).
+    Names resolve against the current roster -- the same set of players the
+    optimiser can buy -- so a name that resolves is always a player the plan
+    can actually hold. Resolving against played gameweeks instead would
+    accept a name the optimiser has no price for, and reject a summer signing
+    who has not played yet.
 
     Parameters
     ----------
     names : list[str]
-        Full player names as they appear in the data's ``name`` column.
+        Full player names as they appear in the roster's ``name`` column.
     season : str
-        Season to read, e.g. ``"2025-26"``.
+        Season to read, e.g. ``"2026-27"``.
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. When None, one is opened per table read.
 
     Returns
     -------
@@ -72,10 +84,10 @@ def resolve_names_to_ids(names: list[str], season: str) -> list[int]:
     ValueError
         If any name has no row, or maps to more than one distinct element.
     """
-    merged = PLAYER_WEEK.load().filter(pl.col("season") == season)
+    roster = current_roster(season, connection)
     name_to_ids: dict[str, set[int]] = {}
     for name, element in zip(
-        merged["name"].to_list(), merged["element"].to_list(), strict=True
+        roster["name"].to_list(), roster["element"].to_list(), strict=True
     ):
         name_to_ids.setdefault(name, set()).add(element)
 
@@ -89,38 +101,3 @@ def resolve_names_to_ids(names: list[str], season: str) -> list[int]:
             f"ambiguous={ambiguous}"
         )
     return [next(iter(name_to_ids[n])) for n in names]
-
-
-def resolve_ids_to_names(
-    ids: list[int], predictions: pl.DataFrame
-) -> list[str]:
-    """Map FPL element ids to optimiser names via predictions.
-
-    Parameters
-    ----------
-    ids : list[int]
-        FPL element ids.
-    predictions : pl.DataFrame
-        Prediction rows carrying ``player_id`` and ``name`` columns.
-
-    Returns
-    -------
-    list[str]
-        The name for each id, in order.
-
-    Raises
-    ------
-    ValueError
-        If any id is absent from ``predictions``.
-    """
-    id_to_name = dict(
-        zip(
-            predictions["player_id"].to_list(),
-            predictions["name"].to_list(),
-            strict=True,
-        )
-    )
-    missing = sorted(i for i in ids if i not in id_to_name)
-    if missing:
-        raise ValueError(f"ids missing from predictions: {missing}")
-    return [id_to_name[i] for i in ids]

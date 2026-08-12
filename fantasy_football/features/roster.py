@@ -7,9 +7,14 @@ rest of the pipeline keys on -- the same string ``player_week.name`` carries,
 so a roster-derived name joins cleanly against player-week-derived ones.
 """
 
+from typing import TYPE_CHECKING
+
 import polars as pl
 
 from fantasy_football.storage.tables import PLAYER_SEASON, PLAYER_SNAPSHOT
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 ROSTER_SCHEMA: dict[str, pl.DataType] = {
     "name": pl.Utf8,
@@ -41,13 +46,17 @@ def latest_snapshot(snapshot: pl.DataFrame, season: str) -> pl.DataFrame:
     return seasonal.filter(pl.col("captured_at") == newest)
 
 
-def current_roster(season: str) -> pl.DataFrame:
+def current_roster(
+    season: str, connection: "DuckDBPyConnection | None" = None
+) -> pl.DataFrame:
     """Return this season's players with their club, position and price.
 
     Parameters
     ----------
     season : str
         The season to build a roster for.
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. When None, one is opened per table read.
 
     Returns
     -------
@@ -59,11 +68,11 @@ def current_roster(season: str) -> pl.DataFrame:
         back to player-week-derived data.
     """
     empty = pl.DataFrame(schema=ROSTER_SCHEMA)
-    snapshot = latest_snapshot(PLAYER_SNAPSHOT.load(), season)
+    snapshot = latest_snapshot(PLAYER_SNAPSHOT.load(connection), season)
     if snapshot.is_empty():
         return empty
     identity = (
-        PLAYER_SEASON.load()
+        PLAYER_SEASON.load(connection)
         .filter(pl.col("season") == season)
         .select(
             "season",

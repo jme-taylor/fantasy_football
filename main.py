@@ -2,9 +2,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import polars as pl
-
-from fantasy_football.constants import CURRENT_SEASON, TRANSFORMED_DATA_FOLDER
+from fantasy_football.constants import CURRENT_SEASON
 from fantasy_football.extraction.availability import (
     load_player_availability_data,
 )
@@ -27,13 +25,10 @@ from fantasy_football.extraction.seasons import (
     source_for_season,
 )
 from fantasy_football.extraction.snapshot import load_player_snapshot
-from fantasy_football.features.elo import build_team_elo
-from fantasy_football.features.fixtures import build_fixtures_enriched
 from fantasy_football.features.match_form import (
     covered_seasons,
     goalkeeper_covered_seasons,
 )
-from fantasy_football.features.transformation import create_rolling_points_data
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.modelling.defender import (
     DEFENDER_SPEC,
@@ -59,11 +54,10 @@ from fantasy_football.modelling.minutes import (
     MINUTES_SPEC,
     MinutesPredictor,
 )
-from fantasy_football.modelling.prediction import predict_points
+from fantasy_football.optimisation.inputs import forward_gameweeks
 from fantasy_football.optimisation.optimiser import optimise_plan
 from fantasy_football.optimisation.team_input import (
     load_team_file,
-    resolve_ids_to_names,
     resolve_names_to_ids,
 )
 from fantasy_football.storage.database import get_connection, reset_database
@@ -211,7 +205,6 @@ def main(
     *,
     rebuild: bool = False,
     team_file: str | None = None,
-    evaluate: bool = False,
 ) -> None:
     """Download FPL data, transform it, predict points, and optimise a plan.
 
@@ -222,13 +215,9 @@ def main(
         recovery escape hatch). Defaults to False, which loads only missing
         immutable seasons and upserts the current season.
     team_file : str | None, optional
-        Path to a name-authored team JSON. When given, optimisation carries
-        in that squad from its gameweek instead of free-building. Defaults to
-        None.
-    evaluate : bool, optional
-        When True, run the rolling-origin model evaluation (logging metrics
-        to MLflow) before predicting and optimising. Fatal: a failed
-        evaluation aborts the run. Defaults to False.
+        Path to a name-authored team JSON. Required to optimise once the
+        season is under way: the optimiser needs the squad being carried in.
+        Defaults to None.
     """
     configure_logging()
     # A rebuild drops and recreates every table, so it is the cure for
@@ -247,9 +236,6 @@ def main(
         load_player_identity_data(connection, CURRENT_SEASON)
         load_player_snapshot(CURRENT_SEASON, connection)
         check_prior_season_loaded(connection, CURRENT_SEASON)
-        create_rolling_points_data(CURRENT_SEASON)
-        #build_fixtures_enriched(CURRENT_SEASON)
-        #build_team_elo()
 
         # TODO(JT): Add a single method to predictor to do all of these in
         # one. Five near-identical train/backfill/forward blocks now, one
@@ -322,40 +308,39 @@ def main(
     finally:
         connection.close()
 
-    # TODO (JT): run_evaluation replays history through _predict, which
-    # produces gameweek-grain formula predictions -- it does not
-    # exercise the defender model or the forward feature-carrying
-    # chain, so the expected_minutes train/serve skew noted in
-    # modelling/defender.py is invisible to it. Wiring it up means
-    # reworking the replay harness, not bolting onto it.
     team = load_team_file(team_file) if team_file is not None else None
-    as_of_gw = team.gameweek - 1 if team is not None else None
-    predict_points(CURRENT_SEASON, as_of_gw=as_of_gw)
-
-    predictions = pl.read_csv(
-        TRANSFORMED_DATA_FOLDER.joinpath("predictions.csv")
-    )
-    if predictions.is_empty():
+    available = forward_gameweeks(CURRENT_SEASON)
+    if not available:
         logger.warning(
-            "No upcoming gameweeks to predict for %s; skipping optimisation. "
-            "The current season's data may be complete with no future "
-            "fixtures to plan for.",
+            "No forward predictions stored for %s; skipping optimisation. "
+            "The season's fixtures may all have been played, or no position "
+            "has a model promoted to its production alias.",
             CURRENT_SEASON,
         )
         return
-    if team is not None:
-        ids = resolve_names_to_ids(team.players, CURRENT_SEASON)
-        names = resolve_ids_to_names(ids, predictions)
-        optimise_plan(
-            CURRENT_SEASON,
-            team.gameweek,
-            initial_squad=names,
-            free_transfers=team.free_transfers,
-            bank=team.bank,
-        )
-    else:
-        start_gw = int(predictions["gw"].min())
-        optimise_plan(CURRENT_SEASON, start_gw)
+
+    start_gw = available[0]
+    if team is None:
+        if start_gw > 1:
+            logger.warning(
+                "Gameweek %d is mid-season and no team file was given, so "
+                "there is no squad to carry in; skipping optimisation. The "
+                "data, models and predictions from this run are unaffected. "
+                "Pass team_file to plan transfers.",
+                start_gw,
+            )
+            return
+        optimise_plan(CURRENT_SEASON, start_gw, horizon=38)
+        return
+
+    optimise_plan(
+        CURRENT_SEASON,
+        team.gameweek,
+        horizon=38,
+        initial_squad=resolve_names_to_ids(team.players, CURRENT_SEASON),
+        free_transfers=team.free_transfers,
+        bank=team.bank,
+    )
 
 
 if __name__ == "__main__":

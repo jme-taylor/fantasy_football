@@ -63,7 +63,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from fantasy_football.constants import ROLLING_WINDOW
-from fantasy_football.features.transformation import rolling_column_name
+from fantasy_football.features.naming import rolling_column_name
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
