@@ -178,13 +178,24 @@ class PositionPointsPredictor(Predictor):
     OPPOSITION_COLUMNS: ClassVar[list[str]]
     #: Columns taken from the minutes model's predictions.
     MINUTES_COLUMNS: ClassVar[list[str]]
+    #: Seasons this position may train on, or None for no restriction.
+    #: The training frame otherwise takes every played fixture leg, and
+    #: the imputer fills any feature the season predates -- so a position
+    #: whose features begin partway through the history would fit on
+    #: median-filled values for its most informative columns across every
+    #: earlier season, and cross-validation would not show it. Default
+    #: None, which leaves the generated SQL exactly as it was for the
+    #: positions whose models are already registered.
+    TRAINING_SEASONS: ClassVar[tuple[str, ...] | None] = None
     #: Prefix applied to the opposition copies of the team form columns.
     #: Both sides come from ``team_match_form``, so a position that reads
     #: the same measure for its own club and the opposition -- the
     #: midfielder does -- would otherwise emit two columns of one name.
-    #: Empty for positions whose two lists are disjoint, which keeps
-    #: their feature names, and therefore their registered models,
-    #: exactly as they were.
+    #: The default is empty because the defender and forward models were
+    #: registered before it existed, and a prefix would rename their
+    #: features out from under them. It is not a rule about disjoint
+    #: lists: the goalkeeper's two lists are disjoint and it sets a
+    #: prefix anyway, for legibility.
     OPPOSITION_PREFIX: ClassVar[str] = ""
 
     @property
@@ -222,6 +233,10 @@ class PositionPointsPredictor(Predictor):
         which is what resolves which side of ``team_match_form`` is his
         own.
 
+        ``TRAINING_SEASONS``, where a position sets it, adds a season
+        predicate. Positions leaving it None generate exactly the SQL
+        they generated before it existed.
+
         Returns
         -------
         str
@@ -245,6 +260,26 @@ class PositionPointsPredictor(Predictor):
         player = ",\n    ".join(
             f"mf.{column} AS {column}" for column in self.PLAYER_FORM_COLUMNS
         )
+        seasons = ""
+        if self.TRAINING_SEASONS is not None:
+            # An empty tuple is the reachable failure, not a typo: the
+            # window is computed by intersecting coverage maps, so a stat
+            # whose seasons do not overlap the rest collapses it to
+            # nothing. Left alone it emits "IN ()", and DuckDB's parser
+            # error names neither the position nor the stat lists.
+            if not self.TRAINING_SEASONS:
+                raise ValueError(
+                    f"{type(self).__name__} sets TRAINING_SEASONS to an "
+                    "empty tuple, so it would train on no rows at all. "
+                    "This usually means the stat lists it derives the "
+                    "window from have no season in common -- check their "
+                    "coverage in storage/coverage.py. Pass None to train "
+                    "on every season."
+                )
+            named = ", ".join(
+                f"'{season}'" for season in self.TRAINING_SEASONS
+            )
+            seasons = f"\n  AND m.season IN ({named})"
         return f"""
 SELECT
     m.season,
@@ -295,7 +330,7 @@ LEFT JOIN team_match_form AS opp
     AND opp.gw         = m.gw
     AND opp.team       = opp_id.team
     AND opp.opposition = pw.team
-WHERE m.minutes IS NOT NULL
+WHERE m.minutes IS NOT NULL{seasons}
 """
 
     @override

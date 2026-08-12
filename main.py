@@ -29,7 +29,10 @@ from fantasy_football.extraction.seasons import (
 from fantasy_football.extraction.snapshot import load_player_snapshot
 from fantasy_football.features.elo import build_team_elo
 from fantasy_football.features.fixtures import build_fixtures_enriched
-from fantasy_football.features.match_form import covered_seasons
+from fantasy_football.features.match_form import (
+    covered_seasons,
+    goalkeeper_covered_seasons,
+)
 from fantasy_football.features.transformation import create_rolling_points_data
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.modelling.defender import (
@@ -43,6 +46,10 @@ from fantasy_football.modelling.folds import (
 from fantasy_football.modelling.forwards import (
     FORWARD_SPEC,
     ForwardPointsPredictor,
+)
+from fantasy_football.modelling.goalkeeper import (
+    GOALKEEPER_SPEC,
+    GoalkeeperPointsPredictor,
 )
 from fantasy_football.modelling.midfielder import (
     MIDFIELDER_SPEC,
@@ -244,7 +251,9 @@ def main(
         build_fixtures_enriched(CURRENT_SEASON)
         build_team_elo()
 
-        # TODO(JT): Add a single method to predictor to do all of these in one
+        # TODO(JT): Add a single method to predictor to do all of these in
+        # one. Five near-identical train/backfill/forward blocks now, one
+        # per position plus minutes.
         minutes_predictor = MinutesPredictor(
             experiment_name="minutes_played_classification",
             params={},
@@ -294,6 +303,21 @@ def main(
         midfielder_predictor.train_and_register_model()
         midfielder_predictor.backfill_model_predictions()
         midfielder_predictor.predict_forward()
+
+        # The keeper features open at 2024-25, so this position folds and
+        # trains on its own window rather than the shared covered_seasons.
+        goalkeeper_predictor = GoalkeeperPointsPredictor(
+            experiment_name="gk-points-model",
+            params={},
+            model_spec=GOALKEEPER_SPEC,
+            connection=connection,
+            fold_strategy=ExpandingGameweekFoldStrategy(
+                test_seasons=goalkeeper_covered_seasons()
+            ),
+        )
+        goalkeeper_predictor.train_and_register_model()
+        goalkeeper_predictor.backfill_model_predictions()
+        goalkeeper_predictor.predict_forward()
 
     finally:
         connection.close()
