@@ -89,19 +89,7 @@ FPL_PER90_STATS: tuple[str, ...] = (
     "red_cards",
 )
 
-# The keeper stats, held apart from the two lists above rather than
-# folded into them. ``covered_seasons`` over ``PER90_STATS`` is what the
-# defender, forward and midfielder models pass as their fold test
-# seasons, so a keeper stat added there could shrink their validation for
-# a measure none of them reads. Keeping the lists separate also matches
-# where the per-position feature sets are heading: they diverge more with
-# every position added, and this is the first place that divergence has
-# to be expressed in the feature layer rather than the model layer.
-#
-# ``goals_prevented`` is xGOT faced less goals conceded -- shot-stopping
-# above what the shots deserved -- and ``xgot_faced`` is the danger faced
-# that it is measured against. FPL pays for both separately: danger faced
-# drives save points, skill above it drives clean sheets.
+# GK specific stats
 GK_PER90_STATS: tuple[str, ...] = (
     "goals_prevented",
     "xgot_faced",
@@ -109,11 +97,7 @@ GK_PER90_STATS: tuple[str, ...] = (
     "sweeper_actions",
 )
 
-# Keeper stats taken from Vaastav rather than FCI. ``saves`` and
-# ``goals_conceded`` are published by both, and are taken here because
-# FPL's figures are what scoring is settled on -- the same rule this
-# module already applies to minutes. ``penalties_saved`` exists on no
-# other source.
+# GK specific stats taken from Vaastav rather than FCI.
 GK_FPL_PER90_STATS: tuple[str, ...] = (
     "saves",
     "penalties_saved",

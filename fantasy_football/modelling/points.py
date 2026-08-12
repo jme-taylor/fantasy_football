@@ -179,23 +179,8 @@ class PositionPointsPredictor(Predictor):
     #: Columns taken from the minutes model's predictions.
     MINUTES_COLUMNS: ClassVar[list[str]]
     #: Seasons this position may train on, or None for no restriction.
-    #: The training frame otherwise takes every played fixture leg, and
-    #: the imputer fills any feature the season predates -- so a position
-    #: whose features begin partway through the history would fit on
-    #: median-filled values for its most informative columns across every
-    #: earlier season, and cross-validation would not show it. Default
-    #: None, which leaves the generated SQL exactly as it was for the
-    #: positions whose models are already registered.
     TRAINING_SEASONS: ClassVar[tuple[str, ...] | None] = None
     #: Prefix applied to the opposition copies of the team form columns.
-    #: Both sides come from ``team_match_form``, so a position that reads
-    #: the same measure for its own club and the opposition -- the
-    #: midfielder does -- would otherwise emit two columns of one name.
-    #: The default is empty because the defender and forward models were
-    #: registered before it existed, and a prefix would rename their
-    #: features out from under them. It is not a rule about disjoint
-    #: lists: the goalkeeper's two lists are disjoint and it sets a
-    #: prefix anyway, for legibility.
     OPPOSITION_PREFIX: ClassVar[str] = ""
 
     @property
@@ -262,11 +247,7 @@ class PositionPointsPredictor(Predictor):
         )
         seasons = ""
         if self.TRAINING_SEASONS is not None:
-            # An empty tuple is the reachable failure, not a typo: the
-            # window is computed by intersecting coverage maps, so a stat
-            # whose seasons do not overlap the rest collapses it to
-            # nothing. Left alone it emits "IN ()", and DuckDB's parser
-            # error names neither the position nor the stat lists.
+            # An empty tuple is the reachable failure
             if not self.TRAINING_SEASONS:
                 raise ValueError(
                     f"{type(self).__name__} sets TRAINING_SEASONS to an "
