@@ -19,8 +19,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from fantasy_football.features.transformation import (
-    _FALLBACK_IDENTITY_PREFIX,
+from fantasy_football.features.naming import (
+    FALLBACK_IDENTITY_PREFIX,
 )
 from fantasy_football.modelling.points import (
     KEY_COLUMNS,
@@ -440,7 +440,7 @@ def stub_player_form(stub_view) -> Callable[..., pl.DataFrame]:
         )
         if "rolling_identity" not in rows:
             frame = frame.with_columns(
-                rolling_identity=pl.lit(_FALLBACK_IDENTITY_PREFIX)
+                rolling_identity=pl.lit(FALLBACK_IDENTITY_PREFIX)
                 + pl.col("season")
                 + pl.lit("_")
                 + pl.col("element").cast(pl.Utf8)

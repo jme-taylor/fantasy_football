@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 import polars as pl
 import pytest
@@ -6,12 +7,13 @@ import pytest
 from fantasy_football.optimisation.team_input import (
     TeamFile,
     load_team_file,
-    resolve_ids_to_names,
     resolve_names_to_ids,
 )
 from fantasy_football.storage import database
 from fantasy_football.storage.database import get_connection
-from fantasy_football.storage.tables import PLAYER_WEEK
+from fantasy_football.storage.tables import PLAYER_SEASON, PLAYER_SNAPSHOT
+
+SEASON = "2026-27"
 
 
 def _write_team(tmp_path, payload) -> str:
@@ -60,109 +62,110 @@ def test_load_team_file_rejects_missing_field(tmp_path) -> None:
         load_team_file(path)
 
 
-def _seed_player_week(
-    tmp_path, monkeypatch, *, name, element, gw, value=None, season="2025-26"
+def _seed_roster(
+    tmp_path, monkeypatch, *, names, elements, season=SEASON
 ) -> None:
-    """Seed the player_week DB with rows and point DATABASE_PATH at it."""
-    n = len(name)
-    frame = pl.DataFrame(
-        {
-            "season": [season] * n,
-            "gw": gw,
-            "element": element,
-            "name": name,
-            "position": ["MID"] * n,
-            "team": ["T"] * n,
-            "bonus": [0] * n,
-            "minutes": [0] * n,
-            "round": gw,
-            "total_points": [0] * n,
-            "value": value if value is not None else [0] * n,
-        }
+    """Seed the snapshot and identity rows the roster is built from."""
+    captured = datetime(2026, 8, 1, 12, 0)
+    snapshot = pl.DataFrame(
+        [
+            {
+                "season": season,
+                "captured_at": captured,
+                "element": element,
+                "value": 50,
+                "team": "T",
+                "position": "MID",
+                "chance_of_playing_this_round": 100,
+            }
+            for element in dict.fromkeys(elements)
+        ]
+    )
+    identity = pl.DataFrame(
+        [
+            {
+                "season": season,
+                "element": element,
+                "player_code": 10_000 + element,
+                "web_name": name.split(" ", 1)[1],
+                "first_name": name.split(" ")[0],
+                "second_name": name.split(" ", 1)[1],
+                "position": "MID",
+                "team_code": element,
+                "birth_date": None,
+                "region": None,
+                "team_join_date": None,
+            }
+            for name, element in zip(names, elements, strict=True)
+        ],
+        schema_overrides={
+            "birth_date": pl.Date,
+            "region": pl.Int64,
+            "team_join_date": pl.Date,
+        },
     )
     db_path = tmp_path / "t.duckdb"
     monkeypatch.setattr(database, "DATABASE_PATH", db_path)
     connection = get_connection(db_path)
     try:
-        PLAYER_WEEK.upsert_current(connection, frame, season)
+        PLAYER_SNAPSHOT.upsert_current(connection, snapshot, season)
+        PLAYER_SEASON.upsert_current(connection, identity, season)
     finally:
         connection.close()
 
 
 def test_resolve_names_to_ids_maps_names(tmp_path, monkeypatch) -> None:
     """resolve_names_to_ids returns the element id for each name, in order."""
-    _seed_player_week(
+    _seed_roster(
         tmp_path,
         monkeypatch,
-        name=["Mohamed Salah", "Mohamed Salah", "Erling Haaland"],
-        element=[328, 328, 351],
-        gw=[4, 5, 5],
+        names=["Mohamed Salah", "Erling Haaland"],
+        elements=[328, 351],
     )
-    ids = resolve_names_to_ids(["Erling Haaland", "Mohamed Salah"], "2025-26")
+    ids = resolve_names_to_ids(["Erling Haaland", "Mohamed Salah"], SEASON)
     assert ids == [351, 328]
 
 
 def test_resolve_names_to_ids_reports_unmatched(tmp_path, monkeypatch) -> None:
     """An unmatched name is named in the raised ValueError."""
-    _seed_player_week(
-        tmp_path, monkeypatch, name=["Mohamed Salah"], element=[328], gw=[5]
+    _seed_roster(
+        tmp_path, monkeypatch, names=["Mohamed Salah"], elements=[328]
     )
     with pytest.raises(ValueError, match="Ghost Player"):
-        resolve_names_to_ids(["Mohamed Salah", "Ghost Player"], "2025-26")
+        resolve_names_to_ids(["Mohamed Salah", "Ghost Player"], SEASON)
 
 
 def test_resolve_names_to_ids_reports_ambiguous(tmp_path, monkeypatch) -> None:
     """A name mapping to multiple elements raises an 'ambiguous' ValueError."""
-    _seed_player_week(
+    _seed_roster(
         tmp_path,
         monkeypatch,
-        name=["Danny Ward", "Danny Ward"],
-        element=[11, 22],
-        gw=[5, 5],
+        names=["Danny Ward", "Danny Ward"],
+        elements=[11, 22],
     )
     with pytest.raises(ValueError, match="ambiguous"):
-        resolve_names_to_ids(["Danny Ward"], "2025-26")
+        resolve_names_to_ids(["Danny Ward"], SEASON)
 
 
 def test_resolve_names_to_ids_reports_unmatched_and_ambiguous_together(
     tmp_path, monkeypatch
 ) -> None:
     """Both unmatched and ambiguous offenders are named in one error."""
-    _seed_player_week(
+    _seed_roster(
         tmp_path,
         monkeypatch,
-        name=["Danny Ward", "Danny Ward"],
-        element=[11, 22],
-        gw=[5, 5],
+        names=["Danny Ward", "Danny Ward"],
+        elements=[11, 22],
     )
     with pytest.raises(ValueError) as exc:
-        resolve_names_to_ids(["Danny Ward", "Ghost Player"], "2025-26")
+        resolve_names_to_ids(["Danny Ward", "Ghost Player"], SEASON)
     assert "Danny Ward" in str(exc.value)
     assert "Ghost Player" in str(exc.value)
 
 
-def _predictions(rows) -> pl.DataFrame:
-    """Build a small predictions DataFrame from a dict of columns."""
-    return pl.DataFrame(rows)
-
-
-def test_resolve_ids_to_names_maps_ids() -> None:
-    """resolve_ids_to_names returns the name for each id, in order."""
-    predictions = _predictions(
-        {
-            "name": ["Mohamed Salah", "Mohamed Salah", "Erling Haaland"],
-            "player_id": [328, 328, 351],
-            "gw": [5, 6, 5],
-        }
-    )
-    names = resolve_ids_to_names([351, 328], predictions)
-    assert names == ["Erling Haaland", "Mohamed Salah"]
-
-
-def test_resolve_ids_to_names_reports_missing_id() -> None:
-    """An id absent from predictions is named in the raised ValueError."""
-    predictions = _predictions(
-        {"name": ["Mohamed Salah"], "player_id": [328], "gw": [5]}
-    )
-    with pytest.raises(ValueError, match="999"):
-        resolve_ids_to_names([328, 999], predictions)
+def test_resolve_names_to_ids_finds_a_player_who_has_not_played(
+    tmp_path, monkeypatch
+) -> None:
+    """A summer signing is on the roster, so their name resolves."""
+    _seed_roster(tmp_path, monkeypatch, names=["New Signing"], elements=[500])
+    assert resolve_names_to_ids(["New Signing"], SEASON) == [500]

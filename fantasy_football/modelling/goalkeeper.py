@@ -91,7 +91,7 @@ class GoalkeeperPointsPredictor(PositionPointsPredictor):
         "clean_sheet_rolling_5",
     ]
     OPPOSITION_COLUMNS = ["xg_for_rolling_5", "goals_for_rolling_5"]
-   
+
     MINUTES_COLUMNS = [
         "expected_minutes",
         "p_zero",

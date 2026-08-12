@@ -39,9 +39,6 @@ ROLLING_WINDOW: int = 5
 # chance_of_playing_this_round is at or above this percentage. FPL reports
 # chance on a 0/25/50/75/100 scale, so 75 means "likely to play".
 FIT_THRESHOLD: int = 75
-OPPONENT_FACTOR_EXPONENT: float = 1.0
-HOME_FACTOR: float = 1.10
-AWAY_FACTOR: float = 0.90
 
 # ELO scrape cache
 ELO_CACHE_TTL_HOURS: int = 24
@@ -50,14 +47,6 @@ ELO_CACHE_TTL_HOURS: int = 24
 # Chosen to be slightly before 2016-17 GW1 (2016-08-13), the earliest fixture
 # in our raw FPL data.
 ELO_HISTORY_START: date = date(2016, 8, 1)
-
-# Per-position points models (MLflow experiment names)
-EXPERIMENT_BY_POSITION: dict[str, str] = {
-    "GK": "gk-points-model",
-    "DEF": "def-points-model",
-    "MID": "mid-points-model",
-    "FWD": "fwd-points-model",
-}
 
 # MLflow experiment for the minutes-played classifier (single experiment;
 # the model is one classifier across all positions, not per-position).
@@ -123,9 +112,9 @@ CLUBELO_SCRAPE_NAMES: list[str] = [
 # Mapping from the `Club` column value (as returned by ClubElo) to every FPL
 # club name that club has carried. It is one-to-many because FPL renames
 # clubs between seasons: team_fixture says "Ipswich" in 2024-25 and
-# "Ipswich Town" in 2026-27, and the as-of ELO join in prediction.py matches
-# on the club name the season actually uses. Emitting a row per alias lets
-# both names resolve to the same ELO series.
+# "Ipswich Town" in 2026-27, and an as-of ELO join matches on the club name
+# the season actually uses. Emitting a row per alias lets both names resolve
+# to the same ELO series.
 # Update this when the team set changes (promotions/relegations).
 CLUBELO_TO_FPL: dict[str, list[str]] = {
     "Arsenal": ["Arsenal"],

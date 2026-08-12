@@ -9,14 +9,13 @@ from ScraperFC import ClubElo
 from fantasy_football.constants import (
     CLUBELO_SCRAPE_NAMES,
     CLUBELO_TO_FPL,
-    DATA_FOLDER,
     ELO_CACHE_TTL_HOURS,
     ELO_HISTORY_START,
+    TRANSFORMED_DATA_FOLDER,
 )
 
 logger = logging.getLogger(__name__)
 
-TRANSFORMED_DATA_FOLDER = DATA_FOLDER.joinpath("transformed")
 _OUTPUT_FILE = "team_elo.csv"
 
 

@@ -46,11 +46,11 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from fantasy_football.constants import ROLLING_WINDOW
-from fantasy_football.features.team_form import window_frame
-from fantasy_football.features.transformation import (
-    _FALLBACK_IDENTITY_PREFIX,
+from fantasy_football.features.naming import (
+    FALLBACK_IDENTITY_PREFIX,
     rolling_column_name,
 )
+from fantasy_football.features.team_form import window_frame
 from fantasy_football.storage.coverage import (
     FCI_COLUMN_SEASONS,
     FCI_EMPTY_COLUMNS,
@@ -339,7 +339,7 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
 
 
 def rolling_identity_sql(identity: str = "s", row: str = "m") -> str:
-    """Return the SQL mirroring ``add_rolling_identity_column``.
+    """Return the SQL building a collision-safe rolling identity.
 
     Partitioning on ``player_code`` alone would pool every player with a
     null one into a single window -- SQL groups nulls together exactly as
@@ -370,7 +370,7 @@ def rolling_identity_sql(identity: str = "s", row: str = "m") -> str:
     return (
         f"CASE WHEN {identity}.player_code IS NOT NULL "
         f"THEN CAST({identity}.player_code AS VARCHAR) "
-        f"ELSE '{_FALLBACK_IDENTITY_PREFIX}' || {row}.season || '_' "
+        f"ELSE '{FALLBACK_IDENTITY_PREFIX}' || {row}.season || '_' "
         f"|| CAST({row}.element AS VARCHAR) END"
     )
 
