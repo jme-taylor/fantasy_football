@@ -54,6 +54,7 @@ from fantasy_football.features.transformation import (
 from fantasy_football.storage.coverage import (
     FCI_COLUMN_SEASONS,
     FCI_EMPTY_COLUMNS,
+    VAASTAV_COLUMN_SEASONS,
     seasons_covering,
 )
 from fantasy_football.storage.tables import (
@@ -88,6 +89,21 @@ FPL_PER90_STATS: tuple[str, ...] = (
     "red_cards",
 )
 
+# GK specific stats
+GK_PER90_STATS: tuple[str, ...] = (
+    "goals_prevented",
+    "xgot_faced",
+    "high_claim",
+    "sweeper_actions",
+)
+
+# GK specific stats taken from Vaastav rather than FCI.
+GK_FPL_PER90_STATS: tuple[str, ...] = (
+    "saves",
+    "penalties_saved",
+    "goals_conceded",
+)
+
 # Stats also accumulated across the season to date. Cards are the case
 # that needs it: a per-90 rate says how freely a player is booked, but
 # suspensions are triggered by a running count, and that count resets
@@ -97,6 +113,12 @@ CUMULATIVE_STATS: tuple[str, ...] = (
     "yellow_cards",
     "red_cards",
 )
+
+# Every stat the view rates, by source. The view emits one column per
+# entry, so these are what ``form_sql`` and ``feature_columns`` iterate;
+# the lists above are what each model picks from.
+OPTA_RATE_STATS: tuple[str, ...] = (*PER90_STATS, *GK_PER90_STATS)
+FPL_RATE_STATS: tuple[str, ...] = (*FPL_PER90_STATS, *GK_FPL_PER90_STATS)
 
 # Columns the view adds beyond the per-90 rates.
 FORM_CONTEXT_COLUMNS: tuple[str, ...] = (
@@ -228,6 +250,32 @@ def covered_seasons(
     return seasons_covering(FCI_COLUMN_SEASONS, stats or PER90_STATS)
 
 
+def goalkeeper_covered_seasons() -> tuple[str, ...]:
+    """Return the seasons every goalkeeper form stat is published in.
+
+    The keeper feature set draws on both sources, so the usable range is
+    the intersection of the two: FCI opens at 2024-25, Vaastav's keeper
+    columns go back to 2016-17, and the intersection is therefore FCI's
+    range. The cards the goalkeeper model also reads are Vaastav columns
+    published from 2016-17, so they cannot narrow this and are left out.
+
+    Computed rather than written down, so a keeper stat with narrower
+    coverage narrows the window automatically and a new season widens it
+    without an edit here.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Sorted seasons covering every keeper stat.
+    """
+    return tuple(
+        sorted(
+            set(seasons_covering(FCI_COLUMN_SEASONS, GK_PER90_STATS))
+            & set(seasons_covering(VAASTAV_COLUMN_SEASONS, GK_FPL_PER90_STATS))
+        )
+    )
+
+
 def per90_column_name(stat: str, rolling_window: int) -> str:
     """Return the output column name for a stat's rolling per-90 rate.
 
@@ -283,7 +331,7 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
     return (
         [
             per90_column_name(stat, rolling_window)
-            for stat in (*PER90_STATS, *FPL_PER90_STATS)
+            for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
         ]
         + [cumulative_column_name(stat) for stat in CUMULATIVE_STATS]
         + list(FORM_CONTEXT_COLUMNS)
@@ -347,14 +395,14 @@ def form_sql(
         A SELECT over ``player_match``, ``player_season`` and
         ``opta_match``.
     """
-    validate_stats(PER90_STATS)
-    validate_stats(FPL_PER90_STATS, source="fpl")
+    validate_stats(OPTA_RATE_STATS)
+    validate_stats(FPL_RATE_STATS, source="fpl")
     validate_stats(CUMULATIVE_STATS, source="fpl")
     rates = ",\n        ".join(
         f"90.0 * sum(a.{stat}) OVER form "
         f"/ nullif(sum(CASE WHEN a.{stat} IS NOT NULL THEN a.minutes END) "
         f"OVER form, 0) AS {per90_column_name(stat, rolling_window)}"
-        for stat in (*PER90_STATS, *FPL_PER90_STATS)
+        for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
     )
     # Season-scoped and offset by one, so a booking counts towards every
     # later match in the season but never towards its own.
@@ -368,10 +416,10 @@ def form_sql(
         for stat in CUMULATIVE_STATS
     )
     stat_columns = ",\n            ".join(
-        [f"o.{stat}" for stat in PER90_STATS]
+        [f"o.{stat}" for stat in OPTA_RATE_STATS]
         + [
             f"f.{stat}"
-            for stat in dict.fromkeys((*FPL_PER90_STATS, *CUMULATIVE_STATS))
+            for stat in dict.fromkeys((*FPL_RATE_STATS, *CUMULATIVE_STATS))
         ]
     )
     std_frame = (

@@ -37,6 +37,8 @@ def _build(
     tackles: list[int | None],
     xg: list[float | None],
     yellow_cards: list[int] | None = None,
+    goals_prevented: list[float | None] | None = None,
+    saves: list[int | None] | None = None,
 ) -> duckdb.DuckDBPyConnection:
     """Return a connection holding one player's run of matches.
 
@@ -112,9 +114,14 @@ def _build(
             "minutes_played": minutes,
             "tackles": tackles,
             "xg": xg,
+            **(
+                {"goals_prevented": goals_prevented}
+                if goals_prevented is not None
+                else {}
+            ),
         },
     )
-    if yellow_cards is not None:
+    if yellow_cards is not None or saves is not None:
         _append(
             PLAYER_MATCH_FPL,
             connection,
@@ -125,8 +132,9 @@ def _build(
                 "fixture": gws,
                 "opponent_team": opponents,
                 "minutes": minutes,
-                "yellow_cards": yellow_cards,
+                "yellow_cards": yellow_cards or [0] * count,
                 "red_cards": [0] * count,
+                **({"saves": saves} if saves is not None else {}),
             },
         )
     register_lookups(connection)
@@ -158,7 +166,9 @@ def test_feature_columns_covers_every_stat_and_context_column() -> None:
     columns = match_form.feature_columns(5)
     assert len(columns) == (
         len(match_form.PER90_STATS)
+        + len(match_form.GK_PER90_STATS)
         + len(match_form.FPL_PER90_STATS)
+        + len(match_form.GK_FPL_PER90_STATS)
         + len(match_form.CUMULATIVE_STATS)
         + len(match_form.FORM_CONTEXT_COLUMNS)
     )
@@ -211,6 +221,61 @@ def test_duplicate_stat_names_are_rejected() -> None:
     """A repeated stat would emit two columns of the same name."""
     with pytest.raises(ValueError, match="Listed more than once"):
         match_form.validate_stats(("xg", "xg"))
+
+
+def test_goalkeeper_stats_are_valid_against_their_own_sources() -> None:
+    """Each keeper list must pass the guard for the table it comes from."""
+    match_form.validate_stats(match_form.GK_PER90_STATS)
+    match_form.validate_stats(match_form.GK_FPL_PER90_STATS, source="fpl")
+
+
+def test_goalkeeper_stats_stay_out_of_the_shared_lists() -> None:
+    """Keeper stats are declared apart, so they cannot narrow the rest.
+
+    ``covered_seasons`` over the shared list drives the other three
+    positions' fold test seasons. A keeper stat folded in there could
+    shrink their validation for a measure they never read.
+    """
+    shared = set(match_form.PER90_STATS) | set(match_form.FPL_PER90_STATS)
+    keeper = set(match_form.GK_PER90_STATS) | set(
+        match_form.GK_FPL_PER90_STATS
+    )
+    assert not shared & keeper
+    # The default is computed over PER90_STATS alone, so adding a keeper
+    # stat cannot move it.
+    assert match_form.covered_seasons() == match_form.covered_seasons(
+        match_form.PER90_STATS
+    )
+
+
+def test_goalkeeper_covered_seasons_starts_when_fci_publishes() -> None:
+    """The keeper window opens with FCI, not with Vaastav's cards."""
+    seasons = match_form.goalkeeper_covered_seasons()
+    assert "2024-25" in seasons
+    # Vaastav has saves back to 2016-17, but goals_prevented does not
+    # exist before 2024-25, so the intersection cannot reach back.
+    assert "2023-24" not in seasons
+    assert seasons == tuple(sorted(seasons))
+
+
+def test_goalkeeper_rate_uses_prior_matches_only(tmp_path: Path) -> None:
+    """Keeper rates window the same way every other per-90 rate does."""
+    connection = _build(
+        tmp_path,
+        minutes=[90, 90, 90],
+        tackles=[0, 0, 0],
+        xg=[0.0, 0.0, 0.0],
+        goals_prevented=[1.0, 1.0, 1.0],
+        saves=[3, 3, 3],
+    )
+    try:
+        frame = match_form.load_match_form(connection).sort("gw")
+    finally:
+        connection.close()
+    assert frame["goals_prevented_per90_rolling_5"].to_list()[0] is None
+    assert frame["saves_per90_rolling_5"].to_list()[0] is None
+    assert frame["goals_prevented_per90_rolling_5"].to_list()[2] == 1.0
+    assert frame["saves_per90_rolling_5"].to_list()[2] == 3.0
 
 
 def test_card_stats_are_validated_against_the_fpl_table() -> None:

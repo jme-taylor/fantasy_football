@@ -25,15 +25,24 @@ from fantasy_football.modelling.forwards import (
     FORWARD_SPEC,
     ForwardPointsPredictor,
 )
+from fantasy_football.modelling.goalkeeper import (
+    GOALKEEPER_SPEC,
+    GoalkeeperPointsPredictor,
+)
 from fantasy_football.modelling.midfielder import (
     MIDFIELDER_SPEC,
     MidfielderPointsPredictor,
 )
-from fantasy_football.modelling.points import KEY_COLUMNS, TARGET
+from fantasy_football.modelling.points import (
+    KEY_COLUMNS,
+    TARGET,
+    PositionPointsPredictor,
+)
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
     FORWARD_KIND,
     MINUTES_PREDICTION,
+    PLAYER_MATCH,
     PLAYER_SEASON,
     PLAYER_SNAPSHOT,
     POINTS_PREDICTION,
@@ -53,11 +62,26 @@ from tests.unit.modelling.conftest import (
     append_rows,
 )
 
+PRIOR_SEASON = "2024-25"
+
 SPECS = {
     DefenderPointsPredictor: DEFENDER_SPEC,
+    GoalkeeperPointsPredictor: GOALKEEPER_SPEC,
     ForwardPointsPredictor: FORWARD_SPEC,
     MidfielderPointsPredictor: MIDFIELDER_SPEC,
 }
+
+
+def _probe(predictor: PositionPointsPredictor) -> str:
+    """Return a cross-season player-form column this position reads.
+
+    The tests below need one form column to trace through the as-of
+    join, and no single column serves every position -- a goalkeeper
+    reads none of the attacking rates the outfield models do. Taking the
+    first cross-season rolling column keeps each position's assertions on
+    a column it actually carries.
+    """
+    return predictor.player_rolling_columns[0]
 
 
 @pytest.fixture(params=list(SPECS), ids=lambda cls: cls.POSITION)
@@ -173,6 +197,117 @@ def test_model_frame_takes_only_backfill_minutes_predictions(
 
     assert row.height == 1
     assert row["expected_minutes"].item() == pytest.approx(11.0)
+
+
+# --- Training-season restriction -------------------------------------
+
+
+def _seed_prior_season_match(connection, position: str) -> None:
+    """Add one played fixture in the season before ``SEASON``."""
+    append_rows(
+        PLAYER_SEASON,
+        connection,
+        [{"season": PRIOR_SEASON, "element": 1, "position": position}],
+    )
+    append_rows(
+        PLAYER_MATCH,
+        connection,
+        [
+            {
+                "season": PRIOR_SEASON,
+                "gw": 38,
+                "element": 1,
+                "opponent": TEAM_IDS[ARSENAL],
+                "is_home": True,
+                "minutes": 90,
+                "kickoff_time": GW1_KICKOFF - timedelta(days=90),
+            }
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "cls",
+    [cls for cls in SPECS if cls.TRAINING_SEASONS is None],
+    ids=lambda cls: cls.POSITION,
+)
+def test_training_data_spans_every_season_by_default(
+    cls, connection, seed_model_frame
+) -> None:
+    """An unrestricted position trains on every season it has rows for.
+
+    The three outfield models rely on this: their features go back as far
+    as the data does, and narrowing them would invalidate models already
+    registered against the wider frame. Parametrised over the positions
+    that leave the restriction unset rather than skipping the one that
+    does, so the goalkeeper never appears here as a passing case; what it
+    does instead is in ``test_goalkeeper.py``.
+    """
+    predictor = cls(
+        experiment_name=f"test-{cls.POSITION}",
+        params={},
+        model_spec=SPECS[cls],
+        connection=connection,
+        fold_strategy=ExpandingGameweekFoldStrategy(),
+    )
+    seed_model_frame(connection, cls.POSITION)
+    _seed_prior_season_match(connection, cls.POSITION)
+
+    seasons = set(predictor.build_training_data()["season"].to_list())
+
+    assert seasons == {PRIOR_SEASON, SEASON}
+
+
+def test_training_seasons_drops_rows_outside_the_window(
+    connection, seed_model_frame
+) -> None:
+    """A position that sets TRAINING_SEASONS sees only those seasons.
+
+    Without this the restriction can silently do nothing: the frame would
+    look right, and the only symptom would be a model quietly fitted on
+    median-imputed values for features that did not exist yet.
+    """
+
+    class Restricted(DefenderPointsPredictor):
+        TRAINING_SEASONS = (SEASON,)
+
+    predictor = Restricted(
+        experiment_name="test-restricted",
+        params={},
+        model_spec=DEFENDER_SPEC,
+        connection=connection,
+        fold_strategy=ExpandingGameweekFoldStrategy(),
+    )
+    seed_model_frame(connection, Restricted.POSITION)
+    _seed_prior_season_match(connection, Restricted.POSITION)
+
+    seasons = set(predictor.build_training_data()["season"].to_list())
+
+    assert seasons == {SEASON}
+
+
+def test_empty_training_seasons_names_the_cause(connection) -> None:
+    """A collapsed window fails with a message, not a parser error.
+
+    The window is derived by intersecting coverage maps, so a stat whose
+    seasons do not overlap the rest empties it. Emitting ``IN ()`` would
+    surface as a DuckDB parser error naming neither the position nor the
+    stat lists behind it.
+    """
+
+    class Collapsed(DefenderPointsPredictor):
+        TRAINING_SEASONS = ()
+
+    predictor = Collapsed(
+        experiment_name="test-collapsed",
+        params={},
+        model_spec=DEFENDER_SPEC,
+        connection=connection,
+        fold_strategy=ExpandingGameweekFoldStrategy(),
+    )
+
+    with pytest.raises(ValueError, match="empty tuple"):
+        predictor.model_frame_sql()
 
 
 # --- Pipeline and metrics --------------------------------------------
@@ -506,7 +641,7 @@ def test_forward_frame_takes_the_most_recent_appearance(
             "season": [SEASON, SEASON],
             "element": [1, 1],
             "kickoff_time": [GW1_KICKOFF, GW2_KICKOFF],
-            "xg_per90_rolling_5": [0.1, 0.9],
+            _probe(predictor): [0.1, 0.9],
         },
         predictor,
     )
@@ -515,7 +650,7 @@ def test_forward_frame_takes_the_most_recent_appearance(
         forward_frame([forward_fixture(position=predictor.POSITION)])
     )
 
-    assert frame["xg_per90_rolling_5"].to_list() == [0.9]
+    assert frame[_probe(predictor)].to_list() == [0.9]
 
 
 def test_forward_frame_covers_every_rostered_player(
@@ -612,7 +747,7 @@ def test_forward_frame_matches_each_player_to_his_own_last_appearance(
                 GW2_KICKOFF,
                 GW2_KICKOFF + timedelta(days=1),
             ],
-            "xg_per90_rolling_5": [0.1, 5.0, 0.2, 6.0],
+            _probe(predictor): [0.1, 5.0, 0.2, 6.0],
         },
         predictor,
     )
@@ -626,7 +761,7 @@ def test_forward_frame_matches_each_player_to_his_own_last_appearance(
         )
     ).sort("element")
 
-    assert frame["xg_per90_rolling_5"].to_list() == [0.2, 6.0]
+    assert frame[_probe(predictor)].to_list() == [0.2, 6.0]
 
 
 def test_forward_frame_resolves_the_opponent_by_name_not_reused_id(
@@ -794,7 +929,7 @@ def test_forward_frame_never_inherits_a_previous_holder_of_the_id(
             "season": ["2024-25"],
             "element": [1],
             "kickoff_time": [GW1_KICKOFF - timedelta(days=365)],
-            "xg_per90_rolling_5": [7.0],
+            _probe(predictor): [7.0],
         },
         predictor,
     )
@@ -803,7 +938,7 @@ def test_forward_frame_never_inherits_a_previous_holder_of_the_id(
         forward_frame([forward_fixture(position=predictor.POSITION)])
     )
 
-    assert frame["xg_per90_rolling_5"].to_list() == [None]
+    assert frame[_probe(predictor)].to_list() == [None]
 
 
 def test_forward_frame_carries_form_across_the_season_boundary(
@@ -835,7 +970,7 @@ def test_forward_frame_carries_form_across_the_season_boundary(
             "element": [9],
             "rolling_identity": ["777"],
             "kickoff_time": [GW1_KICKOFF - timedelta(days=365)],
-            "xg_per90_rolling_5": [7.0],
+            _probe(predictor): [7.0],
         },
         predictor,
     )
@@ -844,7 +979,7 @@ def test_forward_frame_carries_form_across_the_season_boundary(
         forward_frame([forward_fixture(position=predictor.POSITION)])
     )
 
-    assert frame["xg_per90_rolling_5"].to_list() == [7.0]
+    assert frame[_probe(predictor)].to_list() == [7.0]
 
 
 def test_forward_frame_never_inherits_a_reused_id_with_player_codes(
@@ -873,7 +1008,7 @@ def test_forward_frame_never_inherits_a_reused_id_with_player_codes(
             "element": [1],
             "rolling_identity": ["111"],
             "kickoff_time": [GW1_KICKOFF - timedelta(days=365)],
-            "xg_per90_rolling_5": [7.0],
+            _probe(predictor): [7.0],
         },
         predictor,
     )
@@ -882,7 +1017,7 @@ def test_forward_frame_never_inherits_a_reused_id_with_player_codes(
         forward_frame([forward_fixture(position=predictor.POSITION)])
     )
 
-    assert frame["xg_per90_rolling_5"].to_list() == [None]
+    assert frame[_probe(predictor)].to_list() == [None]
 
 
 def test_forward_frame_gives_a_player_with_no_history_a_null_row(
@@ -896,7 +1031,7 @@ def test_forward_frame_gives_a_player_with_no_history_a_null_row(
             "season": [SEASON],
             "element": [2],
             "kickoff_time": [GW2_KICKOFF],
-            "xg_per90_rolling_5": [0.4],
+            _probe(predictor): [0.4],
         },
         predictor,
     )
@@ -908,7 +1043,7 @@ def test_forward_frame_gives_a_player_with_no_history_a_null_row(
     )
 
     assert frame.height == 1
-    assert frame["xg_per90_rolling_5"].to_list() == [None]
+    assert frame[_probe(predictor)].to_list() == [None]
 
 
 def test_forward_frame_starts_the_season_to_date_counts_at_zero(
@@ -938,7 +1073,7 @@ def test_forward_frame_starts_the_season_to_date_counts_at_zero(
             "element": [9],
             "rolling_identity": ["777"],
             "kickoff_time": [GW1_KICKOFF - timedelta(days=365)],
-            "xg_per90_rolling_5": [7.0],
+            _probe(predictor): [7.0],
             "yellow_cards_season_to_date": [8.0],
             "red_cards_season_to_date": [1.0],
         },
@@ -949,7 +1084,7 @@ def test_forward_frame_starts_the_season_to_date_counts_at_zero(
         forward_frame([forward_fixture(position=predictor.POSITION)])
     )
 
-    assert frame["xg_per90_rolling_5"].to_list() == [7.0]
+    assert frame[_probe(predictor)].to_list() == [7.0]
     for column in predictor.season_to_date_columns:
         assert frame[column].to_list() == [0.0]
 
