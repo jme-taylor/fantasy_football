@@ -30,6 +30,7 @@ from fantasy_football.features.match_form import (
     goalkeeper_covered_seasons,
 )
 from fantasy_football.logging_config import configure_logging
+from fantasy_football.modelling.components import compose_points
 from fantasy_football.modelling.defender import (
     DEFENDER_SPEC,
     DefenderPointsPredictor,
@@ -303,6 +304,11 @@ def main(
         goalkeeper_predictor.train_and_register_model()
         goalkeeper_predictor.backfill_model_predictions()
         goalkeeper_predictor.predict_forward()
+
+        # Every position has written its components by now, so the
+        # points table is rebuilt from them in one pass. This is the only
+        # writer into it.
+        compose_points(connection)
 
     finally:
         connection.close()

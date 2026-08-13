@@ -80,11 +80,11 @@ def feature_json(frame: pl.DataFrame, columns: Sequence[str]) -> pl.Expr:
 class ModelSpec(BaseModel):
     """Model spec for a predictor.
 
-    ``position`` is what keeps several models that share one output
-    table apart. Every position's points model writes to
-    ``points_prediction``, whose primary key does not include
-    ``position``, so without it each model's partition rewrite would
-    delete the rows the previous position had just written.
+    ``position`` and ``component`` are what keep several models that
+    share one output table apart. Every position's points model writes to
+    ``points_component``, whose partition rewrites would otherwise delete
+    the rows another position -- or another component of the same
+    position -- had just written.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -94,6 +94,9 @@ class ModelSpec(BaseModel):
     #: Where this model's scored fold rows are kept for error analysis.
     evaluation_table: Table
     position: str | None = None
+    #: Which scoring component this model predicts, where its table
+    #: holds one row per component.
+    component: str | None = None
 
 
 class Predictor(ABC):
@@ -359,12 +362,16 @@ class Predictor(ABC):
     def _own_rows(self) -> dict[str, object]:
         """Predicates isolating this model's rows in a shared table.
 
-        Empty when the spec names no position, which is the right
-        answer for a model that owns its output table outright.
+        Empty when the spec names neither a position nor a component,
+        which is the right answer for a model that owns its output table
+        outright.
         """
-        if self.model_spec.position is None:
-            return {}
-        return {"position": self.model_spec.position}
+        own: dict[str, object] = {}
+        if self.model_spec.position is not None:
+            own["position"] = self.model_spec.position
+        if self.model_spec.component is not None:
+            own["component"] = self.model_spec.component
+        return own
 
     # TODO(JT): Does this need to be a method?
     def get_prediction_versions(self, seasons: list[str]) -> set[str]:

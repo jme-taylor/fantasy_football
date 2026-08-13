@@ -26,6 +26,7 @@ from sklearn.pipeline import Pipeline
 from fantasy_football.constants import PRECISION_K_BY_POSITION
 from fantasy_football.features.match_form import rolling_identity_sql
 from fantasy_football.features.views import register_feature_views
+from fantasy_football.modelling.components import Component
 from fantasy_football.modelling.folds import Fold, FoldResult
 from fantasy_football.modelling.metrics import (
     PointsMetrics,
@@ -40,6 +41,7 @@ from fantasy_football.storage.tables import (
     BACKFILL_KIND,
     FORWARD_KIND,
     MINUTES_PREDICTION,
+    POINTS_COMPONENT,
     TEAM_FIXTURE,
 )
 
@@ -48,6 +50,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The whole-points target every position predicted before the models
+# were decomposed into components. Subclasses override
+# ``PositionPointsPredictor.TARGET`` when they predict something narrower.
 TARGET = "total_points"
 
 # Match-grain keys. They identify a row and are never model inputs.
@@ -171,6 +176,10 @@ class PositionPointsPredictor(Predictor):
 
     #: The ``player_season.position`` value this model serves.
     POSITION: ClassVar[str]
+    #: The column this model predicts.
+    TARGET: ClassVar[str] = TARGET
+    #: The scoring component this model's predictions are stored as.
+    COMPONENT: ClassVar[Component] = Component.TOTAL
     #: Model inputs, in the order the frame presents them.
     FEATURES: ClassVar[list[str]]
     #: Per-player form columns read from the player form views.
@@ -270,7 +279,7 @@ SELECT
     m.gw,
     m.element,
     m.opponent,
-    m.{TARGET},
+    m.{self.TARGET},
     m.is_home,
     {minutes},
     {player},
@@ -332,7 +341,7 @@ WHERE m.minutes IS NOT NULL{seasons}
         """
         register_feature_views(self.connection)
         frame = self.connection.sql(self.model_frame_sql()).pl()
-        return frame.select(KEY_COLUMNS + [TARGET] + self.FEATURES)
+        return frame.select(KEY_COLUMNS + [self.TARGET] + self.FEATURES)
 
     def make_pipeline(self) -> Pipeline:
         """Build the median-imputing random-forest pipeline.
@@ -377,7 +386,7 @@ WHERE m.minutes IS NOT NULL{seasons}
         PointsMetrics
             The fold's scores.
         """
-        actual = test_df[TARGET].to_list()
+        actual = test_df[self.TARGET].to_list()
         baseline = [float(np.mean(actual))] * len(actual)
         # Season joins gw as the ranking group because a holdout spans
         # seasons, and gameweek numbers repeat each year.
@@ -386,7 +395,7 @@ WHERE m.minutes IS NOT NULL{seasons}
             pl.col("gw"),
             pl.col("element").alias("player_id"),
             pl.Series("predicted_points", predicted),
-            pl.col(TARGET).alias("actual"),
+            pl.col(self.TARGET).alias("actual"),
         )
         return PointsMetrics(
             mae=mae(predicted, actual),
@@ -533,7 +542,7 @@ WHERE m.minutes IS NOT NULL{seasons}
         return test_df.with_columns(
             position=pl.lit(self.POSITION),
             predicted_points=pl.Series(predicted).cast(pl.Float64),
-            actual_points=pl.col(TARGET).cast(pl.Float64),
+            actual_points=pl.col(self.TARGET).cast(pl.Float64),
             features=feature_json(test_df, self.FEATURES),
         ).select(
             KEY_COLUMNS
@@ -546,7 +555,7 @@ WHERE m.minutes IS NOT NULL{seasons}
         pipe = self.make_pipeline()
         pipe.fit(
             fold.train.select(self.FEATURES).to_pandas(),
-            fold.train[TARGET].to_list(),
+            fold.train[self.TARGET].to_list(),
         )
         predicted = list(
             pipe.predict(fold.test.select(self.FEATURES).to_pandas())
@@ -562,7 +571,7 @@ WHERE m.minutes IS NOT NULL{seasons}
         pipe = self.make_pipeline()
         pipe.fit(
             feature_frame.select(self.FEATURES).to_pandas(),
-            feature_frame[TARGET].to_list(),
+            feature_frame[self.TARGET].to_list(),
         )
         return pipe
 
@@ -574,7 +583,13 @@ WHERE m.minutes IS NOT NULL{seasons}
         version: str,
         kind: str,
     ) -> pl.DataFrame:
-        """Score ``feature_frame`` and shape the rows for storage."""
+        """Score ``feature_frame`` and shape it as this model's component.
+
+        The rows are one scoring component, not a whole prediction. What
+        the optimiser reads is the sum of every component a position
+        declares, which
+        :func:`fantasy_football.modelling.components.compose` builds.
+        """
         predicted = model.predict(
             feature_frame.select(self.FEATURES).to_pandas()
         )
@@ -582,9 +597,11 @@ WHERE m.minutes IS NOT NULL{seasons}
             feature_frame.select(KEY_COLUMNS)
             .with_columns(
                 position=pl.lit(self.POSITION),
-                predicted_points=pl.Series(predicted).cast(pl.Float64),
-                model_version=pl.lit(version),
                 prediction_kind=pl.lit(kind),
+                component=pl.lit(str(self.COMPONENT)),
+                points=pl.Series(predicted).cast(pl.Float64),
+                model_version=pl.lit(version),
+                diagnostics=pl.lit(None, dtype=pl.Utf8),
             )
-            .select(self.model_spec.table.columns)
+            .select(POINTS_COMPONENT.columns)
         )
