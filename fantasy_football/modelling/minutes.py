@@ -34,12 +34,16 @@ from fantasy_football.features.valuation import (
     add_positional_value_rank,
     add_team_value,
 )
-from fantasy_football.modelling.folds import Fold
+from fantasy_football.modelling.folds import Fold, FoldResult
 from fantasy_football.modelling.forward import (
     forward_player_weeks,
 )
 from fantasy_football.modelling.metrics import MinutesMetrics
-from fantasy_football.modelling.predictor import ModelSpec, Predictor
+from fantasy_football.modelling.predictor import (
+    ModelSpec,
+    Predictor,
+    feature_json,
+)
 from fantasy_football.storage.tables import (
     MINUTES_PREDICTION,
     PLAYER_AVAILABILITY,
@@ -47,6 +51,7 @@ from fantasy_football.storage.tables import (
     PLAYER_SEASON,
     PLAYER_WEEK,
     TEAM_FIXTURE,
+    TEST_MINUTES_PREDICTION,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,7 +369,7 @@ def boundary_metrics(
 
 def _fit_predict_fold(
     train_df: pl.DataFrame, test_df: pl.DataFrame
-) -> dict[str, float]:
+) -> tuple[dict[str, float], Pipeline]:
     """Fit a fresh pipeline on the train split and score the test split."""
     pipe = make_pipeline()
     pipe.fit(
@@ -377,6 +382,39 @@ def _fit_predict_fold(
         proba,
         list(pipe.classes_),
         test_df["minutes"].to_list(),
+    ), pipe
+
+
+def fold_predictions(test_df: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
+    """Shape one fold's scored rows for the evaluation table.
+
+    ``run_id`` is left off: the fold does not know which run it belongs
+    to, and the predictor stamps it on the way to storage.
+
+    Both actuals are kept. The bucket is the target the classifier is
+    scored against; the minutes are what ``expected_minutes`` is compared
+    to downstream, and neither is derivable from the other.
+
+    Parameters
+    ----------
+    test_df : pl.DataFrame
+        The fold's held-out rows.
+    model : Pipeline
+        The pipeline fitted on the fold's training split.
+
+    Returns
+    -------
+    pl.DataFrame
+        Keys, class probabilities, expected minutes, both actuals and the
+        model's inputs.
+    """
+    # The scored frame holds keys and probabilities, not features, so the
+    # JSON is encoded against the fold's own rows and carried across.
+    features = test_df.select(feature_json(test_df, FEATURES)).to_series()
+    return score_minutes(test_df, model).with_columns(
+        actual_bucket=test_df["minutes_bucket"],
+        actual_minutes=test_df["minutes"].cast(pl.Int64),
+        features=features,
     )
 
 
@@ -458,8 +496,13 @@ class MinutesPredictor(Predictor):
         ).join(feature_frame, on=["season", "gw", "element"], how="inner")
 
     @override
-    def fit_predict_fold(self, fold: Fold) -> MinutesMetrics:
-        return MinutesMetrics(**_fit_predict_fold(fold.train, fold.test))
+    def fit_predict_fold(self, fold: Fold) -> FoldResult:
+        """Fit on the fold's train split and score its test split."""
+        metrics, pipe = _fit_predict_fold(fold.train, fold.test)
+        return FoldResult(
+            metrics=MinutesMetrics(**metrics),
+            predictions=fold_predictions(fold.test, pipe),
+        )
 
     @override
     def train_final(self, feature_frame: pl.DataFrame) -> Pipeline:
@@ -493,4 +536,5 @@ MINUTES_SPEC = ModelSpec(
     registered_model_name=MINUTES_REGISTERED_MODEL,
     production_alias=MINUTES_PRODUCTION_ALIAS,
     table=MINUTES_PREDICTION,
+    evaluation_table=TEST_MINUTES_PREDICTION,
 )

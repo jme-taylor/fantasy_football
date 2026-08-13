@@ -363,6 +363,54 @@ POINTS_PREDICTION = Table(
     order_by=("season", "gw", "element", "opponent", "prediction_kind"),
 )
 
+# Evaluation predictions, one row per scored fold row. Deliberately not
+# the serving tables: the optimiser reads points_prediction, and a join
+# there that forgets prediction_kind already fans rows out. These stay
+# where nothing but analysis reads them.
+#
+# ``run_id`` is the MLflow run, and it is in the primary key so runs
+# accumulate side by side rather than overwriting each other. ``features``
+# is JSON because each position feeds the model a different column list;
+# typed columns would mean a migration per feature added. No error column:
+# it is one expression away from the prediction and the actual, and a
+# stored copy can drift from them.
+TEST_POINTS_PREDICTION = Table(
+    name="test_points_prediction",
+    schema={
+        "run_id": pl.Utf8,
+        "season": pl.Utf8,
+        "gw": pl.Int64,
+        "element": pl.Int64,
+        "opponent": pl.Int64,
+        "position": pl.Utf8,
+        "predicted_points": pl.Float64,
+        "actual_points": pl.Float64,
+        "features": pl.Utf8,
+    },
+    primary_key=("run_id", "season", "gw", "element", "opponent"),
+    order_by=("run_id", "season", "gw", "element", "opponent"),
+)
+
+TEST_MINUTES_PREDICTION = Table(
+    name="test_minutes_prediction",
+    schema={
+        "run_id": pl.Utf8,
+        "season": pl.Utf8,
+        "gw": pl.Int64,
+        "element": pl.Int64,
+        "opponent": pl.Int64,
+        "p_zero": pl.Float64,
+        "p_partial": pl.Float64,
+        "p_sixty_plus": pl.Float64,
+        "expected_minutes": pl.Float64,
+        "actual_bucket": pl.Utf8,
+        "actual_minutes": pl.Int64,
+        "features": pl.Utf8,
+    },
+    primary_key=("run_id", "season", "gw", "element", "opponent"),
+    order_by=("run_id", "season", "gw", "element", "opponent"),
+)
+
 PLAYER_SNAPSHOT = Table(
     name="player_snapshot",
     schema={
@@ -410,6 +458,8 @@ TABLES: tuple[Table, ...] = (
     PLAYER_AVAILABILITY,
     MINUTES_PREDICTION,
     POINTS_PREDICTION,
+    TEST_POINTS_PREDICTION,
+    TEST_MINUTES_PREDICTION,
     PLAYER_SEASON,
     PLAYER_SNAPSHOT,
 )

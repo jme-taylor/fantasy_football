@@ -25,7 +25,10 @@ import logging
 from fantasy_football.features.match_form import goalkeeper_covered_seasons
 from fantasy_football.modelling.points import PositionPointsPredictor
 from fantasy_football.modelling.predictor import ModelSpec
-from fantasy_football.storage.tables import POINTS_PREDICTION
+from fantasy_football.storage.tables import (
+    POINTS_PREDICTION,
+    TEST_POINTS_PREDICTION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,5 +107,6 @@ GOALKEEPER_SPEC = ModelSpec(
     registered_model_name=REGISTERED_MODEL,
     production_alias=PRODUCTION_ALIAS,
     table=POINTS_PREDICTION,
+    evaluation_table=TEST_POINTS_PREDICTION,
     position=POSITION,
 )

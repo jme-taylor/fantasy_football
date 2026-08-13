@@ -7,6 +7,7 @@ which columns a position reads live in ``test_defender.py`` and
 ``test_forwards.py`` instead.
 """
 
+import json
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -20,7 +21,10 @@ from fantasy_football.modelling.defender import (
     DEFENDER_SPEC,
     DefenderPointsPredictor,
 )
-from fantasy_football.modelling.folds import ExpandingGameweekFoldStrategy
+from fantasy_football.modelling.folds import (
+    ExpandingGameweekFoldStrategy,
+    TrainTestSplitStrategy,
+)
 from fantasy_football.modelling.forwards import (
     FORWARD_SPEC,
     ForwardPointsPredictor,
@@ -47,6 +51,7 @@ from fantasy_football.storage.tables import (
     PLAYER_SNAPSHOT,
     POINTS_PREDICTION,
     TEAM_FIXTURE,
+    TEST_POINTS_PREDICTION,
 )
 from tests.unit.modelling.conftest import (
     ARSENAL,
@@ -414,15 +419,90 @@ def test_fold_metrics_perfect_and_reversed_ranking_spearman(
 def test_cross_validate_returns_per_fold_and_aggregates(
     predictor, synthetic_frame
 ) -> None:
-    """cross_validate returns one metric set per fold plus aggregates."""
+    """cross_validate returns one result per fold plus aggregates."""
     model_df = synthetic_frame(predictor)
     folds = list(
         ExpandingGameweekFoldStrategy(min_train_folds=10).split(model_df)
     )
     per_fold, agg = predictor.cross_validate(folds)
     assert len(per_fold) == len(folds) == 4
-    assert "mae_mean" in agg
-    assert "mae_std" in agg
+    assert "cv_mae_mean" in agg
+    assert "cv_mae_std" in agg
+
+
+def test_cross_validate_of_a_single_fold_reports_no_spread(
+    predictor, synthetic_frame
+) -> None:
+    """A holdout is one measurement, so it has no standard deviation."""
+    predictor.fold_strategy = TrainTestSplitStrategy(test_fraction=0.2)
+    model_df = synthetic_frame(predictor)
+    folds = list(predictor.fold_strategy.split(model_df))
+    per_fold, agg = predictor.cross_validate(folds)
+    assert len(per_fold) == 1
+    assert "holdout_mae" in agg
+    assert not any(key.endswith(("_mean", "_std")) for key in agg)
+
+
+def test_fit_predict_fold_returns_metrics_and_predictions(
+    predictor, synthetic_frame
+) -> None:
+    """A fold result carries its scores and the rows they came from."""
+    model_df = synthetic_frame(predictor)
+    fold = next(
+        iter(TrainTestSplitStrategy(test_fraction=0.2).split(model_df))
+    )
+    result = predictor.fit_predict_fold(fold)
+    assert set(result.metrics.as_dict()) == {
+        "mae",
+        "rmse",
+        "skill_score",
+        "spearman",
+        "precision_at_k",
+    }
+    assert result.predictions.height == fold.test.height
+    assert result.predictions.columns == [
+        column
+        for column in TEST_POINTS_PREDICTION.columns
+        if column != "run_id"
+    ]
+
+
+def test_fold_predictions_carry_the_actual_and_the_features(
+    predictor, synthetic_frame
+) -> None:
+    """Stored rows hold the outcome and every feature the model consumed."""
+    model_df = synthetic_frame(predictor)
+    fold = next(
+        iter(TrainTestSplitStrategy(test_fraction=0.2).split(model_df))
+    )
+    predictions = predictor.fit_predict_fold(fold).predictions
+    assert predictions["actual_points"].to_list() == [
+        float(value) for value in fold.test[TARGET].to_list()
+    ]
+    features = json.loads(predictions["features"][0])
+    assert sorted(features) == sorted(predictor.FEATURES)
+
+
+def test_store_fold_predictions_writes_one_row_per_scored_row(
+    predictor, synthetic_frame
+) -> None:
+    """Every fold's test-side rows land in the evaluation table."""
+    model_df = synthetic_frame(predictor)
+    folds = list(TrainTestSplitStrategy(test_fraction=0.2).split(model_df))
+    results, _ = predictor.cross_validate(folds)
+
+    predictor.store_fold_predictions(results, "run-1")
+
+    stored = TEST_POINTS_PREDICTION.load(predictor.connection)
+    assert stored.height == sum(fold.test.height for fold in folds)
+    assert stored["run_id"].unique().to_list() == ["run-1"]
+    assert stored["position"].unique().to_list() == [predictor.POSITION]
+
+
+def test_store_fold_predictions_of_nothing_writes_nothing(predictor) -> None:
+    """A run that scored no fold stores no evaluation rows."""
+    predictor.store_fold_predictions([], "run-1")
+    assert TEST_POINTS_PREDICTION.load(predictor.connection).is_empty()
 
 
 def test_cross_validate_handles_no_folds(predictor) -> None:
@@ -440,6 +520,24 @@ def test_train_final_fits_on_every_row(predictor, synthetic_frame) -> None:
     assert len(predicted) == model_df.height
 
 
+def _patch_mlflow(mocker, run_id: str = "run-1"):
+    """Patch the MLflow calls the base class makes, naming the run."""
+    for name in ("set_experiment", "log_params", "log_metric"):
+        mocker.patch(f"fantasy_football.modelling.predictor.mlflow.{name}")
+    start_run = mocker.patch(
+        "fantasy_football.modelling.predictor.mlflow.start_run"
+    )
+    start_run.return_value.__enter__.return_value.info.run_id = run_id
+    return SimpleNamespace(
+        log_metrics=mocker.patch(
+            "fantasy_football.modelling.predictor.mlflow.log_metrics"
+        ),
+        log_model=mocker.patch(
+            "fantasy_football.modelling.predictor.mlflow.sklearn.log_model"
+        ),
+    )
+
+
 def test_train_and_register_model_logs_and_registers(
     predictor, synthetic_frame, mocker
 ) -> None:
@@ -449,23 +547,30 @@ def test_train_and_register_model_logs_and_registers(
     which is where the base class does its logging.
     """
     predictor._model_dataframe = synthetic_frame(predictor)
-    for name in ("set_experiment", "start_run", "log_params", "log_metric"):
-        mocker.patch(f"fantasy_football.modelling.predictor.mlflow.{name}")
-    log_metrics = mocker.patch(
-        "fantasy_football.modelling.predictor.mlflow.log_metrics"
-    )
-    log_model = mocker.patch(
-        "fantasy_football.modelling.predictor.mlflow.sklearn.log_model"
-    )
+    patched = _patch_mlflow(mocker)
 
     predictor.train_and_register_model()
 
-    log_metrics.assert_called_once()
-    assert "mae_mean" in log_metrics.call_args.args[0]
+    patched.log_metrics.assert_called_once()
+    assert "cv_mae_mean" in patched.log_metrics.call_args.args[0]
     assert (
-        log_model.call_args.kwargs["registered_model_name"]
+        patched.log_model.call_args.kwargs["registered_model_name"]
         == predictor.model_spec.registered_model_name
     )
+
+
+def test_train_and_register_model_stores_predictions_against_its_run(
+    predictor, synthetic_frame, mocker
+) -> None:
+    """Stored predictions carry the run whose metrics describe them."""
+    predictor.fold_strategy = TrainTestSplitStrategy(test_fraction=0.2)
+    predictor._model_dataframe = synthetic_frame(predictor)
+    _patch_mlflow(mocker, run_id="run-7")
+
+    predictor.train_and_register_model()
+
+    stored = TEST_POINTS_PREDICTION.load(predictor.connection)
+    assert stored["run_id"].unique().to_list() == ["run-7"]
 
 
 def test_build_prediction_rows_shapes_rows_for_storage(

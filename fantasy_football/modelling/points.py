@@ -26,7 +26,7 @@ from sklearn.pipeline import Pipeline
 from fantasy_football.constants import PRECISION_K_BY_POSITION
 from fantasy_football.features.match_form import rolling_identity_sql
 from fantasy_football.features.views import register_feature_views
-from fantasy_football.modelling.folds import Fold
+from fantasy_football.modelling.folds import Fold, FoldResult
 from fantasy_football.modelling.metrics import (
     PointsMetrics,
     mae,
@@ -35,7 +35,7 @@ from fantasy_football.modelling.metrics import (
     skill_score,
     spearman_by_gw,
 )
-from fantasy_football.modelling.predictor import Predictor
+from fantasy_football.modelling.predictor import Predictor, feature_json
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
     FORWARD_KIND,
@@ -52,6 +52,9 @@ TARGET = "total_points"
 
 # Match-grain keys. They identify a row and are never model inputs.
 KEY_COLUMNS = ["season", "gw", "element", "opponent"]
+
+# What counts as one gameweek for the ranking metrics.
+RANKING_GROUP = ("season", "gw")
 
 # The player-form columns that reset each season. Everything else a
 # position lists in ``PLAYER_FORM_COLUMNS`` is a rolling rate that
@@ -376,7 +379,10 @@ WHERE m.minutes IS NOT NULL{seasons}
         """
         actual = test_df[TARGET].to_list()
         baseline = [float(np.mean(actual))] * len(actual)
+        # Season joins gw as the ranking group because a holdout spans
+        # seasons, and gameweek numbers repeat each year.
         ranked = test_df.select(
+            pl.col("season"),
             pl.col("gw"),
             pl.col("element").alias("player_id"),
             pl.Series("predicted_points", predicted),
@@ -386,10 +392,12 @@ WHERE m.minutes IS NOT NULL{seasons}
             mae=mae(predicted, actual),
             rmse=rmse(predicted, actual),
             skill_score=skill_score(predicted, actual, baseline),
-            spearman=spearman_by_gw(ranked),
+            spearman=spearman_by_gw(ranked, gw_cols=RANKING_GROUP),
             # TODO (JT): Make k a few different values
             precision_at_k=precision_at_k(
-                ranked, k=PRECISION_K_BY_POSITION[self.POSITION]
+                ranked,
+                k=PRECISION_K_BY_POSITION[self.POSITION],
+                gw_cols=RANKING_GROUP,
             ),
         )
 
@@ -502,16 +510,51 @@ WHERE m.minutes IS NOT NULL{seasons}
             )
         return frame.select(KEY_COLUMNS + self.FEATURES)
 
+    def fold_predictions(
+        self, test_df: pl.DataFrame, predicted: Sequence[float]
+    ) -> pl.DataFrame:
+        """Shape one fold's scored rows for the evaluation table.
+
+        ``run_id`` is left off: the fold does not know which run it
+        belongs to, and the predictor stamps it on the way to storage.
+
+        Parameters
+        ----------
+        test_df : pl.DataFrame
+            The fold's held-out rows.
+        predicted : Sequence[float]
+            Predictions aligned to ``test_df`` row order.
+
+        Returns
+        -------
+        pl.DataFrame
+            Keys, position, prediction, actual and the model's inputs.
+        """
+        return test_df.with_columns(
+            position=pl.lit(self.POSITION),
+            predicted_points=pl.Series(predicted).cast(pl.Float64),
+            actual_points=pl.col(TARGET).cast(pl.Float64),
+            features=feature_json(test_df, self.FEATURES),
+        ).select(
+            KEY_COLUMNS
+            + ["position", "predicted_points", "actual_points", "features"]
+        )
+
     @override
-    def fit_predict_fold(self, fold: Fold) -> PointsMetrics:
+    def fit_predict_fold(self, fold: Fold) -> FoldResult:
         """Fit on the fold's train split and score its test split."""
         pipe = self.make_pipeline()
         pipe.fit(
             fold.train.select(self.FEATURES).to_pandas(),
             fold.train[TARGET].to_list(),
         )
-        predicted = pipe.predict(fold.test.select(self.FEATURES).to_pandas())
-        return self.fold_metrics(fold.test, list(predicted))
+        predicted = list(
+            pipe.predict(fold.test.select(self.FEATURES).to_pandas())
+        )
+        return FoldResult(
+            metrics=self.fold_metrics(fold.test, predicted),
+            predictions=self.fold_predictions(fold.test, predicted),
+        )
 
     @override
     def train_final(self, feature_frame: pl.DataFrame) -> Pipeline:

@@ -16,6 +16,8 @@ from fantasy_football.storage.tables import (
     PLAYER_WEEK,
     TABLES,
     TEAM_FIXTURE,
+    TEST_MINUTES_PREDICTION,
+    TEST_POINTS_PREDICTION,
     gkp_to_gk,
     propagate_static_columns,
 )
@@ -173,8 +175,8 @@ def test_generated_ddl_matches_legacy_ddl(table, legacy):
 
 
 def test_tables_tuple_covers_every_spec():
-    """``TABLES`` holds all ten specs, so loops cannot miss one."""
-    assert len(TABLES) == 10
+    """``TABLES`` holds all twelve specs, so loops cannot miss one."""
+    assert len(TABLES) == 12
     assert {t.name for t in TABLES} == {
         "player_week",
         "team_fixture",
@@ -186,6 +188,8 @@ def test_tables_tuple_covers_every_spec():
         "points_prediction",
         "player_season",
         "player_snapshot",
+        "test_points_prediction",
+        "test_minutes_prediction",
     }
 
 
@@ -476,3 +480,56 @@ def test_minutes_prediction_versions_empty_seasons_returns_empty_set(
     )
 
     assert minutes_prediction_versions(db, seasons=[]) == set()
+
+
+# --- Evaluation prediction tables -------------------------------------
+
+
+def _eval_points_row(run_id: str, predicted: float) -> pl.DataFrame:
+    """One stored evaluation prediction for a defender."""
+    return pl.DataFrame(
+        {
+            "run_id": [run_id],
+            "season": ["2025-26"],
+            "gw": [1],
+            "element": [1],
+            "opponent": [2],
+            "position": ["DEF"],
+            "predicted_points": [predicted],
+            "actual_points": [4.0],
+            "features": ['{"is_home": 1.0}'],
+        }
+    )
+
+
+def test_evaluation_tables_are_registered() -> None:
+    """Database creation and reset loop over TABLES, so these must be in it."""
+    assert TEST_POINTS_PREDICTION in TABLES
+    assert TEST_MINUTES_PREDICTION in TABLES
+
+
+def test_evaluation_predictions_accumulate_across_runs(db) -> None:
+    """Two runs' predictions for one fixture coexist rather than overwrite."""
+    TEST_POINTS_PREDICTION.append(db, _eval_points_row("run-a", 3.0))
+    TEST_POINTS_PREDICTION.append(db, _eval_points_row("run-b", 5.0))
+    stored = TEST_POINTS_PREDICTION.load(db)
+    assert stored.height == 2
+    assert stored["run_id"].to_list() == ["run-a", "run-b"]
+
+
+def test_evaluation_predictions_reject_a_repeated_run(db) -> None:
+    """One run stores each fixture once, so a duplicate is a bug."""
+    TEST_POINTS_PREDICTION.append(db, _eval_points_row("run-a", 3.0))
+    with pytest.raises(duckdb.ConstraintException):
+        TEST_POINTS_PREDICTION.append(db, _eval_points_row("run-a", 4.0))
+
+
+def test_evaluation_features_are_readable_back_out_of_json(db) -> None:
+    """Features survive the round trip as queryable JSON."""
+    TEST_POINTS_PREDICTION.append(db, _eval_points_row("run-a", 3.0))
+    value = db.sql(
+        "SELECT json_extract(features, '$.is_home') FROM "
+        f"{TEST_POINTS_PREDICTION.name}"
+    ).fetchone()
+    assert value is not None
+    assert float(value[0]) == 1.0
