@@ -21,6 +21,7 @@ from fantasy_football.optimisation.optimiser import (
     _validate_initial_squad,
     optimise_plan,
 )
+from fantasy_football.optimisation.team_input import OwnedPlayer
 from fantasy_football.storage import database
 from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.tables import (
@@ -54,15 +55,20 @@ def _display(label: str) -> str:
 
 def _feasible_universe(
     gws: list[int], price: int = 50
-) -> tuple[pl.DataFrame, dict[int, int]]:
-    """Return (predictions, prices) with a legal 15-man squad available."""
+) -> tuple[pl.DataFrame, dict[tuple[int, int], int]]:
+    """Return (predictions, prices) with a legal 15-man squad available.
+
+    Prices are keyed on (element, gameweek), the grain the optimiser works
+    at, even though this universe holds them flat across the horizon.
+    """
     rows: list[dict] = []
-    prices: dict[int, int] = {}
+    prices: dict[tuple[int, int], int] = {}
     for index, label in enumerate(_labels):
         element = E[label]
         position = label.rstrip("0123456789")
         rank = int(label[len(position) :])
-        prices[element] = price
+        for gw in gws:
+            prices[element, gw] = price
         for gw in gws:
             rows.append(
                 {
@@ -92,6 +98,23 @@ _LEGAL_SQUAD = [
 # Same squad but holding FWD3 (7.0) instead of FWD2 (8.0) — a single
 # beneficial upgrade is available.
 _SQUAD_ONE_OFF = _LEGAL_SQUAD[:-1] + [E["FWD3"]]
+
+
+def _owned(elements: list[int], purchase: int = 50) -> list[OwnedPlayer]:
+    """Wrap element ids as a carried-in squad bought at a flat price."""
+    return [
+        OwnedPlayer(element=element, purchase_price=purchase)
+        for element in elements
+    ]
+
+
+def _now(prices: dict[tuple[int, int], int], gw: int) -> dict[int, int]:
+    """Collapse per-gameweek prices to the price in one gameweek."""
+    return {
+        element: price
+        for (element, week), price in prices.items()
+        if week == gw
+    }
 
 
 def _names_of(predictions: pl.DataFrame) -> dict[int, str]:
@@ -202,6 +225,7 @@ def test_plan_to_frame_has_one_row_per_gameweek() -> None:
                 hits=0,
                 free_transfers=1,
                 expected_points=50.0,
+                bank=5,
             ),
             GameweekPlan(
                 gw=11,
@@ -213,6 +237,7 @@ def test_plan_to_frame_has_one_row_per_gameweek() -> None:
                 hits=0,
                 free_transfers=2,
                 expected_points=48.0,
+                bank=3,
             ),
         ],
         total_expected_points=98.0,
@@ -261,7 +286,7 @@ def test_initial_squad_with_no_better_option_makes_no_transfers() -> None:
         prices,
         weeks=[10],
         start_gw=10,
-        initial_squad=_LEGAL_SQUAD,
+        initial_squad=_owned(_LEGAL_SQUAD),
         free_transfers=1,
     )
     assert _solve_problem(prob) == "Optimal"
@@ -277,7 +302,7 @@ def test_initial_squad_uses_one_free_transfer_to_upgrade() -> None:
         prices,
         weeks=[10],
         start_gw=10,
-        initial_squad=_SQUAD_ONE_OFF,
+        initial_squad=_owned(_SQUAD_ONE_OFF),
         free_transfers=1,
     )
     assert _solve_problem(prob) == "Optimal"
@@ -304,15 +329,15 @@ def test_initial_squad_pays_a_hit_to_make_extra_transfer() -> None:
         ]
     )
     predictions = pl.concat([predictions, stars])
-    prices[900] = 50
-    prices[901] = 50
+    prices[900, 10] = 50
+    prices[901, 10] = 50
 
     prob, v = _build_problem(
         predictions,
         prices,
         weeks=[10],
         start_gw=10,
-        initial_squad=_LEGAL_SQUAD,
+        initial_squad=_owned(_LEGAL_SQUAD),
         free_transfers=1,
     )
     assert _solve_problem(prob) == "Optimal"
@@ -347,12 +372,12 @@ def test_extract_plan_reports_start_gw_transfers_with_initial_squad() -> None:
         prices,
         weeks=[10],
         start_gw=10,
-        initial_squad=_SQUAD_ONE_OFF,
+        initial_squad=_owned(_SQUAD_ONE_OFF),
         free_transfers=1,
     )
     assert _solve_problem(prob) == "Optimal"
     plan = _extract_plan(
-        v, weeks=[10], start_gw=10, initial_squad=_SQUAD_ONE_OFF
+        v, weeks=[10], start_gw=10, initial_squad=_owned(_SQUAD_ONE_OFF)
     )
     gw = plan.gameweeks[0]
     assert gw.transfers_in == [E["FWD2"]]
@@ -393,8 +418,8 @@ def test_extra_transfers_incur_hits() -> None:
             ("GW11S", 900 + i, [(10, 0.0), (11, 101.0), (12, 0.0)]),
             ("GW12S", 950 + i, [(10, 0.0), (11, 0.0), (12, 100.0)]),
         ):
-            prices[element] = 50
             for gw, pts in points:
+                prices[element, gw] = 50
                 rows.append(
                     {
                         "element": element,
@@ -434,7 +459,7 @@ def test_start_gw_transfers_reduce_banked_free_transfers() -> None:
     compelling upgrades waiting at gw11, that missing FT forces a paid hit.
     """
     rows: list[dict] = []
-    prices: dict[int, int] = {}
+    prices: dict[tuple[int, int], int] = {}
     counts = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 3}
     squad: list[int] = []
     element = 0
@@ -442,8 +467,8 @@ def test_start_gw_transfers_reduce_banked_free_transfers() -> None:
         for j in range(n):
             element += 1
             squad.append(element)
-            prices[element] = 50
             for gw in (10, 11):
+                prices[element, gw] = 50
                 rows.append(
                     {
                         "element": element,
@@ -457,8 +482,8 @@ def test_start_gw_transfers_reduce_banked_free_transfers() -> None:
                 )
     # A start-gw upgrade (DEF), strong in both weeks -> bought at gw10.
     # New club C7 (not used by the base squad) to avoid the club cap.
-    prices[900] = 50
     for gw in (10, 11):
+        prices[900, gw] = 50
         rows.append(
             {
                 "element": 900,
@@ -472,8 +497,8 @@ def test_start_gw_transfers_reduce_banked_free_transfers() -> None:
         )
     # Two gw11-only MID stars (worthless at gw10) in fresh clubs.
     for s, club in enumerate(["C8", "C9"]):
-        prices[910 + s] = 50
         for gw, pts in ((10, 0.0), (11, 100.0)):
+            prices[910 + s, gw] = 50
             rows.append(
                 {
                     "element": 910 + s,
@@ -492,7 +517,7 @@ def test_start_gw_transfers_reduce_banked_free_transfers() -> None:
         prices,
         weeks=[10, 11],
         start_gw=10,
-        initial_squad=squad,
+        initial_squad=_owned(squad),
         free_transfers=1,
     )
     assert _solve_problem(prob) == "Optimal"
@@ -511,7 +536,10 @@ def test_validate_initial_squad_accepts_a_legal_squad() -> None:
     predictions, prices = _feasible_universe([10])
     assert (
         _validate_initial_squad(
-            _LEGAL_SQUAD, predictions, prices, _names_of(predictions)
+            _owned(_LEGAL_SQUAD),
+            predictions,
+            _now(prices, 10),
+            _names_of(predictions),
         )
         is None
     )
@@ -520,22 +548,20 @@ def test_validate_initial_squad_accepts_a_legal_squad() -> None:
 def test_validate_initial_squad_rejects_missing_data() -> None:
     """A squad member with no price/prediction is rejected by name."""
     predictions, prices = _feasible_universe([10])
-    squad = _LEGAL_SQUAD[:-1] + [777]  # 777 has no price/prediction
+    squad = _owned(_LEGAL_SQUAD[:-1] + [777])  # 777 has no price
     with pytest.raises(ValueError, match="777"):
         _validate_initial_squad(
-            squad, predictions, prices, _names_of(predictions)
+            squad, predictions, _now(prices, 10), _names_of(predictions)
         )
 
 
-def test_validate_initial_squad_names_offenders(
-    tmp_path,
-) -> None:
+def test_validate_initial_squad_names_offenders() -> None:
     """Errors carry the display name, not just the element id."""
     predictions, prices = _feasible_universe([10])
-    squad = [_LEGAL_SQUAD[0]] + _LEGAL_SQUAD  # 16 players, one duplicated
+    squad = _owned([_LEGAL_SQUAD[0]] + _LEGAL_SQUAD)  # 16, one duplicated
     with pytest.raises(ValueError, match=_display("GK0")):
         _validate_initial_squad(
-            squad, predictions, prices, _names_of(predictions)
+            squad, predictions, _now(prices, 10), _names_of(predictions)
         )
 
 
@@ -543,18 +569,20 @@ def test_validate_initial_squad_rejects_wrong_composition() -> None:
     """A 15-man squad with an illegal position split is rejected."""
     predictions, prices = _feasible_universe([10])
     # 3 GK / 5 DEF / 5 MID / 2 FWD = 15 players but illegal split.
-    squad = [
-        E[label]
-        for label in (
-            ["GK0", "GK1", "GK2"]
-            + ["DEF0", "DEF1", "DEF2", "DEF3", "DEF4"]
-            + ["MID0", "MID1", "MID2", "MID3", "MID4"]
-            + ["FWD0", "FWD1"]
-        )
-    ]
+    squad = _owned(
+        [
+            E[label]
+            for label in (
+                ["GK0", "GK1", "GK2"]
+                + ["DEF0", "DEF1", "DEF2", "DEF3", "DEF4"]
+                + ["MID0", "MID1", "MID2", "MID3", "MID4"]
+                + ["FWD0", "FWD1"]
+            )
+        ]
+    )
     with pytest.raises(ValueError, match="position split"):
         _validate_initial_squad(
-            squad, predictions, prices, _names_of(predictions)
+            squad, predictions, _now(prices, 10), _names_of(predictions)
         )
 
 
@@ -562,39 +590,94 @@ def test_validate_initial_squad_rejects_club_cap_breach() -> None:
     """A squad with more than the per-club cap is rejected."""
     predictions, prices = _feasible_universe([10])
     # GK0, DEF4, MID4, FWD4 all share club C0 (idx % 7) -> 4 from one club.
-    squad = [
-        E[label]
-        for label in (
-            ["GK0", "GK1"]
-            + ["DEF0", "DEF1", "DEF2", "DEF3", "DEF4"]
-            + ["MID0", "MID1", "MID2", "MID3", "MID4"]
-            + ["FWD0", "FWD1", "FWD4"]
-        )
-    ]
+    squad = _owned(
+        [
+            E[label]
+            for label in (
+                ["GK0", "GK1"]
+                + ["DEF0", "DEF1", "DEF2", "DEF3", "DEF4"]
+                + ["MID0", "MID1", "MID2", "MID3", "MID4"]
+                + ["FWD0", "FWD1", "FWD4"]
+            )
+        ]
+    )
     with pytest.raises(ValueError, match="per club"):
         _validate_initial_squad(
-            squad, predictions, prices, _names_of(predictions)
-        )
-
-
-def test_validate_initial_squad_rejects_over_budget() -> None:
-    """A squad valued above the budget is rejected."""
-    predictions, _ = _feasible_universe([10])
-    dear = {element: 100 for element in E.values()}  # 15 * 100 = 1500 > 1000
-    with pytest.raises(ValueError, match="budget"):
-        _validate_initial_squad(
-            _LEGAL_SQUAD, predictions, dear, _names_of(predictions)
+            squad, predictions, _now(prices, 10), _names_of(predictions)
         )
 
 
 def test_validate_initial_squad_rejects_duplicates() -> None:
     """A squad containing a duplicated player is rejected."""
     predictions, prices = _feasible_universe([10])
-    squad = [E["GK0"], E["GK0"]] + _LEGAL_SQUAD[2:]
+    squad = _owned([E["GK0"], E["GK0"]] + _LEGAL_SQUAD[2:])
     with pytest.raises(ValueError, match="duplicate"):
         _validate_initial_squad(
-            squad, predictions, prices, _names_of(predictions)
+            squad, predictions, _now(prices, 10), _names_of(predictions)
         )
+
+
+def test_validate_initial_squad_rejects_a_non_positive_purchase_price() -> (
+    None
+):
+    """A purchase price of zero or less is an entry error, not a squad."""
+    predictions, prices = _feasible_universe([10])
+    squad = _owned(_LEGAL_SQUAD)
+    squad[0] = OwnedPlayer(element=_LEGAL_SQUAD[0], purchase_price=0)
+    with pytest.raises(ValueError, match="purchase price"):
+        _validate_initial_squad(
+            squad, predictions, _now(prices, 10), _names_of(predictions)
+        )
+
+
+def test_validate_initial_squad_accepts_a_squad_valued_over_the_budget(
+    caplog,
+) -> None:
+    """Squad value is no longer a constraint -- the bank is.
+
+    A carried-in squad cost whatever it cost; affordability is expressed by
+    the bank never going negative, so an expensive squad is not an error.
+    """
+    predictions, _ = _feasible_universe([10], price=100)
+    dear = {element: 100 for element in E.values()}  # 15 * 100 = 1500
+    assert (
+        _validate_initial_squad(
+            _owned(_LEGAL_SQUAD, purchase=100),
+            predictions,
+            dear,
+            _names_of(predictions),
+        )
+        is None
+    )
+
+
+def test_validate_initial_squad_warns_on_an_implausible_purchase_price(
+    caplog,
+) -> None:
+    """A purchase price far from the current price is flagged, not fatal."""
+    predictions, prices = _feasible_universe([10])
+    squad = _owned(_LEGAL_SQUAD)
+    # Bought at 5.0, "now" 12.0 -- a typo or a stale team file.
+    squad[0] = OwnedPlayer(element=_LEGAL_SQUAD[0], purchase_price=120)
+    with caplog.at_level("WARNING"):
+        _validate_initial_squad(
+            squad, predictions, _now(prices, 10), _names_of(predictions)
+        )
+    assert _display("GK0") in caplog.text
+
+
+def test_validate_initial_squad_accepts_a_large_but_legal_rise(
+    caplog,
+) -> None:
+    """A genuine riser inside the tolerance draws no warning."""
+    predictions, prices = _feasible_universe([10])
+    squad = _owned(_LEGAL_SQUAD)
+    squad[0] = OwnedPlayer(element=_LEGAL_SQUAD[0], purchase_price=40)
+    with caplog.at_level("WARNING"):
+        _validate_initial_squad(
+            squad, predictions, _now(prices, 10), _names_of(predictions)
+        )
+    assert caplog.text == ""
 
 
 def test_optimise_plan_writes_jsonl_and_returns_gameweek_plans(
@@ -637,6 +720,209 @@ def test_optimise_plan_writes_markdown_report(
     assert "--- bench ---" in text
     # Positions resolve, so no player falls through to the "?" bucket.
     assert "| ? |" not in text
+
+
+def test_free_build_cannot_exceed_the_opening_budget() -> None:
+    """A universe priced beyond 100.0m for 15 players has no legal squad."""
+    predictions, prices = _feasible_universe([10], price=70)  # 15*70 = 1050
+    prob, _ = _build_problem(predictions, prices, weeks=[10], start_gw=10)
+    assert _solve_problem(prob) != "Optimal"
+
+
+def test_free_build_bank_is_the_budget_less_the_squad_cost() -> None:
+    """The opening bank is what the free build did not spend."""
+    predictions, prices = _feasible_universe([10])  # 15 * 50 = 750
+    prob, v = _build_problem(predictions, prices, weeks=[10], start_gw=10)
+    assert _solve_problem(prob) == "Optimal"
+    assert round(v["bank"][10].value()) == 250
+
+
+def test_a_risen_player_sells_for_less_than_their_current_price() -> None:
+    """Selling a riser banks purchase plus half the profit, not the price.
+
+    The carried-in FWD2 was bought at 5.0 and is now worth 7.0, so he sells
+    for 6.0 -- not 7.0. Replacing him with a 5.0 star therefore leaves 1.0
+    in the bank; a model believing the current price would leave 2.0.
+    """
+    predictions, prices = _feasible_universe([10])
+    riser = E["FWD2"]
+    prices[riser, 10] = 70
+    predictions = predictions.with_columns(
+        pl.when(pl.col("element") == riser)
+        .then(70)
+        .otherwise(pl.col("value"))
+        .alias("value")
+    )
+    star = pl.DataFrame(
+        [
+            {
+                "element": 900,
+                "gw": 10,
+                "name": _display("STAR"),
+                "position": "FWD",
+                "team": "X0",
+                "value": 50,
+                "predicted_points": 100.0,
+            }
+        ]
+    )
+    predictions = pl.concat([predictions, star])
+    prices[900, 10] = 50
+
+    squad = _owned(_LEGAL_SQUAD)
+    squad[-1] = OwnedPlayer(element=riser, purchase_price=50)
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10],
+        start_gw=10,
+        initial_squad=squad,
+        free_transfers=1,
+        bank=0,
+    )
+    assert _solve_problem(prob) == "Optimal"
+    sold = [p for (p, t), var in v["sell"].items() if round(var.value()) == 1]
+    assert sold == [riser]
+    assert round(v["bank"][10].value()) == 10
+
+
+def _swap_universe() -> (
+    tuple[pl.DataFrame, dict[tuple[int, int], int], list[int]]
+):
+    """Build a squad plus two FWDs that must be swapped every week.
+
+    The carried-in RISER (bought 5.0, now 7.0, so sells for 6.0) scores only
+    in gw11; the SWAP target (7.8) scores only in gw10 and gw12. With 2.0 in
+    the bank, SWAP is affordable only by selling RISER, which is what forces
+    the sell/rebuy/sell dance the spread accounting has to survive.
+    """
+    rows: list[dict] = []
+    prices: dict[tuple[int, int], int] = {}
+    weeks = [10, 11, 12]
+    counts = {"GK": 2, "DEF": 5, "MID": 5, "FWD": 2}
+    squad: list[int] = []
+    element = 0
+    for pos, n in counts.items():
+        for j in range(n):
+            element += 1
+            squad.append(element)
+            for gw in weeks:
+                prices[element, gw] = 50
+                rows.append(
+                    {
+                        "element": element,
+                        "gw": gw,
+                        "name": _display(f"{pos}{j}"),
+                        "position": pos,
+                        "team": _CLUBS[(element - 1) % len(_CLUBS)],
+                        "value": 50,
+                        "predicted_points": 2.0,
+                    }
+                )
+    for tag, ident, price, club, points in (
+        ("RISER", 900, 70, "X0", [0.0, 1000.0, 0.0]),
+        ("SWAP", 901, 78, "X1", [1000.0, 0.0, 1000.0]),
+    ):
+        for gw, pts in zip(weeks, points, strict=True):
+            prices[ident, gw] = price
+            rows.append(
+                {
+                    "element": ident,
+                    "gw": gw,
+                    "name": _display(tag),
+                    "position": "FWD",
+                    "team": club,
+                    "value": price,
+                    "predicted_points": pts,
+                }
+            )
+    squad.append(900)
+    return pl.DataFrame(rows), prices, squad
+
+
+def test_a_rebought_player_sells_at_their_new_purchase_price() -> None:
+    """The profit spread is consumed by the first sale and never again.
+
+    The plan sells RISER in gw10, buys him back in gw11 and sells him again
+    in gw12. The first sale banks the spread price (6.0); the second banks
+    the price actually paid to get him back (7.0), because the repurchase
+    reset his purchase price. Both assertions matter -- either one alone
+    passes against a broken implementation.
+    """
+    predictions, prices, squad = _swap_universe()
+    riser, swap = 900, 901
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10, 11, 12],
+        start_gw=10,
+        initial_squad=_owned(squad),
+        free_transfers=1,
+        bank=20,
+    )
+    assert _solve_problem(prob) == "Optimal"
+
+    def moved(kind: str, gw: int) -> list[int]:
+        return sorted(
+            p
+            for (p, t), var in v[kind].items()
+            if t == gw and round(var.value()) == 1
+        )
+
+    assert (moved("sell", 10), moved("buy", 10)) == ([riser], [swap])
+    assert (moved("sell", 11), moved("buy", 11)) == ([swap], [riser])
+    assert (moved("sell", 12), moved("buy", 12)) == ([riser], [swap])
+
+    # gw10: 2.0 + 6.0 (spread) - 7.8 = 0.2
+    assert round(v["bank"][10].value()) == 2
+    # gw11: 0.2 + 7.8 - 7.0 = 1.0
+    assert round(v["bank"][11].value()) == 10
+    # gw12: 1.0 + 7.0 (NOT the 6.0 spread again) - 7.8 = 0.2
+    assert round(v["bank"][12].value()) == 2
+
+
+def test_the_bank_never_goes_negative() -> None:
+    """An upgrade costing more than the squad can raise is not planned."""
+    predictions, prices = _feasible_universe([10])
+    star = pl.DataFrame(
+        [
+            {
+                "element": 900,
+                "gw": 10,
+                "name": _display("STAR"),
+                "position": "FWD",
+                "team": "X0",
+                "value": 90,
+                "predicted_points": 100.0,
+            }
+        ]
+    )
+    predictions = pl.concat([predictions, star])
+    prices[900, 10] = 90
+
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10],
+        start_gw=10,
+        initial_squad=_owned(_LEGAL_SQUAD),
+        free_transfers=1,
+        bank=0,
+    )
+    assert _solve_problem(prob) == "Optimal"
+    # Selling a 5.0 player raises 5.0 against a 9.0 price tag, so no deal.
+    buys = [p for (p, t), var in v["buy"].items() if round(var.value()) == 1]
+    assert buys == []
+    assert round(v["bank"][10].value()) == 0
+
+
+def test_extract_plan_reports_the_bank_per_gameweek() -> None:
+    """The extracted plan carries the solved bank for each gameweek."""
+    predictions, prices = _feasible_universe([10])
+    prob, v = _build_problem(predictions, prices, weeks=[10], start_gw=10)
+    assert _solve_problem(prob) == "Optimal"
+    plan = _extract_plan(v, weeks=[10], start_gw=10)
+    assert plan.gameweeks[0].bank == 250
 
 
 def test_optimise_plan_sums_double_gameweek_fixtures(
@@ -702,7 +988,7 @@ def test_optimise_plan_rejects_a_start_gw_that_is_not_first_predicted(
             season=SEASON,
             start_gw=11,
             horizon=1,
-            initial_squad=_LEGAL_SQUAD,
+            initial_squad=_owned(_LEGAL_SQUAD),
         )
 
 
@@ -718,7 +1004,7 @@ def test_optimise_plan_without_forward_predictions_raises(
             season="2019-20",
             start_gw=10,
             horizon=1,
-            initial_squad=_LEGAL_SQUAD,
+            initial_squad=_owned(_LEGAL_SQUAD),
         )
 
 
@@ -741,7 +1027,7 @@ def test_optimise_plan_fails_when_a_position_has_no_predictions(
             season=SEASON,
             start_gw=10,
             horizon=1,
-            initial_squad=_LEGAL_SQUAD,
+            initial_squad=_owned(_LEGAL_SQUAD),
         )
 
 
@@ -756,7 +1042,7 @@ def test_optimise_plan_with_initial_squad_reports_start_gw_transfer(
         season=SEASON,
         start_gw=10,
         horizon=2,
-        initial_squad=_SQUAD_ONE_OFF,
+        initial_squad=_owned(_SQUAD_ONE_OFF),
         free_transfers=1,
     )
     gw10 = next(p for p in plans if p.gameweek == 10)
@@ -776,7 +1062,7 @@ def test_optimise_plan_ignores_initial_squad_at_gw1(
         season=SEASON,
         start_gw=1,
         horizon=2,
-        initial_squad=_SQUAD_ONE_OFF,
+        initial_squad=_owned(_SQUAD_ONE_OFF),
     )
     gw1 = next(p for p in plans if p.gameweek == 1)
     assert gw1.transfers_in == []
@@ -794,7 +1080,7 @@ def test_optimise_plan_derives_budget_from_squad_value_over_1000(
         season=SEASON,
         start_gw=10,
         horizon=2,
-        initial_squad=_LEGAL_SQUAD,
+        initial_squad=_owned(_LEGAL_SQUAD),
         free_transfers=1,
         bank=0,
     )
@@ -809,7 +1095,8 @@ def test_optimise_plan_bank_raises_effective_budget(
 
     The squad is fully priced at the budget ceiling, so an upgrade to a
     pricier, far better player is only affordable when the bank covers the
-    price difference.
+    price difference. Every player is carried in at what they are worth now,
+    so no profit spread muddies the arithmetic -- that is tested separately.
     """
     predictions, _ = _feasible_universe([10], price=66)  # 15 * 66 = 990
     # A standout upgrade at MID priced 16 above the player it replaces, in a
@@ -833,7 +1120,7 @@ def test_optimise_plan_bank_raises_effective_budget(
         season=SEASON,
         start_gw=10,
         horizon=1,
-        initial_squad=_LEGAL_SQUAD,
+        initial_squad=_owned(_LEGAL_SQUAD, purchase=66),
         free_transfers=1,
         bank=0,
     )
@@ -843,7 +1130,7 @@ def test_optimise_plan_bank_raises_effective_budget(
         season=SEASON,
         start_gw=10,
         horizon=1,
-        initial_squad=_LEGAL_SQUAD,
+        initial_squad=_owned(_LEGAL_SQUAD, purchase=66),
         free_transfers=1,
         bank=16,
     )
@@ -866,6 +1153,7 @@ def test_to_gameweek_plans_maps_ids_and_points() -> None:
                 hits=0,
                 free_transfers=1,
                 expected_points=12.0,
+                bank=9,
             )
         ],
         total_expected_points=12.0,

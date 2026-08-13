@@ -16,7 +16,14 @@ from fantasy_football.optimisation.inputs import (
     forward_gameweeks,
     load_optimiser_inputs,
 )
-from fantasy_football.optimisation.plan_report import write_plan_report
+from fantasy_football.optimisation.plan_report import (
+    PlayerPrices,
+    write_plan_report,
+)
+from fantasy_football.optimisation.team_input import (
+    OwnedPlayer,
+    selling_price,
+)
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -33,6 +40,9 @@ BENCH_WEIGHT = 0.1
 HIT_COST = 4
 MAX_FREE_TRANSFERS = 5
 DEFAULT_HORIZON = 8
+# How far a hand-entered purchase price may sit from the current price before
+# it looks more like a typo than a price move. Warned about, never fatal.
+PURCHASE_PRICE_TOLERANCE = 20
 
 
 @dataclass
@@ -48,6 +58,7 @@ class GameweekPlan:
     hits: int
     free_transfers: int
     expected_points: float
+    bank: int
 
 
 @dataclass
@@ -91,6 +102,7 @@ class Plan:
                     "hits": g.hits,
                     "free_transfers": g.free_transfers,
                     "expected_points": g.expected_points,
+                    "bank": g.bank,
                 }
                 for g in self.gameweeks
             ]
@@ -123,41 +135,70 @@ def _by_element(predictions: pl.DataFrame, column: str) -> dict:
     )
 
 
+def _prices_by_gameweek(
+    predictions: pl.DataFrame,
+) -> dict[tuple[int, int], int]:
+    """Return the current price keyed on (element, gameweek).
+
+    Prices are kept at this grain rather than collapsed per player so that a
+    future model of price movement can vary them week to week without
+    reshaping anything downstream. Today every week holds the same value.
+
+    Parameters
+    ----------
+    predictions : pl.DataFrame
+        The optimiser's input rows, one per (element, gameweek).
+
+    Returns
+    -------
+    dict[tuple[int, int], int]
+        Price in tenths of a million for each (element, gameweek).
+    """
+    return {
+        (row["element"], row["gw"]): row["value"]
+        for row in predictions.select("element", "gw", "value").iter_rows(
+            named=True
+        )
+    }
+
+
 def _validate_initial_squad(
-    initial_squad: list[int],
+    initial_squad: list[OwnedPlayer],
     predictions: pl.DataFrame,
     prices: dict[int, int],
     names: Mapping[int, str],
-    budget: int = BUDGET,
 ) -> None:
     """Validate a carried-in squad, raising ValueError with named offenders.
 
     Checks, in order: data availability (price + prediction rows), duplicates,
-    squad size and position split, the per-club cap, and the budget. Each
-    failure raises a ValueError naming the offending players, clubs, or value.
+    squad size and position split, the per-club cap, and purchase prices. Each
+    failure raises a ValueError naming the offending players or clubs.
     Offenders are reported by name -- the squad is keyed on element id, but an
     error message full of ids is not actionable.
 
+    There is deliberately no squad-value check. Affordability is expressed by
+    the bank never going negative, and the carried-in squad cost whatever it
+    cost, so comparing its value to the opening budget would be meaningless.
+
     Parameters
     ----------
-    initial_squad : list[int]
-        The carried-in squad (element ids).
+    initial_squad : list[OwnedPlayer]
+        The carried-in squad, each player with the price they were bought at.
     predictions : pl.DataFrame
         Prediction rows for the horizon (filtered to the optimised weeks).
     prices : dict[int, int]
-        Player price in tenths of a million, keyed on element id.
+        Current player price in tenths of a million, keyed on element id.
     names : Mapping[int, str]
         Element id to display name, for error messages.
-    budget : int, optional
-        The effective budget ceiling. Defaults to BUDGET (1000).
     """
 
     def label(element: int) -> str:
         return f"{names.get(element, '?')} ({element})"
 
+    elements = [player.element for player in initial_squad]
     known = set(predictions["element"].to_list())
-    missing_pred = sorted(p for p in initial_squad if p not in known)
-    missing_price = sorted(p for p in initial_squad if p not in prices)
+    missing_pred = sorted(p for p in elements if p not in known)
+    missing_price = sorted(p for p in elements if p not in prices)
     if missing_pred or missing_price:
         raise ValueError(
             "initial_squad players missing data: no predictions for "
@@ -165,9 +206,7 @@ def _validate_initial_squad(
             f"{[label(p) for p in missing_price]}"
         )
 
-    duplicates = sorted(
-        {p for p in initial_squad if initial_squad.count(p) > 1}
-    )
+    duplicates = sorted({p for p in elements if elements.count(p) > 1})
     if duplicates:
         raise ValueError(
             f"initial_squad has duplicate players: "
@@ -186,7 +225,7 @@ def _validate_initial_squad(
     club = dict(zip(predictions["element"], predictions["team"], strict=False))
 
     counts = {position: 0 for position in SQUAD_BY_POSITION}
-    for p in initial_squad:
+    for p in elements:
         counts[pos[p]] += 1
     if counts != SQUAD_BY_POSITION:
         raise ValueError(
@@ -195,7 +234,7 @@ def _validate_initial_squad(
         )
 
     club_counts: dict[str, int] = {}
-    for p in initial_squad:
+    for p in elements:
         club_counts[club[p]] = club_counts.get(club[p], 0) + 1
     over = {c: n for c, n in club_counts.items() if n > MAX_PER_CLUB}
     if over:
@@ -203,22 +242,43 @@ def _validate_initial_squad(
             f"initial_squad exceeds {MAX_PER_CLUB} players per club: {over}"
         )
 
-    value = sum(prices[p] for p in initial_squad)
-    if value > budget:
+    nonsense = sorted(
+        player.element
+        for player in initial_squad
+        if player.purchase_price <= 0
+    )
+    if nonsense:
         raise ValueError(
-            f"initial_squad value {value} exceeds budget {budget}"
+            "initial_squad has a non-positive purchase price for "
+            f"{[label(p) for p in nonsense]}"
         )
+
+    # A hand-typed purchase price that is wildly out distorts the budget
+    # silently, so it is worth flagging -- but a genuine big riser is legal
+    # and must not block a run.
+    for player in initial_squad:
+        drift = abs(player.purchase_price - prices[player.element])
+        if drift > PURCHASE_PRICE_TOLERANCE:
+            logger.warning(
+                "%s has a purchase price of %d against a current price of "
+                "%d. That is a %.1fm gap -- check the team file is not stale "
+                "and the price is not a typo.",
+                label(player.element),
+                player.purchase_price,
+                prices[player.element],
+                drift / 10,
+            )
 
 
 def _build_problem(
     predictions: pl.DataFrame,
-    prices: dict[int, int],
+    prices: dict[tuple[int, int], int],
     weeks: list[int],
     start_gw: int,
-    initial_squad: list[int] | None = None,
+    initial_squad: list[OwnedPlayer] | None = None,
     free_transfers: int = 1,
     bench_weight: float = BENCH_WEIGHT,
-    budget: int = BUDGET,
+    bank: int = 0,
 ) -> tuple[pulp.LpProblem, dict]:
     """Construct the multi-week FPL MILP.
 
@@ -226,6 +286,8 @@ def _build_problem(
       own[p,t], start[p,t], cap[p,t], buy[p,t], sell[p,t]  (all binary)
       ft[t]   integer free transfers banked at the start of week t (0..5)
       paid[t] integer transfers paid for as hits in week t (>= 0)
+      bank[t] continuous money held after week t's transfers settle (>= 0)
+      first_sale[p,t] continuous in [0,1], only for carried-in risers
 
     Free-transfer banking is enforced with upper bounds only:
       ft[t+1] <= 5  and  ft[t+1] <= ft[t] - transfers[t] + paid[t] + 1.
@@ -233,39 +295,49 @@ def _build_problem(
     `paid` constraints), so the solver drives ft to min(5, earned) without
     needing auxiliary binaries.
 
+    Money is a flow, not a stock: buying costs the current price and selling
+    raises the *selling* price, which for a risen carried-in player is less.
+    A single squad-value ceiling cannot express that difference, so the
+    constraint is `bank[t] >= 0` seeded from what the manager holds. Both
+    paths share it -- a free build simply seeds the bank with the full
+    budget, which reproduces the 100.0m opening rule.
+
     Returns the problem plus a dict of variable containers for extraction.
 
     Parameters
     ----------
     predictions : pl.DataFrame
         Rows of (element, position, team, gw, predicted_points).
-    prices : dict[int, int]
-        Player price in tenths of a million, keyed on element id.
+    prices : dict[tuple[int, int], int]
+        Current player price in tenths of a million, keyed on (element,
+        gameweek). Prices are held per gameweek so that a future price model
+        can vary them without reshaping anything downstream, even though
+        today they are flat across the horizon.
     weeks : list[int]
         Gameweek numbers to optimise over.
     start_gw : int
         The first gameweek of the horizon.
-    initial_squad : list[int] or None, optional
-        Players already owned before the horizon starts. When provided,
-        start_gw uses the carried-in squad as the baseline and applies
-        the transfer identity (own = initial + buy - sell). When None,
-        a fresh free-build squad is constructed at start_gw.
+    initial_squad : list[OwnedPlayer] or None, optional
+        Players already owned before the horizon starts, with the price they
+        were bought at. When provided, start_gw uses the carried-in squad as
+        the baseline and applies the transfer identity (own = initial + buy -
+        sell). When None, a fresh free-build squad is constructed at start_gw.
     free_transfers : int, optional
         Number of free transfers available at start_gw when initial_squad
         is provided. Ignored for a free-build (initial_squad=None).
         Defaults to 1.
     bench_weight : float, optional
         Weight applied to bench players' predicted points.
-    budget : int, optional
-        The effective budget ceiling in tenths of a million. Defaults to
-        BUDGET (1000).
+    bank : int, optional
+        Money carried into start_gw in tenths of a million. Ignored for a
+        free build, which opens with the full budget instead. Defaults to 0.
 
     Returns
     -------
     tuple[pulp.LpProblem, dict]
         The PuLP problem and a dict of variable containers keyed by
         ``own``, ``start``, ``cap``, ``buy``, ``sell``, ``ft``,
-        ``paid``, ``points``, and ``pos``.
+        ``paid``, ``bank``, ``first_sale``, ``points``, and ``pos``.
     """
     players = predictions["element"].unique().to_list()
     pos = dict(
@@ -306,7 +378,6 @@ def _build_problem(
                 pulp.lpSum(own[p, t] for p in players if pos[p] == position)
                 == n
             )
-        prob += pulp.lpSum(prices[p] * own[p, t] for p in players) <= budget
         for c in set(club.values()):
             prob += (
                 pulp.lpSum(own[p, t] for p in players if club[p] == c)
@@ -325,10 +396,79 @@ def _build_problem(
         prob += pulp.lpSum(cap[p, t] for p in players) == 1
 
     free_build = initial_squad is None
-    squad_set = set(initial_squad or [])
-    initial = {p: int(p in squad_set) for p in players}
+    purchase = {
+        player.element: player.purchase_price for player in initial_squad or []
+    }
+    initial = {p: int(p in purchase) for p in players}
 
     ordered = sorted(weeks)
+
+    # Only a carried-in player who has *risen* sells for less than they cost
+    # today. For everyone else -- fallers, flats, and anyone bought during the
+    # horizon -- the selling price already equals the current price, so
+    # tracking their original instance would add variables that change
+    # nothing.
+    known = set(players)
+    risers = [
+        p
+        for p in purchase
+        if p in known and prices.get((p, start_gw), 0) > purchase[p]
+    ]
+    spread = {
+        (p, t): selling_price(purchase[p], prices[p, t])
+        for p in risers
+        for t in ordered
+    }
+    first_sale = {
+        (p, t): pulp.LpVariable(
+            f"first_sale_{p}_{t}", lowBound=0, upBound=1, cat="Continuous"
+        )
+        for p in risers
+        for t in ordered
+    }
+    for p in risers:
+        # The profit spread exists once. It is consumed by the sale that
+        # parts the manager from the player they carried in; if the plan buys
+        # them back, that repurchase resets their purchase price to whatever
+        # was paid, which under frozen prices is the current price.
+        #
+        # That last clause is what a price model would break. Once prices
+        # move, *every* purchase accrues its own spread, so a single
+        # "carried-in or not" split stops being enough -- the model would
+        # need to track which week each ownership episode began, not just
+        # whether the first sale has happened.
+        prob += pulp.lpSum(first_sale[p, t] for t in ordered) <= 1
+        for k, t in enumerate(ordered):
+            prob += first_sale[p, t] <= sell[p, t]
+            # Force the spread onto the FIRST sale. Without this the solver
+            # would label it a later sale, because for a riser the spread
+            # price is the lower one.
+            earlier = pulp.lpSum(sell[p, s] for s in ordered[:k])
+            prob += first_sale[p, t] >= sell[p, t] - earlier
+
+    def proceeds(p: int, t: int):
+        """Money raised by selling player p in week t."""
+        if p in risers:
+            return (
+                first_sale[p, t] * spread[p, t]
+                + (sell[p, t] - first_sale[p, t]) * prices[p, t]
+            )
+        return sell[p, t] * prices[p, t]
+
+    # A free build has no carried-in squad to sell, so seeding its bank with
+    # the whole budget reproduces the 100.0m opening rule exactly, and lets
+    # the same flow constraint govern the rest of its horizon.
+    opening_bank = BUDGET if free_build else bank
+    bank_vars = {
+        t: pulp.LpVariable(f"bank_{t}", lowBound=0, cat="Continuous")
+        for t in ordered
+    }
+    for k, t in enumerate(ordered):
+        held = opening_bank if k == 0 else bank_vars[ordered[k - 1]]
+        prob += bank_vars[t] == held + pulp.lpSum(
+            proceeds(p, t) for p in players
+        ) - pulp.lpSum(prices[p, t] * buy[p, t] for p in players)
+
     for k, t in enumerate(ordered):
         if k == 0:
             # First gameweek: set the opening conditions.
@@ -377,6 +517,8 @@ def _build_problem(
         "sell": sell,
         "ft": ft,
         "paid": paid,
+        "bank": bank_vars,
+        "first_sale": first_sale,
         "points": points,
         "pos": pos,
     }
@@ -404,7 +546,7 @@ def _extract_plan(
     variables: dict,
     weeks: list[int],
     start_gw: int,
-    initial_squad: list[int] | None = None,
+    initial_squad: list[OwnedPlayer] | None = None,
 ) -> Plan:
     """Convert solved MILP variables into a Plan.
 
@@ -416,7 +558,7 @@ def _extract_plan(
         The gameweeks that were optimised, in any order.
     start_gw: int
         The first gameweek of the horizon.
-    initial_squad: list[int] or None, optional
+    initial_squad: list[OwnedPlayer] or None, optional
         The squad carried into the horizon. Controls whether start_gw transfers
         are reported: when None (free build), start_gw transfers are blanked
         (the opening squad is just "bought", not transferred into). When
@@ -430,6 +572,7 @@ def _extract_plan(
     own, start, cap = variables["own"], variables["start"], variables["cap"]
     buy, sell = variables["buy"], variables["sell"]
     ft, paid = variables["ft"], variables["paid"]
+    bank = variables["bank"]
     points = variables["points"]
 
     def chosen(container, t):
@@ -466,6 +609,7 @@ def _extract_plan(
                 hits=hits,
                 free_transfers=int(round(ft[t].value())),
                 expected_points=expected,
+                bank=int(round(bank[t].value())),
             )
         )
     return Plan(
@@ -526,9 +670,45 @@ def _to_gameweek_plans(
                 hits=g.hits,
                 free_transfers=g.free_transfers,
                 expected_points=g.expected_points,
+                bank=g.bank,
             )
         )
     return plans
+
+
+def _report_prices(
+    current_prices: dict[int, int],
+    initial_squad: list[OwnedPlayer] | None,
+) -> dict[int, PlayerPrices]:
+    """Return the three prices per player, for the report to display.
+
+    Only a carried-in player has a purchase price distinct from today's; for
+    everyone else all three prices are the current one, which is exactly what
+    a player bought during the horizon would fetch.
+
+    Parameters
+    ----------
+    current_prices : dict[int, int]
+        Current price in tenths of a million, keyed on element id.
+    initial_squad : list[OwnedPlayer] or None
+        The carried-in squad, or None for a free build.
+
+    Returns
+    -------
+    dict[int, PlayerPrices]
+        Purchase, current and selling price for each priced player.
+    """
+    purchase = {
+        player.element: player.purchase_price for player in initial_squad or []
+    }
+    return {
+        element: PlayerPrices(
+            purchase=purchase.get(element, current),
+            current=current,
+            selling=selling_price(purchase.get(element, current), current),
+        )
+        for element, current in current_prices.items()
+    }
 
 
 def _resolve_weeks(
@@ -590,7 +770,7 @@ def optimise_plan(
     season: str,
     start_gw: int,
     horizon: int | None = None,
-    initial_squad: list[int] | None = None,
+    initial_squad: list[OwnedPlayer] | None = None,
     free_transfers: int = 1,
     bank: int = 0,
     connection: "DuckDBPyConnection | None" = None,
@@ -610,16 +790,16 @@ def optimise_plan(
     horizon: int | None
         Number of gameweeks to plan from start_gw inclusive. Defaults to
         DEFAULT_HORIZON, clamped to the gameweeks available in predictions.
-    initial_squad: list[int] | None
-        Required when start_gw > 1: the element ids carried into that
-        gameweek. Ignored at GW1 (free build).
+    initial_squad: list[OwnedPlayer] | None
+        Required when start_gw > 1: the players carried into that gameweek,
+        each with the price they were bought at. Ignored at GW1 (free build).
     free_transfers: int
         Free transfers available at start_gw (1..MAX_FREE_TRANSFERS).
         Ignored at start_gw == 1 (a free build always opens with one free transfer).
     bank: int
-        Money in the bank (tenths of a million) added to the carried-in
-        squad's value to form the budget. Ignored for a free build
-        (start_gw == 1). Defaults to 0.
+        Money in the bank (tenths of a million) carried into start_gw.
+        Ignored for a free build (start_gw == 1), which opens with the full
+        budget instead. Defaults to 0.
     connection: duckdb.DuckDBPyConnection | None
         An open connection. When None, one is opened per table read.
 
@@ -653,24 +833,23 @@ def optimise_plan(
     weeks = _resolve_weeks(season, start_gw, horizon, connection)
     predictions = load_optimiser_inputs(season, weeks, connection)
 
-    # TODO(JT): prices are the current market value, so the optimiser assumes
-    # a player can be sold for what they now cost. FPL sells at purchase price
-    # plus half the profit, so any squad player who has risen is worth less
-    # than this thinks and the budget is over-estimated. Fixing it needs
-    # per-player purchase prices carried in the team file.
-    prices = _by_element(predictions, "value")
+    # TODO(JT): purchase prices are hand-entered in the team file. The
+    # authenticated FPL my-team endpoint returns purchase and selling price
+    # directly, which would remove the transcription step -- and the chance
+    # of a typo -- at the cost of carrying session authentication here.
+    prices = _prices_by_gameweek(predictions)
+    current_prices = {
+        element: price
+        for (element, week), price in prices.items()
+        if week == start_gw
+    }
     names = _by_element(predictions, "name")
     positions = _by_element(predictions, "position")
 
     if initial_squad is not None:
-        # Any squad player missing a price is caught with a clear error in
-        # _validate_initial_squad below; the guard just avoids a KeyError here.
-        budget = sum(prices[p] for p in initial_squad if p in prices) + bank
         _validate_initial_squad(
-            initial_squad, predictions, prices, names, budget
+            initial_squad, predictions, current_prices, names
         )
-    else:
-        budget = BUDGET
 
     prob, variables = _build_problem(
         predictions,
@@ -679,7 +858,7 @@ def optimise_plan(
         start_gw,
         initial_squad,
         free_transfers,
-        budget=budget,
+        bank=bank,
     )
     status = _solve_problem(prob)
     if status != "Optimal":
@@ -699,6 +878,7 @@ def optimise_plan(
     write_plan_report(
         gameweek_plans,
         positions,
+        _report_prices(current_prices, initial_squad),
         TRANSFORMED_DATA_FOLDER.joinpath("optimisation_plan.md"),
     )
     logger.info(

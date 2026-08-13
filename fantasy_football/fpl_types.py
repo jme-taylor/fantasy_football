@@ -343,6 +343,9 @@ class GameWeekPlan:
         The amount of free transfers we'll have left this gameweek.
     expected_points: float
         How many points we expect this gameweek.
+    bank: int
+        Money held after this gameweek's transfers settle, in tenths of a
+        million.
     """
 
     gameweek: int
@@ -354,3 +357,4 @@ class GameWeekPlan:
     hits: int
     free_transfers: int
     expected_points: float
+    bank: int

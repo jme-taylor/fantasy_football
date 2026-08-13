@@ -58,7 +58,7 @@ from fantasy_football.optimisation.inputs import forward_gameweeks
 from fantasy_football.optimisation.optimiser import optimise_plan
 from fantasy_football.optimisation.team_input import (
     load_team_file,
-    resolve_names_to_ids,
+    resolve_squad,
 )
 from fantasy_football.storage.database import get_connection, reset_database
 from fantasy_football.storage.tables import PLAYER_WEEK, TEAM_FIXTURE
@@ -337,7 +337,7 @@ def main(
         CURRENT_SEASON,
         team.gameweek,
         horizon=38,
-        initial_squad=resolve_names_to_ids(team.players, CURRENT_SEASON),
+        initial_squad=resolve_squad(team.players, CURRENT_SEASON),
         free_transfers=team.free_transfers,
         bank=team.bank,
     )
