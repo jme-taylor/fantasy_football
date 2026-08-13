@@ -522,13 +522,16 @@ def test_train_final_fits_on_every_row(predictor, synthetic_frame) -> None:
 
 def _patch_mlflow(mocker, run_id: str = "run-1"):
     """Patch the MLflow calls the base class makes, naming the run."""
-    for name in ("set_experiment", "log_params", "log_metric"):
+    for name in ("set_experiment", "log_params"):
         mocker.patch(f"fantasy_football.modelling.predictor.mlflow.{name}")
     start_run = mocker.patch(
         "fantasy_football.modelling.predictor.mlflow.start_run"
     )
     start_run.return_value.__enter__.return_value.info.run_id = run_id
     return SimpleNamespace(
+        log_metric=mocker.patch(
+            "fantasy_football.modelling.predictor.mlflow.log_metric"
+        ),
         log_metrics=mocker.patch(
             "fantasy_football.modelling.predictor.mlflow.log_metrics"
         ),
@@ -557,6 +560,39 @@ def test_train_and_register_model_logs_and_registers(
         patched.log_model.call_args.kwargs["registered_model_name"]
         == predictor.model_spec.registered_model_name
     )
+
+
+def test_train_and_register_model_prefixes_per_fold_metrics(
+    predictor, synthetic_frame, mocker
+) -> None:
+    """Per-fold series are prefixed too, or holdout and CV runs collide.
+
+    A bare ``mae`` at step 0 would land in the same MLflow series as
+    every historical cross-validated ``mae``.
+    """
+    predictor._model_dataframe = synthetic_frame(predictor)
+    patched = _patch_mlflow(mocker)
+
+    predictor.train_and_register_model()
+
+    logged = {call.args[0] for call in patched.log_metric.call_args_list}
+    assert logged
+    assert all(name.startswith("cv_") for name in logged)
+
+
+def test_train_and_register_model_stores_predictions_after_registering(
+    predictor, synthetic_frame, mocker
+) -> None:
+    """A run that dies while registering leaves no evaluation rows."""
+    predictor.fold_strategy = TrainTestSplitStrategy(test_fraction=0.2)
+    predictor._model_dataframe = synthetic_frame(predictor)
+    patched = _patch_mlflow(mocker)
+    patched.log_model.side_effect = RuntimeError("registry down")
+
+    with pytest.raises(RuntimeError):
+        predictor.train_and_register_model()
+
+    assert TEST_POINTS_PREDICTION.load(predictor.connection).is_empty()
 
 
 def test_train_and_register_model_stores_predictions_against_its_run(

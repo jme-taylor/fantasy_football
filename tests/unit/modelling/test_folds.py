@@ -295,3 +295,10 @@ def test_strategies_name_themselves_for_metric_prefixing():
     assert TrainTestSplitStrategy().metric_prefix == "holdout"
     assert SeasonFoldStrategy().metric_prefix == "cv"
     assert ExpandingGameweekFoldStrategy().metric_prefix == "cv"
+
+
+def test_strategies_fix_whether_they_aggregate():
+    """Metric shape is the strategy's, not a count of surviving folds."""
+    assert TrainTestSplitStrategy().aggregates is False
+    assert SeasonFoldStrategy().aggregates is True
+    assert ExpandingGameweekFoldStrategy().aggregates is True

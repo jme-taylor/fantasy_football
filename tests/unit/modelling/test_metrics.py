@@ -123,14 +123,27 @@ def _points_metrics(mae_value: float) -> PointsMetrics:
 
 def test_summarise_prefixes_and_aggregates_several_folds() -> None:
     """Many folds keep the mean and standard deviation, under a prefix."""
-    summary = summarise([_points_metrics(1.0), _points_metrics(3.0)], "cv")
+    summary = summarise(
+        [_points_metrics(1.0), _points_metrics(3.0)], "cv", aggregated=True
+    )
     assert summary["cv_mae_mean"] == pytest.approx(2.0)
     assert summary["cv_mae_std"] == pytest.approx(1.0)
 
 
+def test_summarise_keeps_aggregate_names_when_one_fold_survives() -> None:
+    """A short season leaves one fold; the run must still be queryable.
+
+    Naming from the fold count would drop such a run out of every query
+    keyed on the aggregate names, silently.
+    """
+    summary = summarise([_points_metrics(1.0)], "cv", aggregated=True)
+    assert summary["cv_mae_mean"] == pytest.approx(1.0)
+    assert summary["cv_mae_std"] == pytest.approx(0.0)
+
+
 def test_summarise_reports_a_single_fold_without_a_spread() -> None:
     """One measurement has no spread, so no zero std is reported."""
-    summary = summarise([_points_metrics(1.5)], "holdout")
+    summary = summarise([_points_metrics(1.5)], "holdout", aggregated=False)
     assert summary == {
         "holdout_mae": 1.5,
         "holdout_rmse": 2.0,
@@ -142,4 +155,4 @@ def test_summarise_reports_a_single_fold_without_a_spread() -> None:
 
 def test_summarise_of_no_folds_is_empty() -> None:
     """Nothing scored means nothing to log."""
-    assert summarise([], "holdout") == {}
+    assert summarise([], "holdout", aggregated=False) == {}
