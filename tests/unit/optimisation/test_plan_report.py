@@ -5,6 +5,7 @@ from fantasy_football.fpl_types import (
     PlayerGameweekExpectedPoints,
 )
 from fantasy_football.optimisation.plan_report import (
+    PlayerPrices,
     _ordered_rows,
     _render_gameweek,
     render_plan_markdown,
@@ -24,6 +25,18 @@ def _p(name: str, pts: float) -> PlayerGameweekExpectedPoints:
     return PlayerGameweekExpectedPoints(
         player_id=_id(name), player_name=name, expected_points=pts
     )
+
+
+def _prices(
+    holdings: dict[str, tuple[int, int, int]],
+) -> dict[int, PlayerPrices]:
+    """Rekey a name-to-(purchase, current, selling) map onto element ids."""
+    return {
+        _id(name): PlayerPrices(
+            purchase=purchase, current=current, selling=selling
+        )
+        for name, (purchase, current, selling) in holdings.items()
+    }
 
 
 def _by_id(positions: dict[str, str]) -> dict[int, str]:
@@ -126,6 +139,7 @@ def _gw_plan() -> tuple[GameWeekPlan, dict[int, str]]:
         hits=4,
         free_transfers=1,
         expected_points=62.3,
+        bank=7,
     )
     return plan, positions
 
@@ -134,7 +148,7 @@ def test_render_gameweek_has_header_captain_transfers_and_bench() -> None:
     """A GW section shows summary, captain/in markers, bench divider, transfers."""
     plan, positions = _gw_plan()
 
-    md = _render_gameweek(plan, positions)
+    md = _render_gameweek(plan, positions, {})
 
     assert "## GW5 — xPts 62.3 · FT 1 · hit −4 · C: Salah" in md
     assert any("Salah" in line and "⭐ C" in line for line in md.splitlines())
@@ -156,9 +170,10 @@ def test_render_gameweek_freebuild_omits_transfers_line() -> None:
         hits=0,
         free_transfers=1,
         expected_points=70.0,
+        bank=7,
     )
 
-    md = _render_gameweek(free_build, positions)
+    md = _render_gameweek(free_build, positions, {})
 
     assert "Transfers —" not in md
     assert "hit −0" not in md
@@ -177,9 +192,10 @@ def test_render_plan_markdown_orders_gameweeks_ascending() -> None:
         hits=0,
         free_transfers=2,
         expected_points=64.0,
+        bank=7,
     )
 
-    md = render_plan_markdown([plan_b, plan_a], positions)
+    md = render_plan_markdown([plan_b, plan_a], positions, {})
 
     assert md.index("## GW5") < md.index("## GW6")
 
@@ -189,8 +205,82 @@ def test_write_plan_report_writes_file(tmp_path: Path) -> None:
     plan, positions = _gw_plan()
     out = tmp_path / "optimisation_plan.md"
 
-    write_plan_report([plan], positions, out)
+    write_plan_report([plan], positions, {}, out)
 
     text = out.read_text()
     assert "## GW5" in text
     assert text.endswith("\n")
+
+
+def test_render_gameweek_shows_purchase_current_and_selling_prices() -> None:
+    """Each player row carries what they cost, are worth, and would fetch."""
+    plan, positions = _gw_plan()
+    prices = _prices({"Salah": (125, 145, 135)})
+
+    md = _render_gameweek(plan, positions, prices)
+
+    row = next(
+        line
+        for line in md.splitlines()
+        if line.startswith("|") and "Salah" in line
+    )
+    assert "| 12.5 | 14.5 | 13.5 |" in row
+
+
+def test_render_gameweek_dashes_prices_for_an_unpriced_player() -> None:
+    """A player with no price entry renders dashes rather than failing."""
+    plan, positions = _gw_plan()
+
+    md = _render_gameweek(plan, positions, {})
+
+    row = next(
+        line
+        for line in md.splitlines()
+        if line.startswith("|") and "Salah" in line
+    )
+    assert "| — | — | — |" in row
+
+
+def test_value_line_separates_squad_value_from_team_value() -> None:
+    """Squad value uses selling prices; team value uses current prices.
+
+    They are different numbers whenever the squad holds a riser, and the
+    constraint the optimiser actually obeys is the squad value.
+    """
+    plan, positions = _gw_plan()
+    # Every squad player flat at 5.0 except Salah, bought at 12.5 and now
+    # 14.5, so he sells for 13.5. 14 flat players + Salah + 0.7 bank:
+    #   squad 14*5.0 + 13.5 + 0.7 = 84.2
+    #   team  14*5.0 + 14.5 + 0.7 = 85.2
+    holdings = {
+        player.player_name: (50, 50, 50)
+        for player in plan.squad
+        if player.player_name != "Salah"
+    }
+    holdings["Salah"] = (125, 145, 135)
+
+    md = _render_gameweek(plan, positions, _prices(holdings))
+
+    assert "Value — squad 84.2 · team 85.2 · bank 0.7" in md
+
+
+def test_value_line_is_present_even_without_transfers() -> None:
+    """The money line is unconditional; the transfers line is not."""
+    plan, positions = _gw_plan()
+    free_build = GameWeekPlan(
+        gameweek=1,
+        squad=plan.squad,
+        starting_xi=plan.starting_xi,
+        captain=plan.captain,
+        transfers_in=[],
+        transfers_out=[],
+        hits=0,
+        free_transfers=1,
+        expected_points=70.0,
+        bank=250,
+    )
+
+    md = _render_gameweek(free_build, positions, {})
+
+    assert "Transfers —" not in md
+    assert "· bank 25.0" in md
