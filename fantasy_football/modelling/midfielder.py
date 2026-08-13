@@ -76,6 +76,7 @@ class MidfielderPointsPredictor(PositionPointsPredictor):
         "red_cards_per90_rolling_5",
         "yellow_cards_season_to_date",
         "red_cards_season_to_date",
+        "days_since_last_appearance",
     ]
 
     PLAYER_FORM_COLUMNS = [
@@ -89,6 +90,7 @@ class MidfielderPointsPredictor(PositionPointsPredictor):
         "red_cards_per90_rolling_5",
         "yellow_cards_season_to_date",
         "red_cards_season_to_date",
+        "days_since_last_appearance",
     ]
     # A midfielder scores at both ends -- goals and assists, and a clean
     # sheet point -- so unlike the defender and forward models, which each

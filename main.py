@@ -329,13 +329,12 @@ def main(
                 start_gw,
             )
             return
-        optimise_plan(CURRENT_SEASON, start_gw, horizon=38)
+        optimise_plan(CURRENT_SEASON, start_gw)
         return
 
     optimise_plan(
         CURRENT_SEASON,
         team.gameweek,
-        horizon=38,
         initial_squad=resolve_squad(team.players, CURRENT_SEASON),
         free_transfers=team.free_transfers,
         bank=team.bank,

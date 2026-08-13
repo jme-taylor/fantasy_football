@@ -67,6 +67,7 @@ class GoalkeeperPointsPredictor(PositionPointsPredictor):
         "red_cards_per90_rolling_5",
         "yellow_cards_season_to_date",
         "red_cards_season_to_date",
+        "days_since_last_appearance",
         "xg_against_rolling_5",
         "goals_against_rolling_5",
         "clean_sheet_rolling_5",
@@ -86,6 +87,7 @@ class GoalkeeperPointsPredictor(PositionPointsPredictor):
         "red_cards_per90_rolling_5",
         "yellow_cards_season_to_date",
         "red_cards_season_to_date",
+        "days_since_last_appearance",
     ]
 
     OWN_TEAM_COLUMNS = [

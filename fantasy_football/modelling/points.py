@@ -64,6 +64,15 @@ SEASON_TO_DATE_COLUMNS = [
     "red_cards_season_to_date",
 ]
 
+# How stale the carried form is. Never as-of joined like the rates: the
+# inclusive view reports it against the appearance's own kickoff, which
+# is always 0, so the forward path measures it against the fixture's
+# kickoff instead.
+STALENESS_COLUMN = "days_since_last_appearance"
+
+# Holds the matched appearance's kickoff long enough to measure that gap.
+_LAST_APPEARANCE = "last_appearance_kickoff"
+
 
 def asof_form(
     left: pl.DataFrame,
@@ -95,7 +104,13 @@ def asof_form(
         most one match, so a duplicated right-hand row cannot fan the
         output out -- it only changes which value arrives.
     """
-    absent = [pl.lit(None, dtype=pl.Float64).alias(name) for name in columns]
+    # Typed from the right-hand frame where possible: a carried kickoff
+    # is a datetime, and defaulting it to Float64 would break the
+    # staleness arithmetic on an empty frame.
+    absent = [
+        pl.lit(None, dtype=right.schema.get(name, pl.Float64)).alias(name)
+        for name in columns
+    ]
     if right.is_empty():
         return left.with_columns(absent)
     # Drop rows with no kickoff time
@@ -460,12 +475,25 @@ WHERE m.minutes IS NOT NULL{seasons}
         # match on identity *and* season and coalesce to zero -- a player
         # whose last appearance was last season starts this one on nil,
         # not on last season's closing tally.
+        rolling = [
+            column
+            for column in self.player_rolling_columns
+            if column != STALENESS_COLUMN
+        ]
         frame = asof_form(
             frame,
-            player_form,
+            player_form.with_columns(
+                pl.col("kickoff_time").alias(_LAST_APPEARANCE)
+            ),
             ["rolling_identity"],
-            self.player_rolling_columns,
+            [*rolling, _LAST_APPEARANCE],
+        ).with_columns(
+            (pl.col("kickoff_time") - pl.col(_LAST_APPEARANCE))
+            .dt.total_days()
+            .cast(pl.Float64)
+            .alias(STALENESS_COLUMN)
         )
+        frame = frame.drop(_LAST_APPEARANCE)
         frame = asof_form(
             frame,
             player_form,

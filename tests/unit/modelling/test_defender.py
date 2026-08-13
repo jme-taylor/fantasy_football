@@ -131,6 +131,27 @@ def test_forward_frame_uses_the_inclusive_player_form_view(
     assert frame["xg_per90_rolling_5"].item() == pytest.approx(0.5)
 
 
+def test_forward_frame_measures_staleness_against_the_fixture(
+    predictor, connection, seed_forward_history, forward_fixture, forward_frame
+) -> None:
+    """Staleness is the gap to the fixture, not the view's own zero.
+
+    The inclusive view reports days_since_last_appearance against the
+    appearance's own kickoff, so it is always 0 there. Carrying that
+    through would tell the model every forecast was for a player who
+    played yesterday. Element 1 last appeared in gw2, seven days before
+    the gw3 fixture.
+    """
+    seed_forward_history(connection, POSITION)
+    register_feature_views(connection)
+
+    frame = predictor.build_forward_data(
+        forward_frame([forward_fixture(position=POSITION)])
+    )
+
+    assert frame["days_since_last_appearance"].item() == pytest.approx(7.0)
+
+
 def test_forward_frame_uses_the_inclusive_team_form_views(
     predictor, connection, seed_forward_history, forward_fixture, forward_frame
 ) -> None:
