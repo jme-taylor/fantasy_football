@@ -30,14 +30,26 @@ denominator would divide a partial numerator by full minutes and quietly
 report a rate that is too low; a per-stat denominator returns null
 instead, which is the honest answer.
 
-The window frame is ``ROWS BETWEEN n PRECEDING AND 1 PRECEDING``, so the
-current match is excluded by construction -- there is no shift to forget.
-A second, inclusive frame is also registered, under
-``player_match_form_inclusive``: it exists solely for the forward path,
-which as-of joins an unplayed fixture back to a player's most recent
-appearance and needs that appearance's own figures, not the form as of
-one match earlier. See ``team_form.window_frame`` and
-:func:`register_match_form`.
+*Form is attached by time, not by match.* The rates are computed over
+appearances, then as-of joined onto every ``player_match`` row -- played
+or not -- from the player's last appearance strictly before that kickoff.
+Keying the rates to the match they were computed in would leave a
+0-minute leg with no form row at all, and null form would then encode
+"he did not play", which is the outcome leaking into the inputs. The
+as-of join reproduces the old values exactly for played rows: the
+inclusive window ending on the previous appearance spans the same
+matches the exclusive window ending one row before the current match
+did.
+
+``days_since_last_appearance`` is what stops the carry being a lie -- it
+is measured against the row's own kickoff, so stale form is visibly
+stale.
+
+A second view, ``player_match_form_inclusive``, keeps the old
+appearance-keyed shape on an inclusive frame. It exists solely for the
+forward path, which as-of joins an unplayed *future* fixture back to a
+player's most recent appearance and needs that appearance's own figures.
+See ``team_form.window_frame`` and :func:`register_match_form`.
 """
 
 import logging
@@ -427,13 +439,8 @@ def form_sql(
         if inclusive
         else "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
     )
-    # Under the inclusive frame, days_since_last_appearance is always 0,
-    # because the current appearance is inside its own window. The
-    # forward path recomputes staleness against the future fixture's
-    # kickoff and ignores this column, so the exclusive view is
-    # unaffected and its SQL text is unchanged.
-    return f"""
-WITH appearances AS (
+    appearances = f"""
+appearances AS (
     SELECT
         m.season,
         m.gw,
@@ -462,7 +469,10 @@ WITH appearances AS (
         AND f.element       = m.element
         AND f.opponent_team = m.opponent
     WHERE m.minutes > 0
-)
+)"""
+    if inclusive:
+        return f"""
+WITH {appearances}
 SELECT
     a.season,
     a.gw,
@@ -495,6 +505,78 @@ WINDOW
         ORDER BY a.kickoff_time
         {std_frame}
     )
+"""
+    rate_names = [
+        per90_column_name(stat, rolling_window)
+        for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
+    ]
+    carried_rates = ",\n    ".join(f"p.{name}" for name in rate_names)
+    # Season-scoped: a player whose last appearance was last season
+    # starts this one on nil rather than inheriting its closing tally.
+    carried_totals = ",\n    ".join(
+        f"CASE WHEN p.season = f.season THEN coalesce(p.{name}, 0) "
+        f"ELSE 0 END AS {name}"
+        for name in (cumulative_column_name(stat) for stat in CUMULATIVE_STATS)
+    )
+    return f"""
+WITH {appearances},
+form AS (
+    SELECT
+        a.rolling_identity,
+        a.season,
+        a.kickoff_time,
+        {rates},
+        {totals},
+        count(*) OVER form AS form_matches,
+        sum(a.minutes) OVER form AS form_minutes
+    FROM appearances AS a
+    WINDOW
+        form AS (
+            PARTITION BY a.rolling_identity
+            ORDER BY a.kickoff_time
+            {window_frame(rolling_window, True)}
+        ),
+        season_to_date AS (
+            PARTITION BY a.rolling_identity, a.season
+            ORDER BY a.kickoff_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )
+),
+fixtures AS (
+    SELECT
+        m.season,
+        m.gw,
+        m.element,
+        m.opponent,
+        m.is_home,
+        m.kickoff_time,
+        m.minutes,
+        m.total_points,
+        {rolling_identity_sql()} AS rolling_identity
+    FROM player_match AS m
+    LEFT JOIN player_season AS s
+        ON s.season = m.season AND s.element = m.element
+)
+SELECT
+    f.season,
+    f.gw,
+    f.element,
+    f.opponent,
+    f.is_home,
+    f.kickoff_time,
+    f.rolling_identity,
+    f.minutes,
+    f.total_points,
+    {carried_rates},
+    {carried_totals},
+    coalesce(p.form_matches, 0) AS form_matches,
+    p.form_minutes,
+    date_diff('day', p.kickoff_time, f.kickoff_time)
+        AS days_since_last_appearance
+FROM fixtures AS f
+ASOF LEFT JOIN form AS p
+    ON  f.rolling_identity = p.rolling_identity
+    AND f.kickoff_time > p.kickoff_time
 """
 
 

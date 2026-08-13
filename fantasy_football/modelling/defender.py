@@ -59,6 +59,7 @@ class DefenderPointsPredictor(PositionPointsPredictor):
         "red_cards_per90_rolling_5",
         "yellow_cards_season_to_date",
         "red_cards_season_to_date",
+        "days_since_last_appearance",
     ]
 
     PLAYER_FORM_COLUMNS = [
@@ -72,6 +73,7 @@ class DefenderPointsPredictor(PositionPointsPredictor):
         "red_cards_per90_rolling_5",
         "yellow_cards_season_to_date",
         "red_cards_season_to_date",
+        "days_since_last_appearance",
     ]
     # A defender is judged on what his own club concedes and on what the
     # opposition creates -- the mirror image of the forwards model.

@@ -360,6 +360,74 @@ def test_window_spans_appearances_not_fixtures(tmp_path: Path) -> None:
         connection.close()
 
 
+def test_unplayed_fixture_carries_the_last_appearance_forward(
+    tmp_path: Path,
+) -> None:
+    """A 0-minute row gets form, not nulls.
+
+    Null form used to line up exactly with ``minutes = 0``, so the
+    absence of a row told the model the player had not played -- an
+    outcome it cannot know at prediction time.
+    """
+    connection = _build(
+        tmp_path,
+        minutes=[90, 90, 0],
+        tackles=[4, 4, None],
+        xg=[0.0] * 3,
+    )
+    try:
+        frame = match_form.load_match_form(connection)
+        benched = frame.filter(pl.col("gw") == 3)
+        assert benched.height == 1
+        assert benched["tackles_per90_rolling_5"].item() == pytest.approx(4.0)
+        assert benched["form_matches"].item() == 2
+        assert benched["days_since_last_appearance"].item() == 7
+    finally:
+        connection.close()
+
+
+def test_every_fixture_gets_a_row(tmp_path: Path) -> None:
+    """The view is one row per fixture, not one per appearance."""
+    connection = _build(
+        tmp_path, minutes=[90, 0, 0], tackles=[1, None, None], xg=[0.0] * 3
+    )
+    try:
+        frame = match_form.load_match_form(connection)
+        assert frame.height == 3
+        assert sorted(frame["gw"].to_list()) == [1, 2, 3]
+    finally:
+        connection.close()
+
+
+def test_carried_form_goes_stale_rather_than_disappearing(
+    tmp_path: Path,
+) -> None:
+    """Staleness is reported, so a carried value is not read as fresh."""
+    connection = _build(
+        tmp_path,
+        minutes=[90, 0, 0, 0, 0, 0, 0],
+        tackles=[6, *([None] * 6)],
+        xg=[0.0] * 7,
+    )
+    try:
+        frame = match_form.load_match_form(connection).sort("gw")
+        assert (
+            frame["tackles_per90_rolling_5"].to_list()[1:]
+            == [pytest.approx(6.0)] * 6
+        )
+        assert frame["days_since_last_appearance"].to_list() == [
+            None,
+            7,
+            14,
+            21,
+            28,
+            35,
+            42,
+        ]
+    finally:
+        connection.close()
+
+
 def test_stat_absent_from_a_match_is_left_out_of_its_denominator(
     tmp_path: Path,
 ) -> None:
@@ -462,13 +530,20 @@ def test_card_rate_and_running_total_use_prior_matches(
 
 
 def test_form_sql_inclusive_frame_includes_current_row():
-    """The inclusive frame widens the window to the current row."""
+    """The inclusive frame widens the window to the current row.
+
+    The exclusive view reaches the same window by as-of joining the
+    previous appearance's inclusive figures, so it carries no
+    ``1 PRECEDING`` frame of its own.
+    """
     exclusive = match_form.form_sql(rolling_window=5, inclusive=False)
     inclusive = match_form.form_sql(rolling_window=5, inclusive=True)
 
-    assert "ROWS BETWEEN 5 PRECEDING AND 1 PRECEDING" in exclusive
+    assert "ROWS BETWEEN 4 PRECEDING AND CURRENT ROW" in exclusive
+    assert "ASOF LEFT JOIN" in exclusive
     assert "ROWS BETWEEN 4 PRECEDING AND CURRENT ROW" in inclusive
     assert "AND 1 PRECEDING" not in inclusive
+    assert "ASOF" not in inclusive
 
 
 def test_inclusive_view_registers_under_its_own_name(connection):
