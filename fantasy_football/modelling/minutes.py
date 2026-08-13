@@ -369,23 +369,35 @@ def boundary_metrics(
 
 def _fit_predict_fold(
     train_df: pl.DataFrame, test_df: pl.DataFrame
-) -> tuple[dict[str, float], Pipeline]:
-    """Fit a fresh pipeline on the train split and score the test split."""
+) -> tuple[dict[str, float], np.ndarray, list[str]]:
+    """Fit a fresh pipeline on the train split and score the test split.
+
+    The probabilities and class labels come back with the metrics so the
+    caller can shape stored predictions from them rather than running
+    ``predict_proba`` over the same rows again.
+    """
     pipe = make_pipeline()
     pipe.fit(
         train_df.select(FEATURES).to_pandas(),
         train_df["minutes_bucket"].to_list(),
     )
     proba = pipe.predict_proba(test_df.select(FEATURES).to_pandas())
-    return boundary_metrics(
-        test_df["minutes_bucket"].to_list(),
+    classes = list(pipe.classes_)
+    return (
+        boundary_metrics(
+            test_df["minutes_bucket"].to_list(),
+            proba,
+            classes,
+            test_df["minutes"].to_list(),
+        ),
         proba,
-        list(pipe.classes_),
-        test_df["minutes"].to_list(),
-    ), pipe
+        classes,
+    )
 
 
-def fold_predictions(test_df: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
+def fold_predictions(
+    test_df: pl.DataFrame, proba: np.ndarray, classes: list[str]
+) -> pl.DataFrame:
     """Shape one fold's scored rows for the evaluation table.
 
     ``run_id`` is left off: the fold does not know which run it belongs
@@ -399,8 +411,10 @@ def fold_predictions(test_df: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
     ----------
     test_df : pl.DataFrame
         The fold's held-out rows.
-    model : Pipeline
-        The pipeline fitted on the fold's training split.
+    proba : np.ndarray
+        Class probabilities for those rows.
+    classes : list[str]
+        The fitted model's ``classes_``.
 
     Returns
     -------
@@ -410,8 +424,10 @@ def fold_predictions(test_df: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
     """
     # The scored frame holds keys and probabilities, not features, so the
     # JSON is encoded against the fold's own rows and carried across.
+    # Both frames are built from ``test_df`` in its own row order, which
+    # is what makes attaching the actuals positionally safe.
     features = test_df.select(feature_json(test_df, FEATURES)).to_series()
-    return score_minutes(test_df, model).with_columns(
+    return minutes_from_proba(test_df, proba, classes).with_columns(
         actual_bucket=test_df["minutes_bucket"],
         actual_minutes=test_df["minutes"].cast(pl.Int64),
         features=features,
@@ -440,8 +456,37 @@ def score_minutes(frame: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
         ``opponent``, ``p_zero``, ``p_partial``, ``p_sixty_plus`` and
         ``expected_minutes``.
     """
-    proba = model.predict_proba(frame.select(FEATURES).to_pandas())
-    classes = list(model.classes_)
+    return minutes_from_proba(
+        frame,
+        model.predict_proba(frame.select(FEATURES).to_pandas()),
+        list(model.classes_),
+    )
+
+
+def minutes_from_proba(
+    frame: pl.DataFrame, proba: np.ndarray, classes: list[str]
+) -> pl.DataFrame:
+    """Shape already-computed class probabilities into prediction rows.
+
+    Split out from :func:`score_minutes` so a caller holding ``proba``
+    already -- fold scoring does -- can shape it without a second
+    ``predict_proba`` pass over the same rows.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        The rows ``proba`` was computed over, carrying the match keys.
+    proba : np.ndarray
+        Class probabilities, one row per row of ``frame``.
+    classes : list[str]
+        The fitted model's ``classes_``, naming ``proba``'s columns.
+
+    Returns
+    -------
+    pl.DataFrame
+        The match keys, the three bucket probabilities and
+        ``expected_minutes``, in ``frame``'s row order.
+    """
     p_zero = _boundary_column(proba, classes, BUCKET_ZERO)
     p_partial = _boundary_column(proba, classes, BUCKET_PARTIAL)
     p_sixty_plus = _boundary_column(proba, classes, BUCKET_SIXTY_PLUS)
@@ -498,10 +543,10 @@ class MinutesPredictor(Predictor):
     @override
     def fit_predict_fold(self, fold: Fold) -> FoldResult:
         """Fit on the fold's train split and score its test split."""
-        metrics, pipe = _fit_predict_fold(fold.train, fold.test)
+        metrics, proba, classes = _fit_predict_fold(fold.train, fold.test)
         return FoldResult(
             metrics=MinutesMetrics(**metrics),
-            predictions=fold_predictions(fold.test, pipe),
+            predictions=fold_predictions(fold.test, proba, classes),
         )
 
     @override
