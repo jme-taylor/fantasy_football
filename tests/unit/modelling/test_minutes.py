@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timedelta
 from typing import cast
 
@@ -35,6 +36,7 @@ from fantasy_football.storage.tables import (
     PLAYER_SEASON,
     PLAYER_WEEK,
     TEAM_FIXTURE,
+    TEST_MINUTES_PREDICTION,
 )
 
 
@@ -258,7 +260,7 @@ def _synthetic_model_df(
     rng = np.random.default_rng(1)
     rows = []
     for season in seasons:
-        for _ in range(per_season):
+        for index in range(per_season):
             rank = int(rng.integers(1, 6))
             # Higher-ranked (lower number) players play more.
             if rank <= 2:
@@ -273,6 +275,11 @@ def _synthetic_model_df(
             rows.append(
                 {
                     "season": season,
+                    # Match-grain keys, carried so scored rows can be
+                    # stored the way the real model frame allows.
+                    "gw": index + 1,
+                    "element": index + 1,
+                    "opponent": 1,
                     "value": int(rng.integers(40, 120)),
                     "value_share_of_team": float(rng.random()),
                     "pos_value_rank": rank,
@@ -809,10 +816,10 @@ def test_fit_predict_fold_returns_minutes_metrics(
         test_key=FoldTestKey(season="2023-24"),
     )
 
-    metrics = predictor.fit_predict_fold(fold)
+    result = predictor.fit_predict_fold(fold)
 
-    assert isinstance(metrics, MinutesMetrics)
-    scores = metrics.as_dict()
+    assert isinstance(result.metrics, MinutesMetrics)
+    scores = result.metrics.as_dict()
     for key in [
         "logloss_appear",
         "brier_appear",
@@ -874,3 +881,49 @@ def test_build_prediction_rows_are_storable(
     assert stored.height == 2
     expected = 0.2 * 30 + 0.7 * 75
     assert stored["expected_minutes"].to_list() == [expected, expected]
+
+
+def test_fit_predict_fold_returns_storable_predictions(
+    predictor: MinutesPredictor,
+) -> None:
+    """Scored rows carry both actuals and the model's inputs as JSON."""
+    df = _synthetic_model_df(["2022-23", "2023-24"])
+    test = df.filter(pl.col("season") == "2023-24")
+    fold = Fold(
+        train=df.filter(pl.col("season") == "2022-23"),
+        test=test,
+        test_key=FoldTestKey(season="2023-24"),
+    )
+
+    predictions = predictor.fit_predict_fold(fold).predictions
+
+    assert predictions.height == test.height
+    assert predictions.columns == [
+        column
+        for column in TEST_MINUTES_PREDICTION.columns
+        if column != "run_id"
+    ]
+    assert predictions["actual_bucket"].to_list() == (
+        test["minutes_bucket"].to_list()
+    )
+    assert predictions["actual_minutes"].to_list() == test["minutes"].to_list()
+    assert sorted(json.loads(predictions["features"][0])) == sorted(FEATURES)
+
+
+def test_store_fold_predictions_writes_the_minutes_table(
+    predictor: MinutesPredictor,
+) -> None:
+    """A minutes run's scored rows land in its own evaluation table."""
+    df = _synthetic_model_df(["2022-23", "2023-24"])
+    fold = Fold(
+        train=df.filter(pl.col("season") == "2022-23"),
+        test=df.filter(pl.col("season") == "2023-24"),
+        test_key=FoldTestKey(season="2023-24"),
+    )
+    results, _ = predictor.cross_validate([fold])
+
+    predictor.store_fold_predictions(results, "run-1")
+
+    stored = TEST_MINUTES_PREDICTION.load(predictor.connection)
+    assert stored.height == fold.test.height
+    assert stored["run_id"].unique().to_list() == ["run-1"]

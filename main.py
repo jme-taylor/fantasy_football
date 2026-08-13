@@ -35,8 +35,7 @@ from fantasy_football.modelling.defender import (
     DefenderPointsPredictor,
 )
 from fantasy_football.modelling.folds import (
-    ExpandingGameweekFoldStrategy,
-    SeasonFoldStrategy,
+    TrainTestSplitStrategy,
 )
 from fantasy_football.modelling.forwards import (
     FORWARD_SPEC,
@@ -245,7 +244,7 @@ def main(
             params={},
             model_spec=MINUTES_SPEC,
             connection=connection,
-            fold_strategy=SeasonFoldStrategy(),
+            fold_strategy=TrainTestSplitStrategy(),
         )
         minutes_predictor.train_and_register_model()
         minutes_predictor.backfill_model_predictions()
@@ -256,7 +255,7 @@ def main(
             params={},
             model_spec=DEFENDER_SPEC,
             connection=connection,
-            fold_strategy=ExpandingGameweekFoldStrategy(
+            fold_strategy=TrainTestSplitStrategy(
                 test_seasons=covered_seasons()
             ),
         )
@@ -269,7 +268,7 @@ def main(
             params={},
             model_spec=FORWARD_SPEC,
             connection=connection,
-            fold_strategy=ExpandingGameweekFoldStrategy(
+            fold_strategy=TrainTestSplitStrategy(
                 test_seasons=covered_seasons()
             ),
         )
@@ -282,7 +281,7 @@ def main(
             params={},
             model_spec=MIDFIELDER_SPEC,
             connection=connection,
-            fold_strategy=ExpandingGameweekFoldStrategy(
+            fold_strategy=TrainTestSplitStrategy(
                 test_seasons=covered_seasons()
             ),
         )
@@ -290,14 +289,14 @@ def main(
         midfielder_predictor.backfill_model_predictions()
         midfielder_predictor.predict_forward()
 
-        # The keeper features open at 2024-25, so this position folds and
-        # trains on its own window rather than the shared covered_seasons.
+        # The keeper features open at 2024-25, so this position holds out
+        # of its own window rather than the shared covered_seasons.
         goalkeeper_predictor = GoalkeeperPointsPredictor(
             experiment_name="gk-points-model",
             params={},
             model_spec=GOALKEEPER_SPEC,
             connection=connection,
-            fold_strategy=ExpandingGameweekFoldStrategy(
+            fold_strategy=TrainTestSplitStrategy(
                 test_seasons=goalkeeper_covered_seasons()
             ),
         )

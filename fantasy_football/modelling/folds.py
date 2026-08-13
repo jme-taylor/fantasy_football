@@ -5,9 +5,21 @@ from typing import Protocol
 
 import polars as pl
 
+from fantasy_football.modelling.metrics import Metrics
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MIN_TRAIN_GAMEWEEKS = 10
+DEFAULT_TEST_FRACTION = 0.2
+
+# Metric prefixes, so a pooled holdout score and a mean of per-gameweek
+# scores never land in the same MLflow column.
+CV_PREFIX = "cv"
+HOLDOUT_PREFIX = "holdout"
+
+# Bookkeeping column carrying a row's chronological gameweek position.
+# Always dropped before a fold is yielded.
+ORDINAL_COLUMN = "_fold_ordinal"
 
 
 @dataclass
@@ -27,12 +39,72 @@ class Fold:
     test_key: FoldTestKey
 
 
+@dataclass
+class FoldResult:
+    """One scored fold: its metrics and the rows they came from.
+
+    The predictions are carried out of scoring rather than recomputed,
+    so storing them costs nothing beyond the write.
+
+    Attributes
+    ----------
+    metrics : Metrics
+        The fold's scores.
+    predictions : pl.DataFrame
+        One row per scored row, shaped for the model's evaluation table
+        but without ``run_id``, which only the run itself knows.
+    """
+
+    metrics: Metrics
+    predictions: pl.DataFrame
+
+
+def gameweek_ordinals(
+    training_data: pl.DataFrame,
+) -> tuple[list[tuple], pl.DataFrame]:
+    """Return every ``(season, gw)`` key numbered chronologically.
+
+    Season strings sort lexicographically in calendar order ("2025-26" <
+    "2026-27") and gameweeks sort numerically within one, so sorting the
+    distinct keys is enough to order them by time.
+
+    Parameters
+    ----------
+    training_data : pl.DataFrame
+        The model frame, carrying ``season`` and ``gw``.
+
+    Returns
+    -------
+    tuple[list[tuple], pl.DataFrame]
+        The sorted keys as ``(ordinal, season, gw)`` rows, and
+        ``training_data`` with :data:`ORDINAL_COLUMN` joined on. Joining
+        the ordinal once makes each fold two integer comparisons rather
+        than a membership test against a growing key list.
+    """
+    keys = (
+        training_data.select("season", "gw")
+        .unique()
+        .sort(["season", "gw"])
+        .with_row_index(ORDINAL_COLUMN)
+    )
+    return keys.rows(), training_data.join(
+        keys, on=["season", "gw"], how="left"
+    )
+
+
 class FoldStrategy(Protocol):
     """Protocol for a fold strategy.
 
     Any fold strategy must take a polars dataframe of training data spilt
     it into a a sequence of folds.
     """
+
+    #: Prefix every metric this strategy's folds produce is logged under.
+    metric_prefix: str
+    #: Whether a run reports the mean and spread across folds, or one
+    #: fold's metrics directly. Fixed per strategy so the metric names a
+    #: run logs never depend on how many folds the data allowed.
+    aggregates: bool
 
     def split(self, training_data: pl.DataFrame) -> Iterable[Fold]:
         """Split the training data into folds.
@@ -52,6 +124,9 @@ class FoldStrategy(Protocol):
 
 class SeasonFoldStrategy:
     """Fold strategy that splits the training data into folds by season."""
+
+    metric_prefix = CV_PREFIX
+    aggregates = True
 
     def split(self, training_data: pl.DataFrame) -> Iterable[Fold]:
         """Split the training data into folds by season.
@@ -112,6 +187,9 @@ class ExpandingGameweekFoldStrategy:
         what the deployed model does.
     """
 
+    metric_prefix = CV_PREFIX
+    aggregates = True
+
     def __init__(
         self,
         min_train_folds: int | None = None,
@@ -168,15 +246,7 @@ class ExpandingGameweekFoldStrategy:
             enough distinct gameweeks to form one fold, or when
             ``test_seasons`` matches none of them.
         """
-        _ordinal_row_column = "_fold_ordinal"
-        keys = (
-            training_data.select("season", "gw")
-            .unique()
-            .sort(["season", "gw"])
-            .with_row_index(_ordinal_row_column)
-        )
-        ordered = keys.rows()
-        ordinals = training_data.join(keys, on=["season", "gw"], how="left")
+        ordered, ordinals = gameweek_ordinals(training_data)
         candidates = range(self.min_train_folds, len(ordered))
         testable = [
             index
@@ -196,11 +266,164 @@ class ExpandingGameweekFoldStrategy:
         for index in testable:
             _, season, gw = ordered[index]
             yield Fold(
-                train=ordinals.filter(
-                    pl.col(_ordinal_row_column) < index
-                ).drop(_ordinal_row_column),
-                test=ordinals.filter(
-                    pl.col(_ordinal_row_column) == index
-                ).drop(_ordinal_row_column),
+                train=ordinals.filter(pl.col(ORDINAL_COLUMN) < index).drop(
+                    ORDINAL_COLUMN
+                ),
+                test=ordinals.filter(pl.col(ORDINAL_COLUMN) == index).drop(
+                    ORDINAL_COLUMN
+                ),
                 test_key=FoldTestKey(season=season, gw=gw),
             )
+
+
+class TrainTestSplitStrategy:
+    """A single chronological holdout, expressed as a fraction of rows.
+
+    Yields exactly one fold, so a train/test split is a single-fold
+    cross validation and every caller of :class:`FoldStrategy` supports
+    it unchanged.
+
+    There is deliberately no season logic. The boundary is a percentage
+    of the rows a fold may test on, so gameweeks of a new season join the
+    frame and push the boundary forward without a code change.
+
+    Parameters
+    ----------
+    test_fraction : float | None, optional
+        Share of testable rows to hold out. Defaults to
+        :data:`DEFAULT_TEST_FRACTION`.
+    test_seasons : Sequence[str] | None, optional
+        Seasons the holdout may be drawn from, and the population the
+        fraction is measured against. Defaults to every season in the
+        frame. Pass the seasons in which every model feature is actually
+        published: taking the fraction over the whole frame would put the
+        boundary years before coverage opens.
+
+        Only the test side is restricted. The training side still spans
+        every earlier row, uncovered seasons included, which is what the
+        deployed model does.
+    """
+
+    metric_prefix = HOLDOUT_PREFIX
+    aggregates = False
+
+    def __init__(
+        self,
+        test_fraction: float | None = None,
+        test_seasons: Sequence[str] | None = None,
+    ) -> None:
+        """Initialize the train/test split strategy.
+
+        Parameters
+        ----------
+        test_fraction : float | None, optional
+            Share of testable rows to hold out. Must lie strictly between
+            zero and one, since either end leaves a side empty.
+        test_seasons : Sequence[str] | None, optional
+            Seasons the holdout may be drawn from. Pass None to use every
+            season in the frame.
+        """
+        fraction = (
+            DEFAULT_TEST_FRACTION if test_fraction is None else test_fraction
+        )
+        if not 0.0 < fraction < 1.0:
+            raise ValueError(
+                "test_fraction must be strictly between 0 and 1; "
+                f"got {fraction}"
+            )
+        if test_seasons is not None and not test_seasons:
+            raise ValueError(
+                "test_seasons must name at least one season; pass None to "
+                "hold out from every season in the frame"
+            )
+        self.test_fraction = fraction
+        self.test_seasons = (
+            None if test_seasons is None else frozenset(test_seasons)
+        )
+
+    def split(self, training_data: pl.DataFrame) -> Iterable[Fold]:
+        """Yield one fold holding out the most recent gameweeks.
+
+        The boundary snaps to a ``(season, gw)`` edge nearest the
+        requested share of testable rows, so a fixture is never divided:
+        two players in one match share their club's form columns and a
+        correlated outcome, and splitting them would let the training
+        side leak into the score.
+
+        Parameters
+        ----------
+        training_data : pl.DataFrame
+            The model frame, carrying ``season`` and ``gw``.
+
+        Yields
+        ------
+        Fold
+            One fold, carrying the same columns as ``training_data``.
+            Nothing is yielded when either side would be empty, or when
+            ``test_seasons`` matches no row.
+        """
+        ordered, ordinals = gameweek_ordinals(training_data)
+        testable = (
+            ordinals
+            if self.test_seasons is None
+            else ordinals.filter(
+                pl.col("season").is_in(list(self.test_seasons))
+            )
+        )
+        if testable.is_empty():
+            return
+        boundary = self._boundary(testable)
+        if boundary is None:
+            return
+        _, season, gw = ordered[boundary]
+        test = testable.filter(pl.col(ORDINAL_COLUMN) >= boundary)
+        logger.info(
+            "Holding out %d of %d testable rows (%.1f%%) from %s gw %d.",
+            test.height,
+            testable.height,
+            100 * test.height / testable.height,
+            season,
+            gw,
+        )
+        yield Fold(
+            train=ordinals.filter(pl.col(ORDINAL_COLUMN) < boundary).drop(
+                ORDINAL_COLUMN
+            ),
+            test=test.drop(ORDINAL_COLUMN),
+            test_key=FoldTestKey(season=season, gw=gw),
+        )
+
+    def _boundary(self, testable: pl.DataFrame) -> int | None:
+        """Return the ordinal the holdout starts at, or None.
+
+        Walks gameweeks backwards accumulating testable rows and stops
+        once taking another would move further from the target, which is
+        the nearest edge because the running total only grows.
+
+        Parameters
+        ----------
+        testable : pl.DataFrame
+            The rows a fold may test on, carrying
+            :data:`ORDINAL_COLUMN`.
+
+        Returns
+        -------
+        int | None
+            The chosen ordinal, or None when every candidate would leave
+            the training side empty.
+        """
+        counts = dict(testable.group_by(ORDINAL_COLUMN).len().rows())
+        target = testable.height * self.test_fraction
+        chosen: int | None = None
+        best_gap = float("inf")
+        cumulative = 0
+        for ordinal in sorted(counts, reverse=True):
+            cumulative += counts[ordinal]
+            # Ordinal zero as the boundary would leave nothing to train on.
+            if ordinal < 1:
+                break
+            gap = abs(cumulative - target)
+            if gap >= best_gap:
+                break
+            chosen, best_gap = ordinal, gap
+        return chosen

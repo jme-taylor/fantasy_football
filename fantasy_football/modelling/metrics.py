@@ -103,7 +103,7 @@ def poisson_deviance(
 
 def spearman_by_gw(
     df: pl.DataFrame,
-    gw_col: str = "gw",
+    gw_cols: Sequence[str] = ("gw",),
     pred_col: str = "predicted_points",
     actual_col: str = "actual",
 ) -> float:
@@ -118,8 +118,11 @@ def spearman_by_gw(
     ----------
     df : pl.DataFrame
         DataFrame containing the predicted and actual points.
-    gw_col : str
-        Name of the gameweek column.
+    gw_cols : Sequence[str]
+        Columns identifying one gameweek. Pass ``("season", "gw")`` for
+        any frame spanning more than one season: gameweek numbers repeat
+        each year, so grouping on ``gw`` alone would rank two seasons'
+        players against each other.
     pred_col : str
         Name of the predicted points column.
     actual_col : str
@@ -131,7 +134,7 @@ def spearman_by_gw(
         Mean per-gameweek Spearman rank correlation.
     """
     correlations: list[float] = []
-    for (_gw,), sub in df.group_by([gw_col], maintain_order=True):
+    for _key, sub in df.group_by(list(gw_cols), maintain_order=True):
         if sub.height < 2:
             continue
         pred_rank = sub[pred_col].rank(method="average")
@@ -153,7 +156,7 @@ def spearman_by_gw(
 def precision_at_k(
     df: pl.DataFrame,
     k: int,
-    gw_col: str = "gw",
+    gw_cols: Sequence[str] = ("gw",),
     id_col: str = "player_id",
     pred_col: str = "predicted_points",
     actual_col: str = "actual",
@@ -170,8 +173,9 @@ def precision_at_k(
         DataFrame containing the predicted and actual points.
     k : int
         The number of players to consider.
-    gw_col : str
-        Name of the gameweek column.
+    gw_cols : Sequence[str]
+        Columns identifying one gameweek. Pass ``("season", "gw")`` for
+        any frame spanning more than one season.
     id_col : str
         Name of the player ID column.
     pred_col : str
@@ -185,7 +189,7 @@ def precision_at_k(
         Mean per-gameweek precision@k.
     """
     precisions: list[float] = []
-    for (_gw,), sub in df.group_by([gw_col], maintain_order=True):
+    for _key, sub in df.group_by(list(gw_cols), maintain_order=True):
         effective_k = min(k, sub.height)
         if effective_k == 0:
             continue
@@ -301,3 +305,40 @@ def aggregate(per_fold: Sequence[Metrics]) -> dict[str, float]:
         agg[f"{key}_mean"] = float(np.mean(values))
         agg[f"{key}_std"] = float(np.std(values))
     return agg
+
+
+def summarise(
+    per_fold: Sequence[Metrics], prefix: str, aggregated: bool
+) -> dict[str, float]:
+    """Name a run's scores for MLflow, under its strategy's prefix.
+
+    The prefix keeps a pooled holdout error out of the same MLflow column
+    as a mean of per-gameweek errors: they are different quantities and
+    would otherwise be compared by eye.
+
+    ``aggregated`` is the strategy's own answer, not a count of the folds
+    that happened to survive. A cross-validating strategy always reports
+    ``_mean``/``_std``, even in a season short enough to leave it one
+    testable fold, so a run never silently drops out of a query keyed on
+    the aggregate names. A holdout is one measurement and reports its
+    metrics directly, since a standard deviation of zero would read as a
+    perfectly stable model rather than as an absent spread.
+
+    Parameters
+    ----------
+    per_fold : Sequence[Metrics]
+        One entry per scored fold.
+    prefix : str
+        The fold strategy's ``metric_prefix``.
+    aggregated : bool
+        The fold strategy's ``aggregates``.
+
+    Returns
+    -------
+    dict[str, float]
+        Prefixed metric names and values. Empty when nothing was scored.
+    """
+    if not per_fold:
+        return {}
+    scores = aggregate(per_fold) if aggregated else per_fold[0].as_dict()
+    return {f"{prefix}_{key}": value for key, value in scores.items()}

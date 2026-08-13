@@ -15,12 +15,12 @@ from fantasy_football.constants import CURRENT_SEASON, MLFLOW_TRACKING_URI
 from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.extraction.snapshot import warn_unidentified_snapshot
 from fantasy_football.features.roster import latest_snapshot
-from fantasy_football.modelling.folds import Fold, FoldStrategy
+from fantasy_football.modelling.folds import Fold, FoldResult, FoldStrategy
 from fantasy_football.modelling.forward import (
     build_forward_fixtures,
     last_played_gw,
 )
-from fantasy_football.modelling.metrics import Metrics, aggregate
+from fantasy_football.modelling.metrics import summarise
 from fantasy_football.modelling.registry import load_production_model
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
@@ -37,6 +37,45 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+#: Column holding a scored row's model inputs, as a JSON object.
+FEATURES_COLUMN = "features"
+
+
+def feature_json(frame: pl.DataFrame, columns: Sequence[str]) -> pl.Expr:
+    """Encode the named columns as one JSON object per row.
+
+    Every position feeds its model a different column list, and those
+    lists change, so the evaluation tables carry features as JSON rather
+    than as a column each. DuckDB reads back into it with
+    ``json_extract``.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        The frame the columns are read from. Only its schema is used.
+    columns : Sequence[str]
+        The model's feature names.
+
+    Returns
+    -------
+    pl.Expr
+        A string expression aliased to :data:`FEATURES_COLUMN`.
+    """
+    present = [column for column in columns if column in frame.columns]
+    missing = sorted(set(columns) - set(present))
+    if missing:
+        logger.warning(
+            "Scored rows are missing feature columns, so they will be "
+            "absent from the stored JSON: %s",
+            missing,
+        )
+    if not present:
+        # ``pl.struct([])`` raises, which would surface as an opaque
+        # polars error from inside training rather than as the warning
+        # above naming the columns that went missing.
+        return pl.lit("{}", dtype=pl.Utf8).alias(FEATURES_COLUMN)
+    return pl.struct(present).struct.json_encode().alias(FEATURES_COLUMN)
+
 
 class ModelSpec(BaseModel):
     """Model spec for a predictor.
@@ -52,6 +91,8 @@ class ModelSpec(BaseModel):
     registered_model_name: str
     production_alias: str
     table: Table
+    #: Where this model's scored fold rows are kept for error analysis.
+    evaluation_table: Table
     position: str | None = None
 
 
@@ -128,7 +169,7 @@ class Predictor(ABC):
         ...
 
     @abstractmethod
-    def fit_predict_fold(self, fold: Fold) -> Metrics:
+    def fit_predict_fold(self, fold: Fold) -> FoldResult:
         """Fit a fresh model on one fold's train split and score its test.
 
         The only per-model part of cross validation. Implementations own
@@ -137,6 +178,10 @@ class Predictor(ABC):
         classifier calls ``predict_proba`` -- and return whatever metrics
         container fits, so long as it satisfies :class:`Metrics`.
 
+        The predictions travel with the metrics because they already
+        exist at this point; recomputing them later would mean refitting
+        the fold.
+
         Parameters
         ----------
         fold : Fold
@@ -144,15 +189,16 @@ class Predictor(ABC):
 
         Returns
         -------
-        Metrics
-            The fold's scores.
+        FoldResult
+            The fold's scores and the rows they were computed over,
+            shaped for the spec's evaluation table bar ``run_id``.
         """
         ...
 
     def cross_validate(
         self, folds: Sequence[Fold]
-    ) -> tuple[list[Metrics], dict[str, float]]:
-        """Score the model over every fold and aggregate the results.
+    ) -> tuple[list[FoldResult], dict[str, float]]:
+        """Score the model over every fold and summarise the results.
 
         Folds with an empty side are skipped rather than scored: they
         carry no signal and would poison the aggregate with nans.
@@ -164,16 +210,53 @@ class Predictor(ABC):
 
         Returns
         -------
-        tuple[list[Metrics], dict[str, float]]
-            Per-fold metrics in fold order, and the mean/std aggregate.
-            Both are empty when no fold has data on both sides.
+        tuple[list[FoldResult], dict[str, float]]
+            Per-fold results in fold order, and the summary under the
+            strategy's metric prefix. Both are empty when no fold has
+            data on both sides.
         """
         per_fold = [
             self.fit_predict_fold(fold)
             for fold in folds
             if not fold.train.is_empty() and not fold.test.is_empty()
         ]
-        return per_fold, aggregate(per_fold)
+        return per_fold, summarise(
+            [result.metrics for result in per_fold],
+            self.fold_strategy.metric_prefix,
+            self.fold_strategy.aggregates,
+        )
+
+    def store_fold_predictions(
+        self, results: Sequence[FoldResult], run_id: str
+    ) -> None:
+        """Persist a run's scored rows for later error analysis.
+
+        Appended rather than replaced: ``run_id`` is part of the
+        evaluation table's primary key, so each run is its own partition
+        and earlier runs stay readable beside it.
+
+        Parameters
+        ----------
+        results : Sequence[FoldResult]
+            Every scored fold, in fold order.
+        run_id : str
+            The MLflow run these predictions belong to.
+        """
+        frames = [
+            result.predictions
+            for result in results
+            if not result.predictions.is_empty()
+        ]
+        if not frames:
+            logger.info(
+                "No scored rows for %s; storing no evaluation predictions.",
+                self.model_spec.registered_model_name,
+            )
+            return
+        rows = pl.concat(frames, how="vertical").with_columns(
+            run_id=pl.lit(run_id)
+        )
+        self.model_spec.evaluation_table.append(self.connection, rows)
 
     @abstractmethod
     def train_final(self, feature_frame: pl.DataFrame) -> Pipeline:
@@ -232,27 +315,41 @@ class Predictor(ABC):
         """Train a model, evaluate, and store in model registry.
 
         This method builds the training data for the model, creates the
-        cross validation folds, cross validates the model and then trains
-        the final model itself. All metrics are logged to MLFlow for each
-        fold and the aggregate metrics at the end too.
+        folds, scores the model over them and then trains the final model
+        itself. All metrics are logged to MLFlow for each fold and the
+        aggregate metrics at the end too.
+
+        The run is opened before the folds are scored, because the stored
+        predictions are keyed on its id.
+
+        The final model is fitted on the whole frame, holdout included.
+        The score therefore estimates the training procedure rather than
+        the exact registered artifact, which is the trade that lets the
+        deployed model see the most recent gameweeks.
         """
         if self._model_dataframe is None:
             self._model_dataframe = self.build_training_data()
         folds = list(self.fold_strategy.split(self._model_dataframe))
-        per_fold, agg = self.cross_validate(folds)
-        final_model = self.train_final(self._model_dataframe)
         mlflow.set_experiment(self.experiment_name)
-        with mlflow.start_run():
+        prefix = self.fold_strategy.metric_prefix
+        with mlflow.start_run() as run:
+            per_fold, agg = self.cross_validate(folds)
+            final_model = self.train_final(self._model_dataframe)
             mlflow.log_params(self.params)
-            for step, fold_metrics in enumerate(per_fold):
-                for key, value in fold_metrics.as_dict().items():
-                    mlflow.log_metric(key, value, step=step)
+            for step, result in enumerate(per_fold):
+                for key, value in result.metrics.as_dict().items():
+                    mlflow.log_metric(f"{prefix}_{key}", value, step=step)
             mlflow.log_metrics(agg)
             mlflow.sklearn.log_model(
                 final_model,
                 name="model",
                 registered_model_name=self.model_spec.registered_model_name,
             )
+            # Last, so a run that dies while fitting or registering
+            # leaves no evaluation rows behind. DuckDB commits on write,
+            # and rows keyed to a failed run are indistinguishable from
+            # good ones at query time.
+            self.store_fold_predictions(per_fold, run.info.run_id)
 
         logger.info(
             f"Model {self.model_spec.registered_model_name} trained and registered"

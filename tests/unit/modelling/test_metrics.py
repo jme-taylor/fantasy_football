@@ -6,12 +6,14 @@ import polars as pl
 import pytest
 
 from fantasy_football.modelling.metrics import (
+    PointsMetrics,
     mae,
     poisson_deviance,
     precision_at_k,
     rmse,
     skill_score,
     spearman_by_gw,
+    summarise,
 )
 
 
@@ -106,3 +108,51 @@ def test_precision_at_k_clamps_k_to_available_players() -> None:
 def test_poisson_deviance_negative_actual_returns_finite() -> None:
     """Negative actuals are floored to 0 so deviance stays finite."""
     assert math.isfinite(poisson_deviance([1.0, 2.0], [-1.0, 2.0]))
+
+
+def _points_metrics(mae_value: float) -> PointsMetrics:
+    """Return a metrics object differing only in its MAE."""
+    return PointsMetrics(
+        mae=mae_value,
+        rmse=2.0,
+        skill_score=0.1,
+        spearman=0.5,
+        precision_at_k=0.4,
+    )
+
+
+def test_summarise_prefixes_and_aggregates_several_folds() -> None:
+    """Many folds keep the mean and standard deviation, under a prefix."""
+    summary = summarise(
+        [_points_metrics(1.0), _points_metrics(3.0)], "cv", aggregated=True
+    )
+    assert summary["cv_mae_mean"] == pytest.approx(2.0)
+    assert summary["cv_mae_std"] == pytest.approx(1.0)
+
+
+def test_summarise_keeps_aggregate_names_when_one_fold_survives() -> None:
+    """A short season leaves one fold; the run must still be queryable.
+
+    Naming from the fold count would drop such a run out of every query
+    keyed on the aggregate names, silently.
+    """
+    summary = summarise([_points_metrics(1.0)], "cv", aggregated=True)
+    assert summary["cv_mae_mean"] == pytest.approx(1.0)
+    assert summary["cv_mae_std"] == pytest.approx(0.0)
+
+
+def test_summarise_reports_a_single_fold_without_a_spread() -> None:
+    """One measurement has no spread, so no zero std is reported."""
+    summary = summarise([_points_metrics(1.5)], "holdout", aggregated=False)
+    assert summary == {
+        "holdout_mae": 1.5,
+        "holdout_rmse": 2.0,
+        "holdout_skill_score": 0.1,
+        "holdout_spearman": 0.5,
+        "holdout_precision_at_k": 0.4,
+    }
+
+
+def test_summarise_of_no_folds_is_empty() -> None:
+    """Nothing scored means nothing to log."""
+    assert summarise([], "holdout", aggregated=False) == {}
