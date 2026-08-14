@@ -77,6 +77,20 @@ def feature_json(frame: pl.DataFrame, columns: Sequence[str]) -> pl.Expr:
     return pl.struct(present).struct.json_encode().alias(FEATURES_COLUMN)
 
 
+def _fitted_feature_names(model: Pipeline) -> list[str] | None:
+    """Return the feature names a fitted pipeline was trained on.
+
+    Read from the first step, which is where sklearn records them and
+    where the mismatch is raised from. None when the pipeline does not
+    carry them, in which case there is nothing to compare.
+    """
+    for _, step in getattr(model, "steps", []):
+        names = getattr(step, "feature_names_in_", None)
+        if names is not None:
+            return list(names)
+    return None
+
+
 class ModelSpec(BaseModel):
     """Model spec for a predictor.
 
@@ -359,6 +373,64 @@ class Predictor(ABC):
         )
 
     @property
+    def expected_features(self) -> list[str] | None:
+        """Return the feature names this model's code declares.
+
+        None means "do not check", which is the right answer for a
+        predictor whose inputs are not a flat named list.
+        """
+        return None
+
+    def production_model(self) -> tuple[str, Pipeline] | None:
+        """Load the aliased model, refusing one the code has outgrown.
+
+        The registry and the code drift apart on their own: the alias is
+        moved by hand, so a model fitted on an older feature list stays
+        live until someone promotes a newer one. Scoring with it fails
+        six frames inside sklearn on a message that names a column and
+        nothing else -- not the model, not the alias, not the remedy.
+
+        Returns
+        -------
+        tuple[str, Pipeline] | None
+            The live version and model, or None when there is no alias or
+            the aliased model disagrees with the code about its inputs.
+        """
+        production = load_production_model(
+            self.model_spec.registered_model_name,
+            self.model_spec.production_alias,
+        )
+        if production is None:
+            logger.warning(
+                "No %s alias on %s; skipping.",
+                self.model_spec.production_alias,
+                self.model_spec.registered_model_name,
+            )
+            return None
+        version, model = production
+        declared = self.expected_features
+        fitted = _fitted_feature_names(model)
+        if declared is None or fitted is None:
+            return version, model
+        surplus = sorted(set(fitted) - set(declared))
+        absent = sorted(set(declared) - set(fitted))
+        if surplus or absent:
+            logger.warning(
+                "%s version %s is aliased %s but was fitted on different "
+                "features, so it cannot score the current frame. It wants "
+                "%s that the code no longer builds, and does not know about "
+                "%s. Train a version on the current code and move the alias "
+                "onto it in the MLflow UI.",
+                self.model_spec.registered_model_name,
+                version,
+                self.model_spec.production_alias,
+                surplus or "nothing",
+                absent or "nothing",
+            )
+            return None
+        return version, model
+
+    @property
     def _own_rows(self) -> dict[str, object]:
         """Predicates isolating this model's rows in a shared table.
 
@@ -451,13 +523,10 @@ class Predictor(ABC):
 
         all_seasons = set(self._model_dataframe["season"].unique().to_list())
         historic_seasons = sorted(all_seasons - {CURRENT_SEASON})
-        production = load_production_model(
-            self.model_spec.registered_model_name,
-            self.model_spec.production_alias,
-        )
+        production = self.production_model()
         if production is None:
             logger.warning(
-                f"No production model for {self.model_spec.registered_model_name}; skipping backwards prediction."
+                f"No usable production model for {self.model_spec.registered_model_name}; skipping backwards prediction."
             )
             return
         production_version, model = production
@@ -491,13 +560,10 @@ class Predictor(ABC):
         feature dataset for future fixtures in the current season. Afterwards,
         it builds the predictions and stores them in the database.
         """
-        production = load_production_model(
-            self.model_spec.registered_model_name,
-            self.model_spec.production_alias,
-        )
+        production = self.production_model()
         if production is None:
             logger.warning(
-                f"No production model for {self.model_spec.registered_model_name}; skipping forward prediction."
+                f"No usable production model for {self.model_spec.registered_model_name}; skipping forward prediction."
             )
             return
         production_version, model = production

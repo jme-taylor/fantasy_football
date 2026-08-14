@@ -1488,3 +1488,71 @@ def test_positions_do_not_overwrite_each_others_predictions(
 
     stored = POINTS_COMPONENT.load(connection).filter(pl.col("gw") == 3)
     assert sorted(stored["position"].unique().to_list()) == ["DEF", "FWD"]
+
+
+# --- Registry drift --------------------------------------------------
+
+
+def test_a_model_fitted_on_other_features_is_refused(
+    predictor, synthetic_frame, mocker, caplog
+) -> None:
+    """An aliased model the code has outgrown is skipped, not scored.
+
+    The registry alias is moved by hand, so a model fitted on an older
+    feature list stays live until someone promotes a newer one. Scoring
+    with it fails deep inside sklearn on a message naming one column and
+    nothing else -- not the model, not the alias, not the fix.
+    """
+    frame = synthetic_frame(predictor, n_gws=1, n_players=3)
+    # Fitted on one more column than the code now builds, exactly as the
+    # live models were before their feature lists were trimmed.
+    stale = predictor.make_pipeline()
+    stale.fit(
+        frame.select(predictor.FEATURES)
+        .with_columns(days_since_last_appearance=pl.lit(1.0))
+        .to_pandas(),
+        frame[predictor.TARGET].to_list(),
+    )
+    mocker.patch(
+        "fantasy_football.modelling.predictor.load_production_model",
+        return_value=("12", stale),
+    )
+
+    with caplog.at_level("WARNING"):
+        assert predictor.production_model() is None
+
+    assert "move the alias" in caplog.text.lower()
+    assert "days_since_last_appearance" in caplog.text
+
+
+def test_a_matching_model_is_returned(
+    predictor, synthetic_frame, mocker
+) -> None:
+    """A model fitted on the declared features scores as normal."""
+    frame = synthetic_frame(predictor, n_gws=1, n_players=3)
+    mocker.patch(
+        "fantasy_football.modelling.predictor.load_production_model",
+        return_value=("12", predictor.train_final(frame)),
+    )
+
+    assert predictor.production_model() is not None
+
+
+def test_drift_stops_the_backfill_rather_than_the_run(
+    predictor, connection, synthetic_frame, mocker, caplog
+) -> None:
+    """One stale alias must not take the other positions down with it."""
+    frame = synthetic_frame(predictor, n_gws=2, n_players=3)
+    predictor._model_dataframe = frame
+    mocker.patch.object(
+        type(predictor), "expected_features", property(lambda _: ["nope"])
+    )
+    mocker.patch(
+        "fantasy_football.modelling.predictor.load_production_model",
+        return_value=("12", predictor.train_final(frame)),
+    )
+
+    with caplog.at_level("WARNING"):
+        predictor.backfill_model_predictions()
+
+    assert POINTS_COMPONENT.load(connection).is_empty()

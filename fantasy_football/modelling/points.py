@@ -212,6 +212,12 @@ class PositionPointsPredictor(Predictor):
     EXTRA_COLUMNS: ClassVar[tuple[str, ...]] = ()
 
     @property
+    @override
+    def expected_features(self) -> list[str] | None:
+        """Return this position's declared model inputs."""
+        return self.FEATURES
+
+    @property
     def target_sql(self) -> str:
         """Return the SELECT expression producing the target column."""
         return f"m.{self.TARGET}"
