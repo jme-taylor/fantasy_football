@@ -4,17 +4,22 @@ import polars as pl
 import pytest
 
 from fantasy_football.modelling.components import (
+    POSITION_COMPONENTS,
     Component,
     compose,
     compose_points,
     composite_version,
+    write_appearance_components,
 )
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
     FORWARD_KIND,
+    MINUTES_PREDICTION,
+    PLAYER_SEASON,
     POINTS_COMPONENT,
     POINTS_PREDICTION,
 )
+from tests.unit.modelling.conftest import append_rows
 
 SEASON = "2025-26"
 
@@ -26,7 +31,7 @@ def component_row(
     element: int = 1,
     gw: int = 1,
     opponent: int = 2,
-    position: str = "DEF",
+    position: str = "MID",
     kind: str = BACKFILL_KIND,
     version: str = "3",
     diagnostics: str | None = None,
@@ -148,11 +153,11 @@ def test_positions_stay_separate() -> None:
     """Each position keeps its own composed row."""
     composed = compose(
         frame(
-            component_row(Component.TOTAL, 4.0, position="DEF"),
+            component_row(Component.TOTAL, 4.0, position="MID"),
             component_row(Component.TOTAL, 3.0, position="FWD", element=2),
         )
     )
-    assert set(composed["position"].to_list()) == {"DEF", "FWD"}
+    assert set(composed["position"].to_list()) == {"MID", "FWD"}
 
 
 def test_empty_input_yields_an_empty_frame_of_the_right_shape() -> None:
@@ -176,8 +181,8 @@ def test_missing_expected_component_is_an_error() -> None:
     # Half a decomposition sums to a silently low prediction, which
     # the optimiser would act on without complaint.
     rows = frame(
-        component_row(Component.APPEARANCE, 1.8),
-        component_row(Component.DEFCON, 0.9),
+        component_row(Component.APPEARANCE, 1.8, position="DEF"),
+        component_row(Component.DEFCON, 0.9, position="DEF"),
     )
     with pytest.raises(ValueError, match="residual"):
         compose(
@@ -307,8 +312,94 @@ def test_incomplete_decomposition_is_refused(connection, mocker) -> None:
         {"DEF": (Component.APPEARANCE, Component.RESIDUAL)},
     )
     POINTS_COMPONENT.append(
-        connection, frame(component_row(Component.APPEARANCE, 1.8))
+        connection,
+        frame(component_row(Component.APPEARANCE, 1.8, position="DEF")),
     )
 
     with pytest.raises(ValueError, match="residual"):
         compose_points(connection)
+
+
+def test_a_component_a_position_no_longer_declares_is_refused() -> None:
+    """Rows left behind by an earlier pipeline shape cannot be summed in.
+
+    A position decomposed after its monolithic rows were written would
+    otherwise sum the old total on top of the components that replaced
+    it, doubling the prediction with nothing failing.
+    """
+    rows = frame(
+        component_row(Component.TOTAL, 4.0, position="DEF"),
+        component_row(Component.APPEARANCE, 1.8, position="DEF"),
+        component_row(Component.DEFCON, 0.9, position="DEF"),
+        component_row(Component.RESIDUAL, 2.3, position="DEF"),
+    )
+    with pytest.raises(ValueError, match="no longer declares"):
+        compose(rows, expected=POSITION_COMPONENTS)
+
+
+def test_appearance_points_come_from_the_minutes_model(connection) -> None:
+    """Appearance rows are written for every decomposed position."""
+    append_rows(
+        PLAYER_SEASON,
+        connection,
+        [{"season": SEASON, "element": 1, "position": "DEF"}],
+    )
+    append_rows(
+        MINUTES_PREDICTION,
+        connection,
+        [
+            {
+                "season": SEASON,
+                "gw": 1,
+                "element": 1,
+                "opponent": 2,
+                "p_zero": 0.1,
+                "p_partial": 0.3,
+                "p_sixty_plus": 0.6,
+                "expected_minutes": 60.0,
+                "model_version": "5",
+                "prediction_kind": BACKFILL_KIND,
+            }
+        ],
+    )
+
+    write_appearance_components(connection, BACKFILL_KIND)
+
+    stored = POINTS_COMPONENT.load(connection)
+    assert stored["component"].to_list() == [str(Component.APPEARANCE)]
+    assert stored["points"].to_list() == pytest.approx([0.3 + 2 * 0.6])
+    # No model of its own, so the version is the minutes model's.
+    assert stored["model_version"].to_list() == ["5"]
+
+
+def test_appearance_skips_positions_that_are_not_decomposed(
+    connection,
+) -> None:
+    """A monolithic position's total already includes appearance points."""
+    append_rows(
+        PLAYER_SEASON,
+        connection,
+        [{"season": SEASON, "element": 1, "position": "MID"}],
+    )
+    append_rows(
+        MINUTES_PREDICTION,
+        connection,
+        [
+            {
+                "season": SEASON,
+                "gw": 1,
+                "element": 1,
+                "opponent": 2,
+                "p_zero": 0.1,
+                "p_partial": 0.3,
+                "p_sixty_plus": 0.6,
+                "expected_minutes": 60.0,
+                "model_version": "5",
+                "prediction_kind": BACKFILL_KIND,
+            }
+        ],
+    )
+
+    write_appearance_components(connection, BACKFILL_KIND)
+
+    assert POINTS_COMPONENT.load(connection).is_empty()

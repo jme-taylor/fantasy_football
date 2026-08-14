@@ -35,6 +35,11 @@ VASTAAV_BRIDGE_SEASONS: list[str] = ["2024-25", "2025-26"]
 
 # Prediction model tunables
 ROLLING_WINDOW: int = 5
+
+# CBIT a defender must reach in a match to be paid defensive-contribution
+# points. Midfielders and forwards need 12, and their count includes
+# recoveries; only the defender threshold is modelled today.
+DEFCON_THRESHOLD_DEF: int = 10
 # A player counts as "fit" for positional-availability features when their
 # chance_of_playing_this_round is at or above this percentage. FPL reports
 # chance on a 0/25/50/75/100 scale, so 75 means "likely to play".

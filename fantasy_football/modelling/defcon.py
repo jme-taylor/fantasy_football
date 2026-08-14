@@ -1,0 +1,241 @@
+"""The defensive-contribution rate model.
+
+FPL pays a defender two points for reaching 10 CBIT -- clearances,
+blocks, interceptions and tackles -- in a match. That is a threshold on a
+count, not a smooth quantity, and it is the one part of a defender's
+score that a points regressor has no way to represent.
+
+What this model predicts is the *rate*: CBIT per 90, with no minutes
+feature anywhere in it. Minutes turn that rate into an expected count and
+the count distribution turns the expected count into the probability of
+clearing the threshold, both at composition time. Splitting it that way
+is what lets minutes be applied exactly once across every component.
+
+Recoveries are deliberately absent from the count: they belong to the
+midfield and forward threshold of 12, not the defender threshold of 10.
+"""
+
+import logging
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
+from typing import ClassVar, override
+
+import numpy as np
+import polars as pl
+from sklearn.metrics import brier_score_loss, log_loss
+
+from fantasy_football.constants import DEFCON_THRESHOLD_DEF
+from fantasy_football.features.match_form import DEFCON_COMPONENT_STATS
+from fantasy_football.modelling.components import (
+    Component,
+    DefconComponent,
+)
+from fantasy_football.modelling.distributions import PoissonCounts
+from fantasy_football.modelling.points import PositionPointsPredictor
+from fantasy_football.modelling.predictor import ModelSpec
+from fantasy_football.storage.coverage import FCI_SEASONS
+from fantasy_football.storage.tables import (
+    POINTS_COMPONENT,
+    TEST_POINTS_PREDICTION,
+)
+
+logger = logging.getLogger(__name__)
+
+POSITION = "DEF"
+
+REGISTERED_MODEL = "defender_cbit_rate_regressor"
+PRODUCTION_ALIAS = "production"
+
+#: The seasons a CBIT count can be had for at all. FPL publishes its own
+#: count only from 2025-26; FCI's counters reach back one season further
+#: and no earlier. The 2016-19 seasons carry the counters too, but that
+#: is a different era of pressing and they are left out deliberately.
+TRAINING_SEASONS = FCI_SEASONS
+
+#: Rows below this many minutes are dropped. A per-90 rate off eight
+#: minutes is arithmetic noise with enormous leverage on a regressor;
+#: minutes weighting handles the rest of the range.
+MINUTES_FLOOR = 15
+
+
+def _opta_cbit(alias: str = "oc") -> str:
+    """Return the SQL summing FCI's four defender counters.
+
+    Null when FCI published none of them, rather than zero: a defender
+    with no data did not make no clearances.
+    """
+    absent = " AND ".join(
+        f"{alias}.{stat} IS NULL" for stat in DEFCON_COMPONENT_STATS
+    )
+    totalled = " + ".join(
+        f"coalesce({alias}.{stat}, 0)" for stat in DEFCON_COMPONENT_STATS
+    )
+    return f"CASE WHEN {absent} THEN NULL ELSE {totalled} END"
+
+
+# FPL's own count where it is published, and FCI's reconstruction only
+# where it is not. Reconciled on 2025-26, where both exist, the two agree
+# exactly on 92.7% of defender gameweeks and differ by one on a further
+# 6.4% -- minutes and fixture legs match on every disagreeing row, so the
+# gap is the two providers counting a tackle differently rather than a
+# join or competition-filter fault. Preferring FPL where it exists keeps
+# the target exact for the season the rule actually ran in, and confines
+# the provider noise to 2024-25.
+CBIT_COUNT_SQL = f"coalesce(pmf.defensive_contribution, {_opta_cbit()})"
+
+
+@dataclass(frozen=True, slots=True)
+class DefconMetrics:
+    """Scores for the defcon head over one fold.
+
+    Scored at match scale rather than on the per-90 rate. The rate is not
+    the quantity of interest -- P(CBIT >= threshold) is -- and scoring on
+    the rate would hand the low-minutes rows the leverage the weighting
+    exists to take away from them.
+
+    ``skill_score`` is against always predicting the fold's base rate, so
+    a head with no signal scores zero rather than looking good because
+    the event is rare.
+    """
+
+    brier: float
+    logloss: float
+    base_rate_brier: float
+    skill_score: float
+    hit_rate: float
+    rate_mae: float
+
+    def as_dict(self) -> dict[str, float]:
+        """Return the metric names and values, one level deep."""
+        return asdict(self)
+
+
+class DefconRatePredictor(PositionPointsPredictor):
+    """Predicts CBIT per 90 for defenders, with no minutes features."""
+
+    POSITION = POSITION
+    TARGET = "cbit_per_90"
+    COMPONENT = Component.DEFCON
+    COMPONENT_IMPL = DefconComponent(
+        threshold=DEFCON_THRESHOLD_DEF, distribution=PoissonCounts()
+    )
+    TRAINING_SEASONS = TRAINING_SEASONS
+    WEIGHT_COLUMN = "minutes"
+    EXTRA_COLUMNS = (
+        f"{CBIT_COUNT_SQL} AS cbit_count",
+        "m.minutes AS minutes",
+    )
+
+    # No expected_minutes, and no bucket probabilities. A rate model that
+    # read them would be predicting a quantity that already has minutes
+    # in it, and composition would multiply them in a second time.
+    FEATURES = [
+        "is_home",
+        "cbit_per90_rolling_5",
+        "cbit_ten_plus_rate_rolling_5",
+        "cbit_std_rolling_5",
+        "tackles_per90_rolling_5",
+        "interceptions_per90_rolling_5",
+        "clearances_per90_rolling_5",
+        "blocks_per90_rolling_5",
+        "xg_against_rolling_5",
+        "goals_against_rolling_5",
+        "xg_for_rolling_5",
+        "goals_for_rolling_5",
+    ]
+
+    PLAYER_FORM_COLUMNS = [
+        "cbit_per90_rolling_5",
+        "cbit_ten_plus_rate_rolling_5",
+        "cbit_std_rolling_5",
+        "tackles_per90_rolling_5",
+        "interceptions_per90_rolling_5",
+        "clearances_per90_rolling_5",
+        "blocks_per90_rolling_5",
+    ]
+    # A defender who defends a lot plays for a club under pressure, so
+    # the team columns run the opposite way to the clean-sheet model's.
+    OWN_TEAM_COLUMNS = ["xg_against_rolling_5", "goals_against_rolling_5"]
+    OPPOSITION_COLUMNS = ["xg_for_rolling_5", "goals_for_rolling_5"]
+    MINUTES_COLUMNS: ClassVar[list[str]] = []
+
+    @property
+    @override
+    def target_sql(self) -> str:
+        """Return CBIT per 90 from whichever source published it."""
+        return f"{CBIT_COUNT_SQL} * 90.0 / nullif(m.minutes, 0) AS cbit_per_90"
+
+    @property
+    @override
+    def extra_joins(self) -> str:
+        """Join both CBIT sources at match grain."""
+        return """
+LEFT JOIN opta_match AS oc
+    ON  oc.season   = m.season
+    AND oc.gw       = m.gw
+    AND oc.element  = m.element
+    AND oc.opponent = m.opponent
+LEFT JOIN player_match_fpl AS pmf
+    ON  pmf.season        = m.season
+    AND pmf.gw            = m.gw
+    AND pmf.element       = m.element
+    AND pmf.opponent_team = m.opponent"""
+
+    @property
+    @override
+    def row_filter(self) -> str:
+        """Drop rows with no count, or too few minutes to rate one."""
+        return (
+            f"\n  AND m.minutes >= {MINUTES_FLOOR}"
+            f"\n  AND {CBIT_COUNT_SQL} IS NOT NULL"
+        )
+
+    @override
+    def fold_metrics(
+        self, test_df: pl.DataFrame, predicted: Sequence[float]
+    ) -> DefconMetrics:
+        """Score the fold at match scale, not on the per-90 rate.
+
+        Actual minutes are used to build lambda rather than the minutes
+        model's forecast, which isolates this head's error from the
+        minutes model's.
+        """
+        minutes = test_df["minutes"].cast(pl.Float64).to_numpy()
+        rate = np.clip(np.asarray(predicted, dtype=float), 0.0, None)
+        probability = self.COMPONENT_IMPL.distribution.p_at_least(
+            rate * minutes / 90.0, DEFCON_THRESHOLD_DEF
+        )
+        actual = (
+            (test_df["cbit_count"] >= DEFCON_THRESHOLD_DEF)
+            .cast(pl.Int64)
+            .to_list()
+        )
+        base_rate = float(np.mean(actual))
+        baseline = np.full_like(probability, base_rate)
+        brier = float(brier_score_loss(actual, probability))
+        base_brier = float(brier_score_loss(actual, baseline))
+        return DefconMetrics(
+            brier=brier,
+            logloss=float(
+                log_loss(actual, np.clip(probability, 1e-9, 1 - 1e-9))
+            ),
+            base_rate_brier=base_brier,
+            skill_score=1.0 - brier / base_brier if base_brier else 0.0,
+            hit_rate=base_rate,
+            rate_mae=float(
+                np.average(
+                    np.abs(rate - test_df[self.TARGET].to_numpy()),
+                    weights=minutes,
+                )
+            ),
+        )
+
+
+DEFCON_SPEC = ModelSpec(
+    registered_model_name=REGISTERED_MODEL,
+    production_alias=PRODUCTION_ALIAS,
+    table=POINTS_COMPONENT,
+    evaluation_table=TEST_POINTS_PREDICTION,
+    position=POSITION,
+    component=Component.DEFCON,
+)

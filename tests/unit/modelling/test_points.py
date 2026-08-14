@@ -18,7 +18,6 @@ from sklearn.impute import SimpleImputer
 
 from fantasy_football.features.views import register_feature_views
 from fantasy_football.modelling.components import (
-    POSITION_COMPONENTS,
     Component,
     compose,
 )
@@ -643,7 +642,9 @@ def test_undecomposed_position_composes_back_to_its_raw_prediction(
     pipe = predictor.train_final(frame)
     scored = predictor.build_prediction_rows(frame, pipe, "4", BACKFILL_KIND)
 
-    composed = compose(scored, expected=POSITION_COMPONENTS).sort(KEY_COLUMNS)
+    composed = compose(
+        scored, expected={predictor.POSITION: (predictor.COMPONENT,)}
+    ).sort(KEY_COLUMNS)
     component_points = scored.sort(KEY_COLUMNS)["points"].to_list()
 
     assert composed.columns == POINTS_PREDICTION.columns

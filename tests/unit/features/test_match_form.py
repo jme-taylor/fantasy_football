@@ -170,6 +170,7 @@ def test_feature_columns_covers_every_stat_and_context_column() -> None:
         + len(match_form.FPL_PER90_STATS)
         + len(match_form.GK_FPL_PER90_STATS)
         + len(match_form.CUMULATIVE_STATS)
+        + len(match_form.DEFCON_FORM_COLUMNS)
         + len(match_form.FORM_CONTEXT_COLUMNS)
     )
     # No column may be emitted twice, whatever the stat lists hold.
@@ -564,3 +565,97 @@ def test_running_total_starts_at_zero_not_null(tmp_path: Path) -> None:
         assert first["yellow_cards_per90_rolling_5"].item() is None
     finally:
         connection.close()
+
+
+# --- Defensive-contribution form --------------------------------------
+
+
+def test_cbit_rate_sums_the_defender_counters(connection) -> None:
+    """CBIT is the sum of the four counters FPL pays defenders for."""
+    frame = match_form.load_match_form(connection)
+    third = frame.filter(pl.col("gw") == 3)
+
+    # The seeded run has 3 tackles per 90 and no other counter, so CBIT
+    # is 3 per 90 over the two prior appearances.
+    assert third["cbit_per90_rolling_5"].item() == pytest.approx(3.0)
+
+
+def test_cbit_hit_rate_counts_appearances_clearing_the_threshold(
+    tmp_path: Path,
+) -> None:
+    """The hit rate is the share of the window that reached ten."""
+    conn = _build(
+        tmp_path,
+        minutes=[90, 90, 90],
+        tackles=[12, 4, 3],
+        xg=[0.0, 0.0, 0.0],
+    )
+    try:
+        frame = match_form.load_match_form(conn)
+        third = frame.filter(pl.col("gw") == 3)
+
+        # One of the two prior appearances cleared ten.
+        assert third["cbit_ten_plus_rate_rolling_5"].item() == pytest.approx(
+            0.5
+        )
+    finally:
+        conn.close()
+
+
+def test_cbit_spread_separates_steady_from_streaky(tmp_path: Path) -> None:
+    """Two defenders on the same mean differ in their spread.
+
+    This is the threshold-specific signal a points regressor never
+    needed: the same average CBIT can sit either side of the cliff edge
+    depending on how much it varies.
+    """
+    steady = _build(
+        tmp_path / "steady",
+        minutes=[90, 90, 90],
+        tackles=[8, 8, 0],
+        xg=[0.0, 0.0, 0.0],
+    )
+    streaky = _build(
+        tmp_path / "streaky",
+        minutes=[90, 90, 90],
+        tackles=[2, 14, 0],
+        xg=[0.0, 0.0, 0.0],
+    )
+    try:
+        steady_std = (
+            match_form.load_match_form(steady)
+            .filter(pl.col("gw") == 3)["cbit_std_rolling_5"]
+            .item()
+        )
+        streaky_std = (
+            match_form.load_match_form(streaky)
+            .filter(pl.col("gw") == 3)["cbit_std_rolling_5"]
+            .item()
+        )
+
+        assert steady_std == pytest.approx(0.0)
+        assert streaky_std > steady_std
+    finally:
+        steady.close()
+        streaky.close()
+
+
+def test_cbit_is_null_when_no_counter_was_published(tmp_path: Path) -> None:
+    """No FCI data is unknown CBIT, not zero CBIT.
+
+    Zero would drag the rolling rate down and read as a quiet defender
+    rather than as an unobserved one.
+    """
+    conn = _build(
+        tmp_path,
+        minutes=[90, 90],
+        tackles=[None, None],
+        xg=[0.0, 0.0],
+    )
+    try:
+        frame = match_form.load_match_form(conn)
+        second = frame.filter(pl.col("gw") == 2)
+
+        assert second["cbit_per90_rolling_5"].item() is None
+    finally:
+        conn.close()

@@ -6,8 +6,14 @@ makes a defender a defender.
 """
 
 import logging
+from typing import ClassVar, override
 
-from fantasy_football.modelling.components import Component
+from fantasy_football.modelling.components import (
+    MINUTES_OUTPUTS,
+    Component,
+    RateComponent,
+)
+from fantasy_football.modelling.defcon import MINUTES_FLOOR
 from fantasy_football.modelling.points import PositionPointsPredictor
 from fantasy_football.modelling.predictor import ModelSpec
 from fantasy_football.storage.tables import (
@@ -97,4 +103,80 @@ DEFENDER_SPEC = ModelSpec(
     component=Component.TOTAL,
     evaluation_table=TEST_POINTS_PREDICTION,
     position=POSITION,
+)
+
+
+# The points left once appearance and defcon have been carved out:
+# goals, assists, clean sheets, cards and bonus. Predicted per 90 and
+# scaled by the minutes forecast at composition, so this model reads no
+# minutes feature either.
+#
+# ``defensive_contribution`` is null before 2025-26, so the CASE deducts
+# nothing there -- which is correct, because nothing was awarded. That is
+# what makes this target the same quantity in every season and retires
+# the regime break the monolithic model trains across.
+#
+# TODO (JT): bonus points sit in here and are not a per-90 quantity at
+# all. They are awarded per match on a BPS ranking, so scaling them by
+# minutes is an approximation, and they are the largest source of noise
+# left in this target. Bonus is the next component to split out.
+RESIDUAL_TARGET_SQL = """(
+    m.total_points
+    - CASE WHEN m.minutes >= 60 THEN 2 WHEN m.minutes > 0 THEN 1 ELSE 0 END
+    - CASE WHEN pmf.defensive_contribution >= 10 THEN 2 ELSE 0 END
+) * 90.0 / nullif(m.minutes, 0) AS residual_points_per_90"""
+
+RESIDUAL_REGISTERED_MODEL = "defender_residual_points_regressor"
+
+
+class DefenderResidualPointsPredictor(DefenderPointsPredictor):
+    """Everything a defender scores bar appearance and defcon points."""
+
+    TARGET = "residual_points_per_90"
+    COMPONENT = Component.RESIDUAL
+    COMPONENT_IMPL = RateComponent(Component.RESIDUAL)
+    WEIGHT_COLUMN = "minutes"
+    EXTRA_COLUMNS = ("m.minutes AS minutes",)
+
+    # The monolithic list minus expected_minutes and the three bucket
+    # probabilities. Nothing replaces them: a minutes proxy would put the
+    # double-count back in through the side door.
+    FEATURES = [
+        feature
+        for feature in DefenderPointsPredictor.FEATURES
+        if feature not in MINUTES_OUTPUTS
+    ]
+    MINUTES_COLUMNS: ClassVar[list[str]] = []
+
+    @property
+    @override
+    def target_sql(self) -> str:
+        """Return points per 90 net of appearance and defcon."""
+        return RESIDUAL_TARGET_SQL
+
+    @property
+    @override
+    def extra_joins(self) -> str:
+        """Join FPL's own defcon count, the only awarded source."""
+        return """
+LEFT JOIN player_match_fpl AS pmf
+    ON  pmf.season        = m.season
+    AND pmf.gw            = m.gw
+    AND pmf.element       = m.element
+    AND pmf.opponent_team = m.opponent"""
+
+    @property
+    @override
+    def row_filter(self) -> str:
+        """Drop appearances too short to carry a meaningful per-90 rate."""
+        return f"\n  AND m.minutes >= {MINUTES_FLOOR}"
+
+
+DEFENDER_RESIDUAL_SPEC = ModelSpec(
+    registered_model_name=RESIDUAL_REGISTERED_MODEL,
+    production_alias=PRODUCTION_ALIAS,
+    table=POINTS_COMPONENT,
+    evaluation_table=TEST_POINTS_PREDICTION,
+    position=POSITION,
+    component=Component.RESIDUAL,
 )
