@@ -300,6 +300,7 @@ def test_every_decomposed_def_component_is_declared() -> None:
     assert set(POSITION_COMPONENTS["DEF"]) == {
         Component.APPEARANCE,
         Component.DEFCON,
+        Component.GOALS,
         Component.RESIDUAL,
     }
 

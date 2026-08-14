@@ -49,6 +49,16 @@ MINUTES_OUTPUTS = ("expected_minutes", "p_zero", "p_partial", "p_sixty_plus")
 #: What clearing the threshold pays.
 DEFCON_POINTS = 2.0
 
+#: What a goal pays, by position. The reason the goals model predicts a
+#: rate rather than points: one rate is worth three different amounts,
+#: so the conversion belongs here and not in the target.
+GOALS_POINTS_BY_POSITION: dict[str, float] = {
+    "GK": 6.0,
+    "DEF": 6.0,
+    "MID": 5.0,
+    "FWD": 4.0,
+}
+
 
 class Component(StrEnum):
     """One scoring component of an FPL points total."""
@@ -59,6 +69,8 @@ class Component(StrEnum):
     APPEARANCE = "appearance"
     #: Points for clearing the defensive-contribution threshold.
     DEFCON = "defcon"
+    #: Points for scoring, worth a different amount per position.
+    GOALS = "goals"
     #: Everything not carved out into a component of its own.
     RESIDUAL = "residual"
 
@@ -71,6 +83,7 @@ POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
     "DEF": (
         Component.APPEARANCE,
         Component.DEFCON,
+        Component.GOALS,
         Component.RESIDUAL,
     ),
     "MID": (Component.TOTAL,),
@@ -317,9 +330,18 @@ class RateComponent:
     The shape every remaining component takes once appearance and defcon
     -- both of which are step functions of minutes rather than rates --
     have been carved out.
+
+    ``points_per_event`` is what separates a rate of *points* from a
+    rate of *events*. The residual model already predicts points, so it
+    leaves this None and the scaled rate is the answer. A goals model
+    predicts goals, which are worth six to a defender and four to a
+    forward, so the conversion happens here -- which is what lets one
+    model serve every position it was trained on.
     """
 
     component_name: Component = Component.RESIDUAL
+    points_per_event: Mapping[str, float] | None = None
+    distribution: CountDistribution = field(default_factory=PoissonCounts)
 
     @property
     def component(self) -> Component:
@@ -335,15 +357,55 @@ class RateComponent:
         self, rows: pl.DataFrame, minutes: pl.DataFrame, kind: str
     ) -> pl.DataFrame:
         """Return the per-90 rate scaled to the minutes expected."""
-        joined = _with_minutes(rows, minutes)
+        joined = _with_minutes(rows, minutes).with_columns(
+            _expected=(
+                pl.col(PREDICTED_VALUE).clip(lower_bound=0.0)
+                * pl.col("expected_minutes")
+                / 90.0
+            )
+        )
+        if self.points_per_event is None:
+            return _component_rows(
+                joined,
+                self.component,
+                kind,
+                pl.col(PREDICTED_VALUE) * pl.col("expected_minutes") / 90.0,
+                pl.struct(
+                    pl.col(PREDICTED_VALUE).alias("per_90"),
+                    pl.col("expected_minutes"),
+                ).struct.json_encode(),
+            )
+        unpriced = sorted(
+            set(joined["position"].to_list()) - set(self.points_per_event)
+        )
+        if unpriced:
+            raise ValueError(
+                f"{self.component} rows carry positions with no points "
+                f"value: {unpriced}. A missing price would silently score "
+                "them null and blank the whole composed prediction."
+            )
+        # P(at least one) is not what the points are built from -- they
+        # are linear in the count, so the expectation is enough -- but it
+        # is the number wanted when a captaincy pick looks wrong.
+        scored = self.distribution.p_at_least(
+            joined["_expected"].to_numpy(), 1
+        )
+        joined = joined.with_columns(
+            _p_scored=pl.Series(scored).cast(pl.Float64),
+            _points_per_event=pl.col("position").replace_strict(
+                dict(self.points_per_event), return_dtype=pl.Float64
+            ),
+        )
         return _component_rows(
             joined,
             self.component,
             kind,
-            pl.col(PREDICTED_VALUE) * pl.col("expected_minutes") / 90.0,
+            pl.col("_points_per_event") * pl.col("_expected"),
             pl.struct(
                 pl.col(PREDICTED_VALUE).alias("per_90"),
                 pl.col("expected_minutes"),
+                pl.col("_expected").alias("expected_count"),
+                pl.col("_p_scored").alias("p_scored"),
             ).struct.json_encode(),
         )
 

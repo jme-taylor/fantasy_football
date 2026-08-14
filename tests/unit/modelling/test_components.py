@@ -200,6 +200,7 @@ def test_complete_legs_survive_when_a_neighbour_is_dropped() -> None:
     rows = frame(
         component_row(Component.APPEARANCE, 1.8, position="DEF"),
         component_row(Component.DEFCON, 0.9, position="DEF"),
+        component_row(Component.GOALS, 0.4, position="DEF"),
         component_row(Component.RESIDUAL, 2.3, position="DEF"),
         component_row(Component.APPEARANCE, 2.0, element=2, position="DEF"),
         component_row(Component.DEFCON, 0.1, element=2, position="DEF"),
@@ -208,7 +209,7 @@ def test_complete_legs_survive_when_a_neighbour_is_dropped() -> None:
     composed = compose(rows, expected=POSITION_COMPONENTS)
 
     assert composed["element"].to_list() == [1]
-    assert composed["predicted_points"].to_list() == [pytest.approx(5.0)]
+    assert composed["predicted_points"].to_list() == [pytest.approx(5.4)]
 
 
 def test_duplicate_component_for_one_leg_is_an_error() -> None:
