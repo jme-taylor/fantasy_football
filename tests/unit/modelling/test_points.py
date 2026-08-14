@@ -17,6 +17,10 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.impute import SimpleImputer
 
 from fantasy_football.features.views import register_feature_views
+from fantasy_football.modelling.components import (
+    Component,
+    compose,
+)
 from fantasy_football.modelling.defender import (
     DEFENDER_SPEC,
     DefenderPointsPredictor,
@@ -49,6 +53,7 @@ from fantasy_football.storage.tables import (
     PLAYER_MATCH,
     PLAYER_SEASON,
     PLAYER_SNAPSHOT,
+    POINTS_COMPONENT,
     POINTS_PREDICTION,
     TEAM_FIXTURE,
     TEST_POINTS_PREDICTION,
@@ -612,16 +617,41 @@ def test_train_and_register_model_stores_predictions_against_its_run(
 def test_build_prediction_rows_shapes_rows_for_storage(
     predictor, synthetic_frame
 ) -> None:
-    """build_prediction_rows shapes rows for POINTS_PREDICTION storage."""
+    """build_prediction_rows shapes rows for POINTS_COMPONENT storage."""
     frame = synthetic_frame(predictor, n_gws=1, n_players=3)
     pipe = predictor.train_final(frame)
     scored = predictor.build_prediction_rows(frame, pipe, "4", BACKFILL_KIND)
 
-    assert scored.columns == POINTS_PREDICTION.columns
+    assert scored.columns == POINTS_COMPONENT.columns
     assert scored.height == frame.height
     assert scored["position"].unique().to_list() == [predictor.POSITION]
     assert scored["model_version"].unique().to_list() == ["4"]
     assert scored["prediction_kind"].unique().to_list() == [BACKFILL_KIND]
+    assert scored["component"].unique().to_list() == [Component.TOTAL]
+
+
+def test_undecomposed_position_composes_back_to_its_raw_prediction(
+    predictor, synthetic_frame
+) -> None:
+    """A single-component position composes to exactly what it predicted.
+
+    The byte-identical guarantee: decomposition must not move a number
+    for a position that has not been decomposed.
+    """
+    frame = synthetic_frame(predictor, n_gws=1, n_players=3)
+    pipe = predictor.train_final(frame)
+    scored = predictor.build_prediction_rows(frame, pipe, "4", BACKFILL_KIND)
+
+    composed = compose(
+        scored, expected={predictor.POSITION: (predictor.COMPONENT,)}
+    ).sort(KEY_COLUMNS)
+    component_points = scored.sort(KEY_COLUMNS)["points"].to_list()
+
+    assert composed.columns == POINTS_PREDICTION.columns
+    assert composed["predicted_points"].to_list() == pytest.approx(
+        component_points
+    )
+    assert composed["model_version"].unique().to_list() == ["4"]
 
 
 # --- Backfill --------------------------------------------------------
@@ -650,27 +680,29 @@ def _two_season_frame(synthetic_frame, predictor) -> pl.DataFrame:
     )
 
 
-def _seed_points_prediction(
+def _seed_points_component(
     connection,
     predictor,
     frame: pl.DataFrame,
     season: str,
     model_version: str,
-    predicted_points: float = 999.0,
+    points: float = 999.0,
 ) -> None:
-    """Seed a sentinel backfill row per key in ``frame`` for ``season``."""
+    """Seed a sentinel backfill component per key in ``frame``."""
     sentinel = (
         frame.filter(pl.col("season") == season)
         .select(KEY_COLUMNS)
         .with_columns(
             position=pl.lit(predictor.POSITION),
-            predicted_points=pl.lit(predicted_points),
-            model_version=pl.lit(model_version),
             prediction_kind=pl.lit(BACKFILL_KIND),
+            component=pl.lit(str(predictor.COMPONENT)),
+            points=pl.lit(points),
+            model_version=pl.lit(model_version),
+            diagnostics=pl.lit(None, dtype=pl.Utf8),
         )
-        .select(POINTS_PREDICTION.columns)
+        .select(POINTS_COMPONENT.columns)
     )
-    POINTS_PREDICTION.append(connection, sentinel)
+    POINTS_COMPONENT.append(connection, sentinel)
 
 
 def test_backfill_writes_nothing_without_a_production_alias(
@@ -687,7 +719,7 @@ def test_backfill_writes_nothing_without_a_production_alias(
 
     predictor.backfill_model_predictions()
 
-    assert POINTS_PREDICTION.load(connection).is_empty()
+    assert POINTS_COMPONENT.load(connection).is_empty()
 
 
 def test_backfill_rescores_the_current_season_every_run(
@@ -699,7 +731,7 @@ def test_backfill_rescores_the_current_season_every_run(
 
     predictor.backfill_model_predictions()
 
-    stored = POINTS_PREDICTION.load(connection)
+    stored = POINTS_COMPONENT.load(connection)
     assert stored.height == frame.height
     assert stored["prediction_kind"].unique().to_list() == [BACKFILL_KIND]
     assert stored["model_version"].unique().to_list() == ["4"]
@@ -714,7 +746,7 @@ def test_backfill_rescores_historic_season_when_nothing_stored(
 
     predictor.backfill_model_predictions()
 
-    historic = POINTS_PREDICTION.load(connection).filter(
+    historic = POINTS_COMPONENT.load(connection).filter(
         pl.col("season") == "2025-26"
     )
     assert (
@@ -729,18 +761,18 @@ def test_backfill_rescores_historic_season_on_version_change(
     """A historic season stored under a stale version is rewritten."""
     frame = _two_season_frame(synthetic_frame, predictor)
     _wire_backfill(mocker, predictor, frame, "4")
-    _seed_points_prediction(connection, predictor, frame, "2025-26", "3")
+    _seed_points_component(connection, predictor, frame, "2025-26", "3")
 
     predictor.backfill_model_predictions()
 
-    historic = POINTS_PREDICTION.load(connection).filter(
+    historic = POINTS_COMPONENT.load(connection).filter(
         pl.col("season") == "2025-26"
     )
     assert (
         historic.height == frame.filter(pl.col("season") == "2025-26").height
     )
     assert historic["model_version"].unique().to_list() == ["4"]
-    assert 999.0 not in historic["predicted_points"].to_list()
+    assert 999.0 not in historic["points"].to_list()
 
 
 def test_backfill_skips_historic_season_already_at_production_version(
@@ -753,14 +785,14 @@ def test_backfill_skips_historic_season_already_at_production_version(
     """
     frame = _two_season_frame(synthetic_frame, predictor)
     _wire_backfill(mocker, predictor, frame, "4")
-    _seed_points_prediction(connection, predictor, frame, "2025-26", "4")
+    _seed_points_component(connection, predictor, frame, "2025-26", "4")
 
     predictor.backfill_model_predictions()
 
-    stored = POINTS_PREDICTION.load(connection)
+    stored = POINTS_COMPONENT.load(connection)
     historic = stored.filter(pl.col("season") == "2025-26")
     # Untouched sentinel proves the historic partition was not rewritten.
-    assert historic["predicted_points"].unique().to_list() == [999.0]
+    assert historic["points"].unique().to_list() == [999.0]
     assert historic["model_version"].unique().to_list() == ["4"]
 
     current = stored.filter(pl.col("season") == "2026-27")
@@ -1285,10 +1317,10 @@ def test_forward_frame_scores_through_a_fitted_pipeline(
 
     scored = predictor.build_prediction_rows(frame, pipe, "1", FORWARD_KIND)
 
-    assert scored.columns == POINTS_PREDICTION.columns
+    assert scored.columns == POINTS_COMPONENT.columns
     assert scored.height == 1
-    assert scored["predicted_points"].dtype == pl.Float64
-    assert scored["predicted_points"].item() is not None
+    assert scored["points"].dtype == pl.Float64
+    assert scored["points"].item() is not None
 
 
 # --- Forward scoring -------------------------------------------------
@@ -1305,7 +1337,7 @@ def test_forward_scoring_skips_without_a_production_alias(
 
     predictor.predict_forward()
 
-    assert POINTS_PREDICTION.load(connection).is_empty()
+    assert POINTS_COMPONENT.load(connection).is_empty()
 
 
 def _seed_snapshot(connection, position: str) -> None:
@@ -1363,19 +1395,23 @@ def test_predict_forward_stores_and_freezes(
     # register them; in the pipeline training does that first.
     register_feature_views(connection)
     _seed_snapshot(connection, predictor.POSITION)
-    POINTS_PREDICTION.append(
+    POINTS_COMPONENT.append(
         connection,
-        pl.DataFrame(
-            {
-                "season": [SEASON],
-                "gw": [2],
-                "element": [1],
-                "opponent": [TEAM_IDS[CHELSEA]],
-                "position": [predictor.POSITION],
-                "predicted_points": [999.0],
-                "model_version": ["1"],
-                "prediction_kind": [FORWARD_KIND],
-            }
+        POINTS_COMPONENT.coerce(
+            pl.DataFrame(
+                {
+                    "season": [SEASON],
+                    "gw": [2],
+                    "element": [1],
+                    "opponent": [TEAM_IDS[CHELSEA]],
+                    "position": [predictor.POSITION],
+                    "prediction_kind": [FORWARD_KIND],
+                    "component": [str(predictor.COMPONENT)],
+                    "points": [999.0],
+                    "model_version": ["1"],
+                    "diagnostics": [None],
+                }
+            )
         ),
     )
     mocker.patch(
@@ -1387,9 +1423,9 @@ def test_predict_forward_stores_and_freezes(
 
     predictor.predict_forward()
 
-    stored = POINTS_PREDICTION.load(connection)
+    stored = POINTS_COMPONENT.load(connection)
     frozen = stored.filter(pl.col("gw") == 2)
-    assert frozen["predicted_points"].to_list() == [999.0]
+    assert frozen["points"].to_list() == [999.0]
     assert frozen["model_version"].to_list() == ["1"]
 
     fresh = stored.filter(pl.col("gw") == 3)
@@ -1397,7 +1433,7 @@ def test_predict_forward_stores_and_freezes(
     assert fresh.select("element", "opponent").rows() == [
         (1, TEAM_IDS[ARSENAL])
     ]
-    assert fresh["predicted_points"].to_list() == [4.5]
+    assert fresh["points"].to_list() == [4.5]
     assert fresh["prediction_kind"].to_list() == [FORWARD_KIND]
     assert fresh["model_version"].to_list() == ["9"]
     assert fresh["position"].to_list() == [predictor.POSITION]
@@ -1450,5 +1486,73 @@ def test_positions_do_not_overwrite_each_others_predictions(
             fold_strategy=ExpandingGameweekFoldStrategy(),
         ).predict_forward()
 
-    stored = POINTS_PREDICTION.load(connection).filter(pl.col("gw") == 3)
+    stored = POINTS_COMPONENT.load(connection).filter(pl.col("gw") == 3)
     assert sorted(stored["position"].unique().to_list()) == ["DEF", "FWD"]
+
+
+# --- Registry drift --------------------------------------------------
+
+
+def test_a_model_fitted_on_other_features_is_refused(
+    predictor, synthetic_frame, mocker, caplog
+) -> None:
+    """An aliased model the code has outgrown is skipped, not scored.
+
+    The registry alias is moved by hand, so a model fitted on an older
+    feature list stays live until someone promotes a newer one. Scoring
+    with it fails deep inside sklearn on a message naming one column and
+    nothing else -- not the model, not the alias, not the fix.
+    """
+    frame = synthetic_frame(predictor, n_gws=1, n_players=3)
+    # Fitted on one more column than the code now builds, exactly as the
+    # live models were before their feature lists were trimmed.
+    stale = predictor.make_pipeline()
+    stale.fit(
+        frame.select(predictor.FEATURES)
+        .with_columns(days_since_last_appearance=pl.lit(1.0))
+        .to_pandas(),
+        frame[predictor.TARGET].to_list(),
+    )
+    mocker.patch(
+        "fantasy_football.modelling.predictor.load_production_model",
+        return_value=("12", stale),
+    )
+
+    with caplog.at_level("WARNING"):
+        assert predictor.production_model() is None
+
+    assert "move the alias" in caplog.text.lower()
+    assert "days_since_last_appearance" in caplog.text
+
+
+def test_a_matching_model_is_returned(
+    predictor, synthetic_frame, mocker
+) -> None:
+    """A model fitted on the declared features scores as normal."""
+    frame = synthetic_frame(predictor, n_gws=1, n_players=3)
+    mocker.patch(
+        "fantasy_football.modelling.predictor.load_production_model",
+        return_value=("12", predictor.train_final(frame)),
+    )
+
+    assert predictor.production_model() is not None
+
+
+def test_drift_stops_the_backfill_rather_than_the_run(
+    predictor, connection, synthetic_frame, mocker, caplog
+) -> None:
+    """One stale alias must not take the other positions down with it."""
+    frame = synthetic_frame(predictor, n_gws=2, n_players=3)
+    predictor._model_dataframe = frame
+    mocker.patch.object(
+        type(predictor), "expected_features", property(lambda _: ["nope"])
+    )
+    mocker.patch(
+        "fantasy_football.modelling.predictor.load_production_model",
+        return_value=("12", predictor.train_final(frame)),
+    )
+
+    with caplog.at_level("WARNING"):
+        predictor.backfill_model_predictions()
+
+    assert POINTS_COMPONENT.load(connection).is_empty()

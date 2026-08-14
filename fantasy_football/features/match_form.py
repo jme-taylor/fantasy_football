@@ -57,7 +57,10 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from fantasy_football.constants import ROLLING_WINDOW
+from fantasy_football.constants import (
+    DEFCON_THRESHOLD_DEF,
+    ROLLING_WINDOW,
+)
 from fantasy_football.features.naming import (
     FALLBACK_IDENTITY_PREFIX,
     rolling_column_name,
@@ -116,6 +119,16 @@ GK_FPL_PER90_STATS: tuple[str, ...] = (
     "goals_conceded",
 )
 
+# The counters FPL adds up for a defender's defensive contribution.
+# Recoveries are deliberately absent: they count towards the midfield and
+# forward threshold of 12, not the defender threshold of 10.
+DEFCON_COMPONENT_STATS: tuple[str, ...] = (
+    "clearances",
+    "blocks",
+    "interceptions",
+    "tackles",
+)
+
 # Stats also accumulated across the season to date. Cards are the case
 # that needs it: a per-90 rate says how freely a player is booked, but
 # suspensions are triggered by a running count, and that count resets
@@ -131,6 +144,31 @@ CUMULATIVE_STATS: tuple[str, ...] = (
 # the lists above are what each model picks from.
 OPTA_RATE_STATS: tuple[str, ...] = (*PER90_STATS, *GK_PER90_STATS)
 FPL_RATE_STATS: tuple[str, ...] = (*FPL_PER90_STATS, *GK_FPL_PER90_STATS)
+
+# The defcon features. A rate alone cannot describe a threshold: two
+# defenders averaging 9.5 CBIT per 90 with different spreads have very
+# different chances of clearing 10, so the hit rate and the spread go
+# alongside the rate.
+DEFCON_FORM_STATS: tuple[str, ...] = (
+    "cbit_per90",
+    "cbit_ten_plus_rate",
+    "cbit_std",
+)
+
+
+def defcon_form_columns(
+    rolling_window: int = ROLLING_WINDOW,
+) -> tuple[str, ...]:
+    """Return the defcon form column names for a window.
+
+    Named from the window they are computed over, like every other rate,
+    so changing ``ROLLING_WINDOW`` cannot leave a column claiming five
+    appearances while covering another number.
+    """
+    return tuple(
+        rolling_column_name(stat, rolling_window) for stat in DEFCON_FORM_STATS
+    )
+
 
 # Columns the view adds beyond the per-90 rates.
 FORM_CONTEXT_COLUMNS: tuple[str, ...] = (
@@ -346,6 +384,7 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
             for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
         ]
         + [cumulative_column_name(stat) for stat in CUMULATIVE_STATS]
+        + list(defcon_form_columns(rolling_window))
         + list(FORM_CONTEXT_COLUMNS)
     )
 
@@ -410,6 +449,21 @@ def form_sql(
     validate_stats(OPTA_RATE_STATS)
     validate_stats(FPL_RATE_STATS, source="fpl")
     validate_stats(CUMULATIVE_STATS, source="fpl")
+    validate_stats(DEFCON_COMPONENT_STATS)
+    # Null when FCI published no defensive counters for the appearance at
+    # all, rather than zero: a defender with no data did not make no
+    # clearances, we simply do not know. Zero here would drag the rolling
+    # rate down and read as a quiet defender.
+    absent = " AND ".join(
+        f"o.{stat} IS NULL" for stat in DEFCON_COMPONENT_STATS
+    )
+    totalled = " + ".join(
+        f"coalesce(o.{stat}, 0)" for stat in DEFCON_COMPONENT_STATS
+    )
+    cbit = f"CASE WHEN {absent} THEN NULL ELSE {totalled} END AS cbit"
+    defcon_rate, defcon_hit_rate, defcon_spread = defcon_form_columns(
+        rolling_window
+    )
     rates = ",\n        ".join(
         f"90.0 * sum(a.{stat}) OVER form "
         f"/ nullif(sum(CASE WHEN a.{stat} IS NOT NULL THEN a.minutes END) "
@@ -451,6 +505,7 @@ appearances AS (
         m.minutes,
         m.total_points,
         {rolling_identity_sql()} AS rolling_identity,
+        {cbit},
         {stat_columns}
     FROM player_match AS m
     LEFT JOIN player_season AS s
@@ -489,6 +544,13 @@ SELECT
     a.total_points,
     {rates},
     {totals},
+    90.0 * sum(a.cbit) OVER form
+        / nullif(sum(CASE WHEN a.cbit IS NOT NULL THEN a.minutes END)
+                 OVER form, 0) AS {defcon_rate},
+    avg(CASE WHEN a.cbit IS NULL THEN NULL
+             WHEN a.cbit >= {DEFCON_THRESHOLD_DEF} THEN 1.0
+             ELSE 0.0 END) OVER form AS {defcon_hit_rate},
+    stddev_samp(a.cbit) OVER form AS {defcon_spread},
     count(*) OVER form AS form_matches,
     sum(a.minutes) OVER form AS form_minutes,
     date_diff('day', max(a.kickoff_time) OVER form, a.kickoff_time)

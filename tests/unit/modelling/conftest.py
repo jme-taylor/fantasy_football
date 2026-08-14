@@ -24,7 +24,6 @@ from fantasy_football.features.naming import (
 )
 from fantasy_football.modelling.points import (
     KEY_COLUMNS,
-    TARGET,
     PositionPointsPredictor,
 )
 from fantasy_football.storage.tables import (
@@ -532,20 +531,31 @@ def synthetic_frame() -> Callable[..., pl.DataFrame]:
         n_players: int = 12,
         season: str = "2026-27",
     ) -> pl.DataFrame:
+        # Scoring columns a decomposed model carries beyond its target
+        # and features -- minutes for the weighting, the raw CBIT count
+        # for the match-scale metrics.
+        extra = {"minutes": 90.0, "cbit_count": 9.0}
         rows = [
             {
                 "season": season,
                 "gw": gw,
                 "element": element,
                 "opponent": (element % 5) + 1,
-                TARGET: float(element % 7),
+                predictor.TARGET: float(element % 7),
+                **{
+                    name: extra.get(name, 1.0)
+                    for name in predictor.frame_columns
+                },
                 **{name: float(element + gw) for name in predictor.FEATURES},
             }
             for gw in range(1, n_gws + 1)
             for element in range(1, n_players + 1)
         ]
         return pl.DataFrame(rows).select(
-            KEY_COLUMNS + [TARGET] + predictor.FEATURES
+            KEY_COLUMNS
+            + [predictor.TARGET]
+            + predictor.frame_columns
+            + predictor.FEATURES
         )
 
     return build

@@ -26,8 +26,15 @@ from sklearn.pipeline import Pipeline
 from fantasy_football.constants import PRECISION_K_BY_POSITION
 from fantasy_football.features.match_form import rolling_identity_sql
 from fantasy_football.features.views import register_feature_views
+from fantasy_football.modelling.components import (
+    PREDICTED_VALUE,
+    Component,
+    PointsComponent,
+    TotalComponent,
+)
 from fantasy_football.modelling.folds import Fold, FoldResult
 from fantasy_football.modelling.metrics import (
+    Metrics,
     PointsMetrics,
     mae,
     precision_at_k,
@@ -40,6 +47,7 @@ from fantasy_football.storage.tables import (
     BACKFILL_KIND,
     FORWARD_KIND,
     MINUTES_PREDICTION,
+    POINTS_COMPONENT,
     TEAM_FIXTURE,
 )
 
@@ -48,6 +56,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The whole-points target every position predicted before the models
+# were decomposed into components. Subclasses override
+# ``PositionPointsPredictor.TARGET`` when they predict something narrower.
 TARGET = "total_points"
 
 # Match-grain keys. They identify a row and are never model inputs.
@@ -186,6 +197,10 @@ class PositionPointsPredictor(Predictor):
 
     #: The ``player_season.position`` value this model serves.
     POSITION: ClassVar[str]
+    #: The column this model predicts.
+    TARGET: ClassVar[str] = TARGET
+    #: The scoring component this model's predictions are stored as.
+    COMPONENT: ClassVar[Component] = Component.TOTAL
     #: Model inputs, in the order the frame presents them.
     FEATURES: ClassVar[list[str]]
     #: Per-player form columns read from the player form views.
@@ -200,6 +215,78 @@ class PositionPointsPredictor(Predictor):
     TRAINING_SEASONS: ClassVar[tuple[str, ...] | None] = None
     #: Prefix applied to the opposition copies of the team form columns.
     OPPOSITION_PREFIX: ClassVar[str] = ""
+    #: Turns this model's output into stored component points.
+    COMPONENT_IMPL: ClassVar[PointsComponent] = TotalComponent()
+    #: Column weighting each training row, or None to weight equally.
+    #: Per-90 targets need this: two CBIT in eight minutes is a rate of
+    #: 22.5, and unweighted those rows dominate the fit.
+    WEIGHT_COLUMN: ClassVar[str | None] = None
+    #: Extra ``expression AS name`` selections the frame carries beyond
+    #: keys, target and features -- scoring inputs rather than model
+    #: inputs, so they must never appear in ``FEATURES``.
+    EXTRA_COLUMNS: ClassVar[tuple[str, ...]] = ()
+
+    @property
+    @override
+    def expected_features(self) -> list[str] | None:
+        """Return this position's declared model inputs."""
+        return self.FEATURES
+
+    @property
+    def target_sql(self) -> str:
+        """Return the SELECT expression producing the target column."""
+        return f"m.{self.TARGET}"
+
+    @property
+    def extra_joins(self) -> str:
+        """Return any joins beyond the shared ones. Empty by default."""
+        return ""
+
+    @property
+    def row_filter(self) -> str:
+        """Return an extra WHERE predicate. Empty by default."""
+        return ""
+
+    @property
+    def frame_columns(self) -> list[str]:
+        """Return every non-feature column the training frame carries."""
+        extra = [
+            selection.split(" AS ")[-1] for selection in self.EXTRA_COLUMNS
+        ]
+        if self.WEIGHT_COLUMN and self.WEIGHT_COLUMN not in extra:
+            extra.append(self.WEIGHT_COLUMN)
+        return extra
+
+    def sample_weight(self, frame: pl.DataFrame) -> list[float] | None:
+        """Return per-row fitting weights, or None to weight equally."""
+        if self.WEIGHT_COLUMN is None:
+            return None
+        return (
+            frame[self.WEIGHT_COLUMN].cast(pl.Float64).fill_null(0.0).to_list()
+        )
+
+    def _fit_weights(self, frame: pl.DataFrame) -> dict[str, list[float]]:
+        """Return the ``fit`` keyword arguments carrying sample weights.
+
+        Empty when the model weights rows equally, so the unweighted
+        positions call ``fit`` exactly as they did before weighting
+        existed.
+        """
+        weights = self.sample_weight(frame)
+        if weights is None:
+            return {}
+        return {"model__sample_weight": weights}
+
+    def minutes_predictions(self, kind: str) -> pl.DataFrame:
+        """Return the minutes forecast this prediction kind should read.
+
+        Minutes reach a component here and nowhere else. No component
+        model may carry a minutes feature, so this is the single point at
+        which the minutes forecast enters a points number.
+        """
+        return MINUTES_PREDICTION.load(self.connection).filter(
+            pl.col("prediction_kind") == kind
+        )
 
     @property
     def opposition_feature_names(self) -> list[str]:
@@ -246,8 +333,11 @@ class PositionPointsPredictor(Predictor):
             A SELECT over ``player_match`` and the registered feature
             views.
         """
-        minutes = ",\n    ".join(
-            f"mn.{column}" for column in self.MINUTES_COLUMNS
+        # A decomposed model declares none of these: minutes reach it at
+        # composition, never as a feature. The join stays either way, so
+        # the SQL differs only by the selected columns.
+        minutes = "".join(
+            f"\n    mn.{column}," for column in self.MINUTES_COLUMNS
         )
         own = ",\n    ".join(
             f"own.{column} AS {column}" for column in self.OWN_TEAM_COLUMNS
@@ -262,6 +352,9 @@ class PositionPointsPredictor(Predictor):
         )
         player = ",\n    ".join(
             f"mf.{column} AS {column}" for column in self.PLAYER_FORM_COLUMNS
+        )
+        extra = "".join(
+            f"\n    {selection}," for selection in self.EXTRA_COLUMNS
         )
         seasons = ""
         if self.TRAINING_SEASONS is not None:
@@ -285,9 +378,8 @@ SELECT
     m.gw,
     m.element,
     m.opponent,
-    m.{TARGET},
-    m.is_home,
-    {minutes},
+    {self.target_sql},{extra}
+    m.is_home,{minutes}
     {player},
     {own},
     {opposition}
@@ -328,8 +420,8 @@ LEFT JOIN team_match_form AS opp
     ON  opp.season     = m.season
     AND opp.gw         = m.gw
     AND opp.team       = opp_id.team
-    AND opp.opposition = pw.team
-WHERE m.minutes IS NOT NULL{seasons}
+    AND opp.opposition = pw.team{self.extra_joins}
+WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}
 """
 
     @override
@@ -347,7 +439,9 @@ WHERE m.minutes IS NOT NULL{seasons}
         """
         register_feature_views(self.connection)
         frame = self.connection.sql(self.model_frame_sql()).pl()
-        return frame.select(KEY_COLUMNS + [TARGET] + self.FEATURES)
+        return frame.select(
+            KEY_COLUMNS + [self.TARGET] + self.frame_columns + self.FEATURES
+        )
 
     def make_pipeline(self) -> Pipeline:
         """Build the median-imputing random-forest pipeline.
@@ -371,7 +465,7 @@ WHERE m.minutes IS NOT NULL{seasons}
 
     def fold_metrics(
         self, test_df: pl.DataFrame, predicted: Sequence[float]
-    ) -> PointsMetrics:
+    ) -> Metrics:
         """Score one fold's predictions against its actuals.
 
         The baseline for the skill score is the mean target over the
@@ -389,10 +483,11 @@ WHERE m.minutes IS NOT NULL{seasons}
 
         Returns
         -------
-        PointsMetrics
-            The fold's scores.
+        Metrics
+            The fold's scores. Positions predicting a component rather
+            than whole points return their own container.
         """
-        actual = test_df[TARGET].to_list()
+        actual = test_df[self.TARGET].to_list()
         baseline = [float(np.mean(actual))] * len(actual)
         # Season joins gw as the ranking group because a holdout spans
         # seasons, and gameweek numbers repeat each year.
@@ -401,7 +496,7 @@ WHERE m.minutes IS NOT NULL{seasons}
             pl.col("gw"),
             pl.col("element").alias("player_id"),
             pl.Series("predicted_points", predicted),
-            pl.col(TARGET).alias("actual"),
+            pl.col(self.TARGET).alias("actual"),
         )
         return PointsMetrics(
             mae=mae(predicted, actual),
@@ -561,7 +656,7 @@ WHERE m.minutes IS NOT NULL{seasons}
         return test_df.with_columns(
             position=pl.lit(self.POSITION),
             predicted_points=pl.Series(predicted).cast(pl.Float64),
-            actual_points=pl.col(TARGET).cast(pl.Float64),
+            actual_points=pl.col(self.TARGET).cast(pl.Float64),
             features=feature_json(test_df, self.FEATURES),
         ).select(
             KEY_COLUMNS
@@ -574,7 +669,8 @@ WHERE m.minutes IS NOT NULL{seasons}
         pipe = self.make_pipeline()
         pipe.fit(
             fold.train.select(self.FEATURES).to_pandas(),
-            fold.train[TARGET].to_list(),
+            fold.train[self.TARGET].to_list(),
+            **self._fit_weights(fold.train),
         )
         predicted = list(
             pipe.predict(fold.test.select(self.FEATURES).to_pandas())
@@ -590,7 +686,8 @@ WHERE m.minutes IS NOT NULL{seasons}
         pipe = self.make_pipeline()
         pipe.fit(
             feature_frame.select(self.FEATURES).to_pandas(),
-            feature_frame[TARGET].to_list(),
+            feature_frame[self.TARGET].to_list(),
+            **self._fit_weights(feature_frame),
         )
         return pipe
 
@@ -602,17 +699,23 @@ WHERE m.minutes IS NOT NULL{seasons}
         version: str,
         kind: str,
     ) -> pl.DataFrame:
-        """Score ``feature_frame`` and shape the rows for storage."""
+        """Score ``feature_frame`` and shape it as this model's component.
+
+        The rows are one scoring component, not a whole prediction. What
+        the optimiser reads is the sum of every component a position
+        declares, which
+        :func:`fantasy_football.modelling.components.compose` builds.
+        """
         predicted = model.predict(
             feature_frame.select(self.FEATURES).to_pandas()
         )
-        return (
-            feature_frame.select(KEY_COLUMNS)
-            .with_columns(
-                position=pl.lit(self.POSITION),
-                predicted_points=pl.Series(predicted).cast(pl.Float64),
-                model_version=pl.lit(version),
-                prediction_kind=pl.lit(kind),
-            )
-            .select(self.model_spec.table.columns)
+        scored = feature_frame.select(KEY_COLUMNS).with_columns(
+            position=pl.lit(self.POSITION),
+            **{PREDICTED_VALUE: pl.Series(predicted).cast(pl.Float64)},
+        )
+        rows = self.COMPONENT_IMPL.points(
+            scored, self.minutes_predictions(kind), kind
+        )
+        return rows.with_columns(model_version=pl.lit(version)).select(
+            POINTS_COMPONENT.columns
         )

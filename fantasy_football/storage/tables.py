@@ -363,6 +363,44 @@ POINTS_PREDICTION = Table(
     order_by=("season", "gw", "element", "opponent", "prediction_kind"),
 )
 
+# The scoring components a prediction is built from, one row per
+# component per fixture leg. ``points_prediction`` is the sum of these,
+# so a component is added by adding a Component value rather than a
+# table. ``diagnostics`` is JSON for the same reason the evaluation
+# tables carry features as JSON: each component wants to record different
+# intermediates, and typed columns would mean a migration per component.
+POINTS_COMPONENT = Table(
+    name="points_component",
+    schema={
+        "season": pl.Utf8,
+        "gw": pl.Int64,
+        "element": pl.Int64,
+        "opponent": pl.Int64,
+        "position": pl.Utf8,
+        "prediction_kind": pl.Utf8,
+        "component": pl.Utf8,
+        "points": pl.Float64,
+        "model_version": pl.Utf8,
+        "diagnostics": pl.Utf8,
+    },
+    primary_key=(
+        "season",
+        "gw",
+        "element",
+        "opponent",
+        "prediction_kind",
+        "component",
+    ),
+    order_by=(
+        "season",
+        "gw",
+        "element",
+        "opponent",
+        "prediction_kind",
+        "component",
+    ),
+)
+
 # Evaluation predictions, one row per scored fold row. Deliberately not
 # the serving tables: the optimiser reads points_prediction, and a join
 # there that forgets prediction_kind already fans rows out. These stay
@@ -457,6 +495,7 @@ TABLES: tuple[Table, ...] = (
     PLAYER_MATCH_OPTA,
     PLAYER_AVAILABILITY,
     MINUTES_PREDICTION,
+    POINTS_COMPONENT,
     POINTS_PREDICTION,
     TEST_POINTS_PREDICTION,
     TEST_MINUTES_PREDICTION,

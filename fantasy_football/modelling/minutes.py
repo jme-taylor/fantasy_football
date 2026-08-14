@@ -505,6 +505,12 @@ def minutes_from_proba(
 class MinutesPredictor(Predictor):
     """Predictor for minutes."""
 
+    @property
+    @override
+    def expected_features(self) -> list[str] | None:
+        """Return the declared model inputs."""
+        return list(FEATURES)
+
     @override
     def build_training_data(self) -> pl.DataFrame:
         player_match = PLAYER_MATCH.load(self.connection)

@@ -30,9 +30,20 @@ from fantasy_football.features.match_form import (
     goalkeeper_covered_seasons,
 )
 from fantasy_football.logging_config import configure_logging
+from fantasy_football.modelling.components import (
+    compose_points,
+    write_appearance_components,
+)
+from fantasy_football.modelling.defcon import (
+    DEFCON_SPEC,
+    DefconRatePredictor,
+)
+from fantasy_football.modelling.defcon import (
+    TRAINING_SEASONS as DEFCON_TRAINING_SEASONS,
+)
 from fantasy_football.modelling.defender import (
-    DEFENDER_SPEC,
-    DefenderPointsPredictor,
+    DEFENDER_RESIDUAL_SPEC,
+    DefenderResidualPointsPredictor,
 )
 from fantasy_football.modelling.folds import (
     TrainTestSplitStrategy,
@@ -60,7 +71,12 @@ from fantasy_football.optimisation.team_input import (
     resolve_squad,
 )
 from fantasy_football.storage.database import get_connection, reset_database
-from fantasy_football.storage.tables import PLAYER_WEEK, TEAM_FIXTURE
+from fantasy_football.storage.tables import (
+    BACKFILL_KIND,
+    FORWARD_KIND,
+    PLAYER_WEEK,
+    TEAM_FIXTURE,
+)
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -250,18 +266,39 @@ def main(
         minutes_predictor.backfill_model_predictions()
         minutes_predictor.predict_forward()
 
-        defender_predictor = DefenderPointsPredictor(
-            experiment_name="def-points-model",
+        # DEF is decomposed: appearance comes free from the minutes
+        # model, and the other two components are their own models with
+        # their own aliases. The monolithic DefenderPointsPredictor is
+        # still importable and still trainable -- putting DEF back to one
+        # model is an edit to POSITION_COMPONENTS, not a revert.
+        defcon_predictor = DefconRatePredictor(
+            experiment_name="def-defcon-rate-model",
             params={},
-            model_spec=DEFENDER_SPEC,
+            model_spec=DEFCON_SPEC,
+            connection=connection,
+            fold_strategy=TrainTestSplitStrategy(
+                test_seasons=DEFCON_TRAINING_SEASONS
+            ),
+        )
+        defcon_predictor.train_and_register_model()
+        defcon_predictor.backfill_model_predictions()
+        defcon_predictor.predict_forward()
+
+        residual_predictor = DefenderResidualPointsPredictor(
+            experiment_name="def-residual-points-model",
+            params={},
+            model_spec=DEFENDER_RESIDUAL_SPEC,
             connection=connection,
             fold_strategy=TrainTestSplitStrategy(
                 test_seasons=covered_seasons()
             ),
         )
-        defender_predictor.train_and_register_model()
-        defender_predictor.backfill_model_predictions()
-        defender_predictor.predict_forward()
+        residual_predictor.train_and_register_model()
+        residual_predictor.backfill_model_predictions()
+        residual_predictor.predict_forward()
+
+        for kind in (BACKFILL_KIND, FORWARD_KIND):
+            write_appearance_components(connection, kind)
 
         forward_predictor = ForwardPointsPredictor(
             experiment_name="fwd-points-model",
@@ -303,6 +340,11 @@ def main(
         goalkeeper_predictor.train_and_register_model()
         goalkeeper_predictor.backfill_model_predictions()
         goalkeeper_predictor.predict_forward()
+
+        # Every position has written its components by now, so the
+        # points table is rebuilt from them in one pass. This is the only
+        # writer into it.
+        compose_points(connection)
 
     finally:
         connection.close()
