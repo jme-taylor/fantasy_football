@@ -137,11 +137,26 @@ FPL_RATE_STATS: tuple[str, ...] = (*FPL_PER90_STATS, *GK_FPL_PER90_STATS)
 # defenders averaging 9.5 CBIT per 90 with different spreads have very
 # different chances of clearing 10, so the hit rate and the spread go
 # alongside the rate.
-DEFCON_FORM_COLUMNS: tuple[str, ...] = (
-    "cbit_per90_rolling_5",
-    "cbit_ten_plus_rate_rolling_5",
-    "cbit_std_rolling_5",
+DEFCON_FORM_STATS: tuple[str, ...] = (
+    "cbit_per90",
+    "cbit_ten_plus_rate",
+    "cbit_std",
 )
+
+
+def defcon_form_columns(
+    rolling_window: int = ROLLING_WINDOW,
+) -> tuple[str, ...]:
+    """Return the defcon form column names for a window.
+
+    Named from the window they are computed over, like every other rate,
+    so changing ``ROLLING_WINDOW`` cannot leave a column claiming five
+    appearances while covering another number.
+    """
+    return tuple(
+        rolling_column_name(stat, rolling_window) for stat in DEFCON_FORM_STATS
+    )
+
 
 # Columns the view adds beyond the per-90 rates.
 FORM_CONTEXT_COLUMNS: tuple[str, ...] = (
@@ -357,7 +372,7 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
             for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
         ]
         + [cumulative_column_name(stat) for stat in CUMULATIVE_STATS]
-        + list(DEFCON_FORM_COLUMNS)
+        + list(defcon_form_columns(rolling_window))
         + list(FORM_CONTEXT_COLUMNS)
     )
 
@@ -434,6 +449,9 @@ def form_sql(
         f"coalesce(o.{stat}, 0)" for stat in DEFCON_COMPONENT_STATS
     )
     cbit = f"CASE WHEN {absent} THEN NULL ELSE {totalled} END AS cbit"
+    defcon_rate, defcon_hit_rate, defcon_spread = defcon_form_columns(
+        rolling_window
+    )
     rates = ",\n        ".join(
         f"90.0 * sum(a.{stat}) OVER form "
         f"/ nullif(sum(CASE WHEN a.{stat} IS NOT NULL THEN a.minutes END) "
@@ -518,11 +536,11 @@ SELECT
     {totals},
     90.0 * sum(a.cbit) OVER form
         / nullif(sum(CASE WHEN a.cbit IS NOT NULL THEN a.minutes END)
-                 OVER form, 0) AS cbit_per90_rolling_5,
+                 OVER form, 0) AS {defcon_rate},
     avg(CASE WHEN a.cbit IS NULL THEN NULL
              WHEN a.cbit >= {DEFCON_THRESHOLD_DEF} THEN 1.0
-             ELSE 0.0 END) OVER form AS cbit_ten_plus_rate_rolling_5,
-    stddev_samp(a.cbit) OVER form AS cbit_std_rolling_5,
+             ELSE 0.0 END) OVER form AS {defcon_hit_rate},
+    stddev_samp(a.cbit) OVER form AS {defcon_spread},
     count(*) OVER form AS form_matches,
     sum(a.minutes) OVER form AS form_minutes,
     date_diff('day', max(a.kickoff_time) OVER form, a.kickoff_time)

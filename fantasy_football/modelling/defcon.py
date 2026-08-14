@@ -110,6 +110,21 @@ class DefconMetrics:
         return asdict(self)
 
 
+# Both decomposed DEF models read both CBIT sources: the rate model to
+# build its target, the residual model to know what to deduct.
+DEFCON_JOINS = """
+LEFT JOIN opta_match AS oc
+    ON  oc.season   = m.season
+    AND oc.gw       = m.gw
+    AND oc.element  = m.element
+    AND oc.opponent = m.opponent
+LEFT JOIN player_match_fpl AS pmf
+    ON  pmf.season        = m.season
+    AND pmf.gw            = m.gw
+    AND pmf.element       = m.element
+    AND pmf.opponent_team = m.opponent"""
+
+
 class DefconRatePredictor(PositionPointsPredictor):
     """Predicts CBIT per 90 for defenders, with no minutes features."""
 
@@ -169,17 +184,7 @@ class DefconRatePredictor(PositionPointsPredictor):
     @override
     def extra_joins(self) -> str:
         """Join both CBIT sources at match grain."""
-        return """
-LEFT JOIN opta_match AS oc
-    ON  oc.season   = m.season
-    AND oc.gw       = m.gw
-    AND oc.element  = m.element
-    AND oc.opponent = m.opponent
-LEFT JOIN player_match_fpl AS pmf
-    ON  pmf.season        = m.season
-    AND pmf.gw            = m.gw
-    AND pmf.element       = m.element
-    AND pmf.opponent_team = m.opponent"""
+        return DEFCON_JOINS
 
     @property
     @override
@@ -212,12 +217,20 @@ LEFT JOIN player_match_fpl AS pmf
         )
         base_rate = float(np.mean(actual))
         baseline = np.full_like(probability, base_rate)
-        brier = float(brier_score_loss(actual, probability))
-        base_brier = float(brier_score_loss(actual, baseline))
+        brier = float(brier_score_loss(actual, probability, pos_label=1))
+        base_brier = float(brier_score_loss(actual, baseline, pos_label=1))
         return DefconMetrics(
             brier=brier,
+            # A fold in which no defender clears the threshold is
+            # single-class, and both metrics infer their labels from the
+            # data unless told. Naming them keeps a quiet gameweek a
+            # score rather than a crash.
             logloss=float(
-                log_loss(actual, np.clip(probability, 1e-9, 1 - 1e-9))
+                log_loss(
+                    actual,
+                    np.clip(probability, 1e-9, 1 - 1e-9),
+                    labels=[0, 1],
+                )
             ),
             base_rate_brier=base_brier,
             skill_score=1.0 - brier / base_brier if base_brier else 0.0,

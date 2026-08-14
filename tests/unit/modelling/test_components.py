@@ -176,25 +176,39 @@ def test_unknown_component_is_an_error() -> None:
         compose(rows)
 
 
-def test_missing_expected_component_is_an_error() -> None:
-    """A prediction missing a declared component is refused."""
-    # Half a decomposition sums to a silently low prediction, which
-    # the optimiser would act on without complaint.
+def test_a_leg_missing_a_component_is_dropped_not_partly_summed() -> None:
+    """Half a decomposition yields no row, rather than a low one.
+
+    Components genuinely cover different rows -- there is no CBIT to rate
+    before 2024-25, and no head rates a five-minute cameo -- so an
+    incomplete leg is expected rather than a fault. Summing the subset
+    would under-predict and the optimiser would act on it; dropping the
+    leg leaves nothing, which it reads as zero and passes over.
+    """
     rows = frame(
         component_row(Component.APPEARANCE, 1.8, position="DEF"),
         component_row(Component.DEFCON, 0.9, position="DEF"),
     )
-    with pytest.raises(ValueError, match="residual"):
-        compose(
-            rows,
-            expected={
-                "DEF": (
-                    Component.APPEARANCE,
-                    Component.DEFCON,
-                    Component.RESIDUAL,
-                )
-            },
-        )
+
+    composed = compose(rows, expected=POSITION_COMPONENTS)
+
+    assert composed.is_empty()
+
+
+def test_complete_legs_survive_when_a_neighbour_is_dropped() -> None:
+    """One incomplete leg does not take the whole frame down with it."""
+    rows = frame(
+        component_row(Component.APPEARANCE, 1.8, position="DEF"),
+        component_row(Component.DEFCON, 0.9, position="DEF"),
+        component_row(Component.RESIDUAL, 2.3, position="DEF"),
+        component_row(Component.APPEARANCE, 2.0, element=2, position="DEF"),
+        component_row(Component.DEFCON, 0.1, element=2, position="DEF"),
+    )
+
+    composed = compose(rows, expected=POSITION_COMPONENTS)
+
+    assert composed["element"].to_list() == [1]
+    assert composed["predicted_points"].to_list() == [pytest.approx(5.0)]
 
 
 def test_duplicate_component_for_one_leg_is_an_error() -> None:
@@ -305,8 +319,8 @@ def test_kinds_land_in_separate_partitions(connection) -> None:
     )
 
 
-def test_incomplete_decomposition_is_refused(connection, mocker) -> None:
-    """A half-written decomposition fails rather than under-predicts."""
+def test_incomplete_decomposition_writes_nothing(connection, mocker) -> None:
+    """A half-written decomposition stores no prediction at all."""
     mocker.patch.dict(
         "fantasy_football.modelling.components.POSITION_COMPONENTS",
         {"DEF": (Component.APPEARANCE, Component.RESIDUAL)},
@@ -316,8 +330,9 @@ def test_incomplete_decomposition_is_refused(connection, mocker) -> None:
         frame(component_row(Component.APPEARANCE, 1.8, position="DEF")),
     )
 
-    with pytest.raises(ValueError, match="residual"):
-        compose_points(connection)
+    compose_points(connection)
+
+    assert POINTS_PREDICTION.load(connection).is_empty()
 
 
 def test_a_component_a_position_no_longer_declares_is_refused() -> None:
@@ -337,8 +352,8 @@ def test_a_component_a_position_no_longer_declares_is_refused() -> None:
         compose(rows, expected=POSITION_COMPONENTS)
 
 
-def test_appearance_points_come_from_the_minutes_model(connection) -> None:
-    """Appearance rows are written for every decomposed position."""
+def _seed_minutes(connection) -> None:
+    """Seed one DEF minutes prediction and its player-season row."""
     append_rows(
         PLAYER_SEASON,
         connection,
@@ -363,13 +378,75 @@ def test_appearance_points_come_from_the_minutes_model(connection) -> None:
         ],
     )
 
+
+def test_appearance_points_come_from_the_minutes_model(connection) -> None:
+    """Appearance rows are written where the other components landed."""
+    _seed_minutes(connection)
+    POINTS_COMPONENT.append(
+        connection,
+        frame(
+            component_row(Component.DEFCON, 0.9, position="DEF"),
+            component_row(Component.RESIDUAL, 2.3, position="DEF"),
+        ),
+    )
+
     write_appearance_components(connection, BACKFILL_KIND)
 
-    stored = POINTS_COMPONENT.load(connection)
-    assert stored["component"].to_list() == [str(Component.APPEARANCE)]
+    stored = POINTS_COMPONENT.load(connection).filter(
+        pl.col("component") == str(Component.APPEARANCE)
+    )
     assert stored["points"].to_list() == pytest.approx([0.3 + 2 * 0.6])
     # No model of its own, so the version is the minutes model's.
     assert stored["model_version"].to_list() == ["5"]
+
+
+def test_appearance_is_not_written_where_no_component_landed(
+    connection,
+) -> None:
+    """Appearance covers the other components' rows, not the minutes'.
+
+    The models are narrower than the minutes forecast -- no CBIT before
+    2024-25, no head rating a five-minute cameo. Writing appearance for
+    every scored minute would emit points for legs that can never be
+    composed, and every one of them would then be dropped, leaving the
+    stored appearance rows describing predictions that do not exist.
+    """
+    _seed_minutes(connection)
+
+    write_appearance_components(connection, BACKFILL_KIND)
+
+    assert POINTS_COMPONENT.load(connection).is_empty()
+
+
+def test_appearance_leaves_frozen_forward_legs_alone(connection) -> None:
+    """A frozen forward leg keeps the appearance points it was frozen with.
+
+    Reading the stored components inherits the freeze: the components
+    below the first unplayed gameweek were not rewritten, so their keys
+    are the only ones appearance is regenerated for.
+    """
+    _seed_minutes(connection)
+    POINTS_COMPONENT.append(
+        connection,
+        frame(
+            component_row(
+                Component.DEFCON, 0.9, position="DEF", kind=FORWARD_KIND
+            ),
+            component_row(
+                Component.RESIDUAL, 2.3, position="DEF", kind=FORWARD_KIND
+            ),
+        ),
+    )
+
+    write_appearance_components(connection, BACKFILL_KIND)
+
+    # The only components stored are forward ones, so the backfill pass
+    # writes nothing rather than reaching across the kinds.
+    assert (
+        POINTS_COMPONENT.load(connection)
+        .filter(pl.col("component") == str(Component.APPEARANCE))
+        .is_empty()
+    )
 
 
 def test_appearance_skips_positions_that_are_not_decomposed(
@@ -380,6 +457,9 @@ def test_appearance_skips_positions_that_are_not_decomposed(
         PLAYER_SEASON,
         connection,
         [{"season": SEASON, "element": 1, "position": "MID"}],
+    )
+    POINTS_COMPONENT.append(
+        connection, frame(component_row(Component.TOTAL, 4.0, position="MID"))
     )
     append_rows(
         MINUTES_PREDICTION,
@@ -402,4 +482,8 @@ def test_appearance_skips_positions_that_are_not_decomposed(
 
     write_appearance_components(connection, BACKFILL_KIND)
 
-    assert POINTS_COMPONENT.load(connection).is_empty()
+    assert (
+        POINTS_COMPONENT.load(connection)
+        .filter(pl.col("component") == str(Component.APPEARANCE))
+        .is_empty()
+    )

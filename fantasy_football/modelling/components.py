@@ -26,7 +26,6 @@ from fantasy_football.modelling.distributions import (
 )
 from fantasy_football.storage.tables import (
     MINUTES_PREDICTION,
-    PLAYER_SEASON,
     POINTS_COMPONENT,
     POINTS_PREDICTION,
 )
@@ -408,14 +407,21 @@ def _reject_duplicate_components(rows: pl.DataFrame) -> None:
         )
 
 
-def _reject_incomplete_predictions(
+def _drop_incomplete_predictions(
     rows: pl.DataFrame, expected: Mapping[str, Sequence[Component]]
-) -> None:
-    """Raise if a fixture leg is missing a component its position needs.
+) -> pl.DataFrame:
+    """Return only the fixture legs carrying every component they need.
 
-    Half a decomposition sums to a quietly low prediction, which the
-    optimiser acts on without complaint. This is the check that turns
-    that into a failure.
+    Components do not all cover the same rows. The defcon head has no
+    CBIT to rate before 2024-25 and neither head rates an appearance
+    under fifteen minutes, so a leg can legitimately have some of its
+    components and not others -- a decomposed position simply has no
+    prediction for those legs.
+
+    Summing a subset would under-predict, and the optimiser would act on
+    the low number without complaint. Dropping the leg outright instead
+    leaves no prediction at all, which the optimiser reads as zero and
+    passes over. An absent row is safe in a way a low row is not.
     """
     positions = set(rows["position"].to_list())
     undeclared = sorted(positions - set(expected))
@@ -427,20 +433,15 @@ def _reject_incomplete_predictions(
     present = rows.group_by(COMPOSE_GROUP).agg(
         pl.col("component").alias("components")
     )
+    incomplete = []
     for row in present.iter_rows(named=True):
         wanted = {str(component) for component in expected[row["position"]]}
         found = set(row["components"])
-        missing = sorted(wanted - found)
-        if missing:
-            raise ValueError(
-                f"Prediction for {row['element']} in {row['season']} gw "
-                f"{row['gw']} is missing components {missing}, so it would "
-                "sum to less than the model predicts."
-            )
         # A component left behind by an earlier shape of the pipeline --
         # the monolithic rows for a position since decomposed, most
         # likely -- would be summed in on top of the components that
-        # replaced it, silently doubling the prediction.
+        # replaced it, silently doubling the prediction. That is a fault
+        # in what was written, so it stops the run.
         stale = sorted(found - wanted)
         if stale:
             raise ValueError(
@@ -449,6 +450,19 @@ def _reject_incomplete_predictions(
                 f"{sorted(wanted)}. Delete them from points_component, or "
                 "add them back to POSITION_COMPONENTS."
             )
+        if wanted - found:
+            incomplete.append({key: row[key] for key in COMPOSE_GROUP})
+    if not incomplete:
+        return rows
+    dropped = pl.DataFrame(incomplete)
+    logger.warning(
+        "Dropping %d fixture legs missing at least one declared component; "
+        "they get no composed prediction rather than a partial one. First: "
+        "%s",
+        dropped.height,
+        dropped.row(0, named=True),
+    )
+    return rows.join(dropped, on=COMPOSE_GROUP, how="anti")
 
 
 def compose(
@@ -466,9 +480,9 @@ def compose(
     component_rows : pl.DataFrame
         Rows shaped like ``points_component``.
     expected : Mapping[str, Sequence[Component]] | None, optional
-        Which components each position must supply. When given, a
-        prediction missing one of them is an error. Defaults to None,
-        meaning completeness is not checked.
+        Which components each position must supply. When given, legs
+        missing one are dropped rather than partially summed. Defaults to
+        None, meaning completeness is not checked.
 
     Returns
     -------
@@ -479,7 +493,7 @@ def compose(
     ------
     ValueError
         If a component is unknown, carried twice for one fixture leg, or
-        missing from a position that declares it.
+        carried by a position that no longer declares it.
     """
     if component_rows.is_empty():
         return POINTS_PREDICTION.coerce(
@@ -489,7 +503,11 @@ def compose(
     _reject_unknown_components(rows)
     _reject_duplicate_components(rows)
     if expected is not None:
-        _reject_incomplete_predictions(rows, expected)
+        rows = _drop_incomplete_predictions(rows, expected)
+        if rows.is_empty():
+            return POINTS_PREDICTION.coerce(
+                pl.DataFrame(schema=POINTS_PREDICTION.schema)
+            )
     composed = (
         rows.with_columns(
             _label=pl.format(
@@ -524,6 +542,16 @@ def write_appearance_components(
     the expectation -- which is why the version stamped on these rows is
     the minutes model's.
 
+    The rows written are the ones the position's *other* components
+    already cover, not every row the minutes model scored. Those
+    components are narrower -- there is no CBIT to rate before 2024-25,
+    and neither head rates an appearance under fifteen minutes -- so
+    keying off the minutes model instead would emit appearance points for
+    legs that can never be composed. Reading the stored components also
+    inherits the forward freeze for free: a leg below the first unplayed
+    gameweek keeps the rows it was frozen with, so its appearance points
+    are not quietly refreshed against a newer minutes model.
+
     Parameters
     ----------
     connection : duckdb.DuckDBPyConnection
@@ -547,16 +575,22 @@ def write_appearance_components(
     if minutes.is_empty():
         logger.info("No %s minutes predictions; no appearance points.", kind)
         return
-    seasons = PLAYER_SEASON.load(connection).select(
-        "season", "element", "position"
+    stored = POINTS_COMPONENT.load(connection).filter(
+        (pl.col("prediction_kind") == kind)
+        & (pl.col("component") != str(Component.APPEARANCE))
+        & (pl.col("position").is_in(positions))
     )
     keyed = (
-        minutes.select(KEY_COLUMNS + ["model_version"])
-        .join(seasons, on=["season", "element"], how="inner")
-        .filter(pl.col("position").is_in(positions))
+        stored.select(KEY_COLUMNS + ["position"])
+        .unique()
+        .join(
+            minutes.select(KEY_COLUMNS + ["model_version"]),
+            on=KEY_COLUMNS,
+            how="inner",
+        )
     )
     if keyed.is_empty():
-        logger.info("No %s rows at a decomposed position.", kind)
+        logger.info("No %s components at a decomposed position.", kind)
         return
     rows = AppearanceComponent().points(
         keyed.drop("model_version"), minutes, kind

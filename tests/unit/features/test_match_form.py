@@ -170,7 +170,7 @@ def test_feature_columns_covers_every_stat_and_context_column() -> None:
         + len(match_form.FPL_PER90_STATS)
         + len(match_form.GK_FPL_PER90_STATS)
         + len(match_form.CUMULATIVE_STATS)
-        + len(match_form.DEFCON_FORM_COLUMNS)
+        + len(match_form.DEFCON_FORM_STATS)
         + len(match_form.FORM_CONTEXT_COLUMNS)
     )
     # No column may be emitted twice, whatever the stat lists hold.
@@ -657,5 +657,46 @@ def test_cbit_is_null_when_no_counter_was_published(tmp_path: Path) -> None:
         second = frame.filter(pl.col("gw") == 2)
 
         assert second["cbit_per90_rolling_5"].item() is None
+    finally:
+        conn.close()
+
+
+def test_defcon_form_columns_follow_the_window(tmp_path: Path) -> None:
+    """The defcon columns are named for the window they cover.
+
+    They were the only rates whose names were literals, so a changed
+    ROLLING_WINDOW would have left them claiming five appearances while
+    computing over another number.
+    """
+    assert match_form.defcon_form_columns(5) == (
+        "cbit_per90_rolling_5",
+        "cbit_ten_plus_rate_rolling_5",
+        "cbit_std_rolling_5",
+    )
+    assert match_form.defcon_form_columns(3) == (
+        "cbit_per90_rolling_3",
+        "cbit_ten_plus_rate_rolling_3",
+        "cbit_std_rolling_3",
+    )
+
+
+def test_a_different_window_emits_the_renamed_defcon_columns(
+    tmp_path: Path,
+) -> None:
+    """The view emits what feature_columns says it emits, at any window."""
+    conn = _build(
+        tmp_path,
+        minutes=[90, 90, 90],
+        tackles=[3, 3, 3],
+        xg=[0.0, 0.0, 0.0],
+    )
+    try:
+        register_match_form(conn, rolling_window=3)
+        columns = (
+            conn.sql("SELECT * FROM player_match_form LIMIT 0").pl().columns
+        )
+
+        for name in match_form.defcon_form_columns(3):
+            assert name in columns
     finally:
         conn.close()

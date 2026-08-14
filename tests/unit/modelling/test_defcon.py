@@ -9,6 +9,7 @@ target deducts, since a mistake in either is invisible downstream.
 import polars as pl
 import pytest
 
+from fantasy_football.constants import CURRENT_SEASON
 from fantasy_football.modelling.components import Component
 from fantasy_football.modelling.defcon import (
     DEFCON_SPEC,
@@ -433,3 +434,51 @@ def test_defcon_rows_are_stored_as_defcon_components(
     assert rows["points"].max() <= 2.0
     assert rows["points"].min() >= 0.0
     assert rows["diagnostics"].null_count() == 0
+
+
+def test_residual_still_deducts_defcon_when_fpl_stops_publishing(
+    connection,
+) -> None:
+    """The deduction follows the rule, not one provider's column.
+
+    Vaastav's ``defensive_contribution`` ends at 2025-26, so keying the
+    deduction on it would silently stop deducting in the live season.
+    The residual would re-absorb points the defcon component is also
+    predicting, and the composed total would double-count them.
+    """
+    _seed_one_match(
+        connection,
+        season=CURRENT_SEASON,
+        total_points=9,
+        opta_counters={"tackles": 12},
+        fpl_defcon=None,
+    )
+    predictor = _predictor(
+        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
+    )
+
+    frame = predictor.build_training_data()
+
+    # 9 total, less 2 for the hour, less 2 for the threshold FPL still
+    # pays for even though this source no longer publishes the count.
+    assert frame["residual_points_per_90"].item() == pytest.approx(5.0)
+
+
+def test_fold_metrics_survive_a_fold_where_nobody_clears_the_threshold(
+    connection, synthetic_frame
+) -> None:
+    """A quiet gameweek is a score, not a crash.
+
+    Both sklearn metrics infer their labels from the data unless told, so
+    a single-class fold raises. Reachable under the per-gameweek fold
+    strategy the standalone training script can use.
+    """
+    predictor = _predictor(DefconRatePredictor, DEFCON_SPEC, connection)
+    frame = synthetic_frame(predictor, n_gws=1, n_players=4).with_columns(
+        cbit_count=pl.lit(2)
+    )
+
+    metrics = predictor.fold_metrics(frame, [3.0] * frame.height)
+
+    assert metrics.hit_rate == pytest.approx(0.0)
+    assert metrics.brier >= 0.0

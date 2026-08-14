@@ -8,12 +8,20 @@ makes a defender a defender.
 import logging
 from typing import ClassVar, override
 
+from fantasy_football.constants import (
+    DEFCON_FIRST_SEASON,
+    DEFCON_THRESHOLD_DEF,
+)
 from fantasy_football.modelling.components import (
     MINUTES_OUTPUTS,
     Component,
     RateComponent,
 )
-from fantasy_football.modelling.defcon import MINUTES_FLOOR
+from fantasy_football.modelling.defcon import (
+    CBIT_COUNT_SQL,
+    DEFCON_JOINS,
+    MINUTES_FLOOR,
+)
 from fantasy_football.modelling.points import PositionPointsPredictor
 from fantasy_football.modelling.predictor import ModelSpec
 from fantasy_football.storage.tables import (
@@ -111,19 +119,32 @@ DEFENDER_SPEC = ModelSpec(
 # scaled by the minutes forecast at composition, so this model reads no
 # minutes feature either.
 #
-# ``defensive_contribution`` is null before 2025-26, so the CASE deducts
-# nothing there -- which is correct, because nothing was awarded. That is
-# what makes this target the same quantity in every season and retires
-# the regime break the monolithic model trains across.
+# The deduction is gated on the season the rule came in, not on whether
+# a provider happens to publish a column. Keying it on Vaastav's
+# ``defensive_contribution`` alone would silently stop deducting in
+# 2026-27 -- that source ends at 2025-26 -- so the residual would
+# re-absorb points the defcon component is also predicting, and the
+# composed total would double-count them in the live season. The count
+# itself comes from the same hybrid the defcon model trains on, which
+# falls back to FCI wherever FPL publishes nothing.
+#
+# Before the rule, nothing is deducted, which is correct because nothing
+# was awarded. That is what makes this target the same quantity in every
+# season and retires the regime break the monolithic model trains across.
 #
 # TODO (JT): bonus points sit in here and are not a per-90 quantity at
 # all. They are awarded per match on a BPS ranking, so scaling them by
 # minutes is an approximation, and they are the largest source of noise
 # left in this target. Bonus is the next component to split out.
-RESIDUAL_TARGET_SQL = """(
+RESIDUAL_TARGET_SQL = f"""(
     m.total_points
     - CASE WHEN m.minutes >= 60 THEN 2 WHEN m.minutes > 0 THEN 1 ELSE 0 END
-    - CASE WHEN pmf.defensive_contribution >= 10 THEN 2 ELSE 0 END
+    - CASE
+          WHEN m.season >= '{DEFCON_FIRST_SEASON}'
+           AND {CBIT_COUNT_SQL} >= {DEFCON_THRESHOLD_DEF}
+          THEN 2
+          ELSE 0
+      END
 ) * 90.0 / nullif(m.minutes, 0) AS residual_points_per_90"""
 
 RESIDUAL_REGISTERED_MODEL = "defender_residual_points_regressor"
@@ -157,13 +178,8 @@ class DefenderResidualPointsPredictor(DefenderPointsPredictor):
     @property
     @override
     def extra_joins(self) -> str:
-        """Join FPL's own defcon count, the only awarded source."""
-        return """
-LEFT JOIN player_match_fpl AS pmf
-    ON  pmf.season        = m.season
-    AND pmf.gw            = m.gw
-    AND pmf.element       = m.element
-    AND pmf.opponent_team = m.opponent"""
+        """Join both CBIT sources, as the defcon model does."""
+        return DEFCON_JOINS
 
     @property
     @override
