@@ -633,10 +633,21 @@ WINDOW
         {std_frame}
     )
 """
+    # The defcon columns are windowed exactly like the per-90 rates, so
+    # they are computed in the same CTE and carried by the same as-of
+    # join. Emitting them on the inclusive view alone would leave the
+    # forward path working and training unable to bind at all.
+    defcon_windowed = f"""90.0 * sum(a.cbit) OVER form
+            / nullif(sum(CASE WHEN a.cbit IS NOT NULL THEN a.minutes END)
+                     OVER form, 0) AS {defcon_rate},
+        avg(CASE WHEN a.cbit IS NULL THEN NULL
+                 WHEN a.cbit >= {DEFCON_THRESHOLD_DEF} THEN 1.0
+                 ELSE 0.0 END) OVER form AS {defcon_hit_rate},
+        stddev_samp(a.cbit) OVER form AS {defcon_spread}"""
     rate_names = [
         per90_column_name(stat, rolling_window)
         for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
-    ]
+    ] + [defcon_rate, defcon_hit_rate, defcon_spread]
     carried_rates = ",\n    ".join(f"p.{name}" for name in rate_names)
     # Season-scoped: a player whose last appearance was last season
     # starts this one on nil rather than inheriting its closing tally.
@@ -654,6 +665,7 @@ form AS (
         a.kickoff_time,
         {rates},
         {totals},
+        {defcon_windowed},
         {penalty_exposure} AS {PENALTY_EXPOSURE_COLUMN},
         count(*) OVER form AS form_matches,
         sum(a.minutes) OVER form AS form_minutes
