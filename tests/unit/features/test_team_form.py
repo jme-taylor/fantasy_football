@@ -329,3 +329,61 @@ def test_each_club_windows_over_its_own_matches(connection) -> None:
     assert spurs["form_matches"].item() == 1
     assert spurs["xg_for_rolling_5"].item() == pytest.approx(0.2)
     assert spurs["goals_against_rolling_5"].item() == pytest.approx(3.0)
+
+
+def _exposure(connection, player: float, team: float, matches: float) -> float:
+    """Evaluate the penalty exposure expression on literal counts."""
+    return connection.sql(
+        "SELECT "
+        + team_form.penalty_exposure_sql(str(player), str(team), str(matches))
+    ).fetchone()[0]
+
+
+def test_penalty_exposure_rewards_the_sole_taker(connection) -> None:
+    """A club's whole penalty duty concentrates on one player."""
+    sole = _exposure(connection, player=6, team=6, matches=10)
+    shared = _exposure(connection, player=3, team=6, matches=10)
+    assert sole > shared > 0.0
+
+
+def test_penalty_exposure_is_worthless_without_penalties(connection) -> None:
+    """A designated taker at a club that wins none is worth nothing."""
+    assert _exposure(connection, player=0, team=0, matches=10) == 0.0
+
+
+def test_penalty_exposure_survives_a_club_with_no_matches(
+    connection,
+) -> None:
+    """Zero matches is a division by zero, and must stay finite."""
+    assert _exposure(connection, player=0, team=0, matches=0) == 0.0
+
+
+def test_penalty_exposure_shrinks_a_single_attempt(connection) -> None:
+    """One penalty does not make a player the designated taker."""
+    once = _exposure(connection, player=1, team=1, matches=10)
+    # An unshrunk share would be 1.0, so the exposure would be the
+    # club's whole rate of 0.1.
+    assert once < 0.1
+
+
+def test_penalty_share_never_exceeds_one(connection) -> None:
+    """A player cannot take more than his club's penalties."""
+    for attempts in (1, 5, 50):
+        exposure = _exposure(
+            connection, player=attempts, team=attempts, matches=10
+        )
+        assert exposure <= attempts / 10
+
+
+def test_penalty_share_is_clamped_for_a_mid_season_signing(
+    connection,
+) -> None:
+    """His attempts follow him across clubs; the denominator does not.
+
+    A player who took three penalties before a January move joins a
+    club that has won one. The unclamped share exceeds 1 and would rate
+    him above his new club's entire penalty output.
+    """
+    exposure = _exposure(connection, player=3, team=1, matches=10)
+    club_rate = 1 / 10
+    assert exposure == pytest.approx(club_rate)

@@ -171,6 +171,9 @@ def test_feature_columns_covers_every_stat_and_context_column() -> None:
         + len(match_form.GK_FPL_PER90_STATS)
         + len(match_form.CUMULATIVE_STATS)
         + len(match_form.DEFCON_FORM_STATS)
+        # Penalty exposure and the no-form flag, neither of which is a
+        # windowed stat.
+        + 2
         + len(match_form.FORM_CONTEXT_COLUMNS)
     )
     # No column may be emitted twice, whatever the stat lists hold.
@@ -773,5 +776,168 @@ def test_a_different_window_emits_the_renamed_defcon_columns(
 
         for name in match_form.defcon_form_columns(3):
             assert name in columns
+    finally:
+        conn.close()
+
+
+def _build_club(
+    tmp_path: Path,
+    pens: dict[int, list[int]],
+    goals: dict[int, list[int]] | None = None,
+) -> duckdb.DuckDBPyConnection:
+    """Return a connection holding one club's two players over 3 matches.
+
+    ``pens`` maps element to its penalties scored per gameweek. Both
+    players turn out for Man Utd every week, which is what makes the
+    club-level denominator behind the penalty share non-trivial.
+    """
+    connection = get_connection(tmp_path / "club.duckdb")
+    gws = [1, 2, 3]
+    kickoffs = [FIRST_KICKOFF + timedelta(days=7 * i) for i in range(3)]
+    home = [True, False, True]
+    opponents = [ARSENAL if is_home else SPURS for is_home in home]
+    elements = sorted(pens)
+
+    _append(
+        PLAYER_SEASON,
+        connection,
+        {
+            "season": [SEASON] * len(elements),
+            "element": elements,
+            "player_code": [900 + e for e in elements],
+        },
+    )
+    _append(
+        TEAM_FIXTURE,
+        connection,
+        {
+            "season": [SEASON] * 3,
+            "gw": gws,
+            "team": ["Man Utd"] * 3,
+            "is_home": home,
+            "opposition": [
+                "Arsenal" if is_home else "Spurs" for is_home in home
+            ],
+            "kickoff_time": kickoffs,
+        },
+    )
+    for element in elements:
+        _append(
+            PLAYER_WEEK,
+            connection,
+            {
+                "season": [SEASON] * 3,
+                "gw": gws,
+                "element": [element] * 3,
+                "position": ["MID"] * 3,
+                "team": ["Man Utd"] * 3,
+            },
+        )
+        _append(
+            PLAYER_MATCH,
+            connection,
+            {
+                "season": [SEASON] * 3,
+                "gw": gws,
+                "element": [element] * 3,
+                "opponent": opponents,
+                "is_home": home,
+                "minutes": [90] * 3,
+                "kickoff_time": kickoffs,
+            },
+        )
+        _append(
+            PLAYER_MATCH_OPTA,
+            connection,
+            {
+                "season": [SEASON] * 3,
+                "gw": gws,
+                "element": [element] * 3,
+                "match_id": [
+                    "25-26-prem-manchester-united-vs-arsenal"
+                    if is_home
+                    else "25-26-prem-tottenham-hotspur-vs-manchester-united"
+                    for is_home in home
+                ],
+                "competition": ["prem"] * 3,
+                "minutes_played": [90] * 3,
+                "xg": [0.2] * 3,
+                "penalties_scored": pens[element],
+                "penalties_missed": [0] * 3,
+            },
+        )
+        _append(
+            PLAYER_MATCH_FPL,
+            connection,
+            {
+                "season": [SEASON] * 3,
+                "gw": gws,
+                "element": [element] * 3,
+                "fixture": gws,
+                "opponent_team": opponents,
+                "minutes": [90] * 3,
+                "yellow_cards": [0] * 3,
+                "red_cards": [0] * 3,
+                "goals_scored": (goals or {}).get(element, [0] * 3),
+            },
+        )
+    register_lookups(connection)
+    return connection
+
+
+def test_penalty_exposure_separates_the_taker_from_his_team_mate(
+    tmp_path: Path,
+) -> None:
+    """The club's penalties concentrate on whoever actually takes them."""
+    conn = _build_club(tmp_path, pens={1: [1, 1, 0], 2: [0, 0, 0]})
+    try:
+        frame = match_form.load_match_form(conn)
+        third = frame.filter(pl.col("gw") == 3)
+        taker = third.filter(pl.col("element") == 1)
+        other = third.filter(pl.col("element") == 2)
+        column = match_form.PENALTY_EXPOSURE_COLUMN
+        assert taker[column].item() > other[column].item() > 0.0
+    finally:
+        conn.close()
+
+
+def test_penalty_exposure_excludes_the_match_it_is_attached_to(
+    tmp_path: Path,
+) -> None:
+    """A penalty won in gw3 cannot inform the gw3 feature."""
+    conn = _build_club(tmp_path, pens={1: [0, 0, 5], 2: [0, 0, 0]})
+    try:
+        frame = match_form.load_match_form(conn)
+        third = frame.filter((pl.col("gw") == 3) & (pl.col("element") == 1))
+        assert third[match_form.PENALTY_EXPOSURE_COLUMN].item() == 0.0
+    finally:
+        conn.close()
+
+
+def test_no_form_flag_marks_a_first_appearance(tmp_path: Path) -> None:
+    """The flag is on when the window held nothing, and off after."""
+    conn = _build_club(tmp_path, pens={1: [0, 0, 0]})
+    try:
+        frame = match_form.load_match_form(conn)
+        flags = dict(
+            zip(frame["gw"], frame[match_form.NO_FORM_COLUMN], strict=True)
+        )
+        assert flags[1] == 1.0
+        assert flags[2] == 0.0
+        assert flags[3] == 0.0
+    finally:
+        conn.close()
+
+
+def test_goals_are_windowed_into_a_trailing_rate(tmp_path: Path) -> None:
+    """The trailing goal rate reads FPL's count, offset by one match."""
+    conn = _build_club(tmp_path, pens={1: [0, 0, 0]}, goals={1: [1, 2, 0]})
+    try:
+        frame = match_form.load_match_form(conn)
+        third = frame.filter(pl.col("gw") == 3)
+        # Three goals across two 90-minute matches.
+        assert third["goals_scored_per90_rolling_5"].item() == pytest.approx(
+            1.5
+        )
     finally:
         conn.close()

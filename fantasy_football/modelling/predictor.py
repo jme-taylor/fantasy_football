@@ -146,6 +146,7 @@ class Predictor(ABC):
         self.fold_strategy = fold_strategy
         # TODO(JT) - shall we just set this in the init?
         self._model_dataframe: pl.DataFrame | None = None
+        self._scoring_dataframe: pl.DataFrame | None = None
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
     @abstractmethod
@@ -471,6 +472,25 @@ class Predictor(ABC):
         )
 
     # TODO(JT): Will there be issues with partial seasons here?
+    def scoring_frame(self) -> pl.DataFrame:
+        """Return the rows to backfill predictions for.
+
+        The training frame by default, which is right for a model whose
+        training population is the population it serves. It is not right
+        for one that restricts its fit -- a row dropped for being a
+        fifteen-minute cameo still has to be scored, and a model pooled
+        across positions must not write rows for the positions it does
+        not serve.
+
+        Returns
+        -------
+        pl.DataFrame
+            Rows shaped like the training frame.
+        """
+        if self._model_dataframe is None:
+            self._model_dataframe = self.build_training_data()
+        return self._model_dataframe
+
     def predict_backwards(
         self, season: str, model: Pipeline, version: str
     ) -> None:
@@ -485,9 +505,7 @@ class Predictor(ABC):
         version: str
             The model version
         """
-        if self._model_dataframe is None:
-            self._model_dataframe = self.build_training_data()
-        sub = self._model_dataframe.filter(pl.col("season") == season)
+        sub = self.scoring_frame().filter(pl.col("season") == season)
         if sub.is_empty():
             logger.warning(
                 f"No training data for season {season}; skipping backwards prediction."

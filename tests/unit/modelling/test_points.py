@@ -122,7 +122,7 @@ def test_model_frame_sql_filters_to_position_and_played_matches(
 ) -> None:
     """The SQL restricts to this position and rows with recorded minutes."""
     sql = predictor.model_frame_sql()
-    assert f"s.position = '{predictor.POSITION}'" in sql
+    assert f"s.position IN ('{predictor.POSITION}')" in sql
     assert "m.minutes IS NOT NULL" in sql
 
 
