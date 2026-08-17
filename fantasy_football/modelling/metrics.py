@@ -101,6 +101,71 @@ def poisson_deviance(
     return float(mean_poisson_deviance(a, p))
 
 
+def count_poisson_deviance(
+    actual: "Sequence[float] | np.ndarray",
+    expected: "Sequence[float] | np.ndarray",
+) -> float:
+    """Mean Poisson deviance of expected counts against realised ones.
+
+    Written out rather than taken from sklearn so the zero-count rows --
+    which are almost all of them on a rare-event head -- contribute their
+    ``2 * expected`` term rather than a nan from ``0 * log(0)``.
+
+    Parameters
+    ----------
+    actual : Sequence[float]
+        Realised counts.
+    expected : Sequence[float]
+        Expected counts, floored to stay positive.
+
+    Returns
+    -------
+    float
+        Mean Poisson deviance.
+    """
+    counts = np.asarray(actual, dtype=float)
+    safe = np.clip(np.asarray(expected, dtype=float), 1e-9, None)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        term = np.where(counts > 0, counts * np.log(counts / safe), 0.0)
+    return float(np.mean(2.0 * (term - (counts - safe))))
+
+
+def top_decile_ratio(
+    rate: "Sequence[float] | np.ndarray",
+    actual: "Sequence[float] | np.ndarray",
+    expected: "Sequence[float] | np.ndarray",
+) -> float:
+    """Return predicted over actual counts in the top predicted decile.
+
+    Below one means the head under-predicts its own best players, which
+    is the compression a squared-error forest is expected to show -- and
+    that decile is the one holding every player worth captaining.
+
+    Parameters
+    ----------
+    rate : Sequence[float]
+        Predicted per-90 rates, which decide the decile.
+    actual : Sequence[float]
+        Realised counts.
+    expected : Sequence[float]
+        Expected counts.
+
+    Returns
+    -------
+    float
+        The ratio, or nan when there is nothing to rank or the decile
+        realised no events.
+    """
+    rates = np.asarray(rate, dtype=float)
+    if rates.size == 0:
+        return float("nan")
+    top = rates >= float(np.quantile(rates, 0.9))
+    realised = float(np.sum(np.asarray(actual, dtype=float)[top]))
+    if realised == 0.0:
+        return float("nan")
+    return float(np.sum(np.asarray(expected, dtype=float)[top]) / realised)
+
+
 def spearman_by_gw(
     df: pl.DataFrame,
     gw_cols: Sequence[str] = ("gw",),

@@ -1,4 +1,4 @@
-"""The three scoring components a decomposed DEF prediction is built from.
+"""The scoring components a decomposed DEF prediction is built from.
 
 Every component is tested against the same contract: given keyed rows
 carrying its model's output and a frame of minutes predictions, it
@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 
 from fantasy_football.modelling.components import (
+    ASSIST_POINTS,
     MINUTES_OUTPUTS,
     POSITION_COMPONENTS,
     PREDICTED_VALUE,
@@ -301,8 +302,43 @@ def test_every_decomposed_def_component_is_declared() -> None:
         Component.APPEARANCE,
         Component.DEFCON,
         Component.GOALS,
+        Component.ASSISTS,
         Component.RESIDUAL,
     }
+
+
+def test_a_flat_price_pays_every_position_the_same() -> None:
+    """An assist is three points whatever the shirt.
+
+    The mapping form exists to express variation by position, and there
+    is none here -- so the scalar has to price a midfielder's rate
+    exactly as it prices a defender's.
+    """
+    component = RateComponent(
+        Component.ASSISTS, points_per_event=ASSIST_POINTS
+    )
+
+    paid = [
+        component.points(
+            scored_rows(0.5, position=position),
+            minutes_rows(),
+            BACKFILL_KIND,
+        )["points"].item()
+        for position in ("DEF", "MID", "FWD")
+    ]
+
+    # Half an assist per 90 over a full match, at three points each.
+    assert paid == [pytest.approx(1.5)] * 3
+
+
+def test_a_position_with_no_price_in_a_mapping_is_an_error() -> None:
+    """A scalar prices everyone; a mapping has to be asked to."""
+    component = RateComponent(Component.GOALS, points_per_event={"DEF": 6.0})
+
+    with pytest.raises(ValueError, match="no points value"):
+        component.points(
+            scored_rows(0.5, position="MID"), minutes_rows(), BACKFILL_KIND
+        )
 
 
 def test_the_residual_model_is_the_monolith_minus_minutes() -> None:

@@ -59,6 +59,11 @@ GOALS_POINTS_BY_POSITION: dict[str, float] = {
     "FWD": 4.0,
 }
 
+#: What an assist pays. Flat across every position, unlike a goal, so it
+#: is a scalar rather than a table -- a mapping of four identical values
+#: would misstate where the variation is.
+ASSIST_POINTS = 3.0
+
 
 class Component(StrEnum):
     """One scoring component of an FPL points total."""
@@ -71,6 +76,8 @@ class Component(StrEnum):
     DEFCON = "defcon"
     #: Points for scoring, worth a different amount per position.
     GOALS = "goals"
+    #: Points for the final pass, worth three to everyone.
+    ASSISTS = "assists"
     #: Everything not carved out into a component of its own.
     RESIDUAL = "residual"
 
@@ -84,6 +91,7 @@ POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
         Component.APPEARANCE,
         Component.DEFCON,
         Component.GOALS,
+        Component.ASSISTS,
         Component.RESIDUAL,
     ),
     "MID": (Component.TOTAL,),
@@ -336,11 +344,13 @@ class RateComponent:
     leaves this None and the scaled rate is the answer. A goals model
     predicts goals, which are worth six to a defender and four to a
     forward, so the conversion happens here -- which is what lets one
-    model serve every position it was trained on.
+    model serve every position it was trained on. An assist pays the
+    same everywhere, so that model passes a scalar: the mapping form
+    exists to express variation by position, and there is none.
     """
 
     component_name: Component = Component.RESIDUAL
-    points_per_event: Mapping[str, float] | None = None
+    points_per_event: Mapping[str, float] | float | None = None
     distribution: CountDistribution = field(default_factory=PoissonCounts)
 
     @property
@@ -375,15 +385,22 @@ class RateComponent:
                     pl.col("expected_minutes"),
                 ).struct.json_encode(),
             )
-        unpriced = sorted(
-            set(joined["position"].to_list()) - set(self.points_per_event)
-        )
-        if unpriced:
-            raise ValueError(
-                f"{self.component} rows carry positions with no points "
-                f"value: {unpriced}. A missing price would silently score "
-                "them null and blank the whole composed prediction."
+        if isinstance(self.points_per_event, Mapping):
+            unpriced = sorted(
+                set(joined["position"].to_list()) - set(self.points_per_event)
             )
+            if unpriced:
+                raise ValueError(
+                    f"{self.component} rows carry positions with no points "
+                    f"value: {unpriced}. A missing price would silently "
+                    "score them null and blank the whole composed "
+                    "prediction."
+                )
+            price = pl.col("position").replace_strict(
+                dict(self.points_per_event), return_dtype=pl.Float64
+            )
+        else:
+            price = pl.lit(float(self.points_per_event), dtype=pl.Float64)
         # P(at least one) is not what the points are built from -- they
         # are linear in the count, so the expectation is enough -- but it
         # is the number wanted when a captaincy pick looks wrong.
@@ -392,9 +409,7 @@ class RateComponent:
         )
         joined = joined.with_columns(
             _p_scored=pl.Series(scored).cast(pl.Float64),
-            _points_per_event=pl.col("position").replace_strict(
-                dict(self.points_per_event), return_dtype=pl.Float64
-            ),
+            _points_per_event=price,
         )
         return _component_rows(
             joined,
@@ -496,6 +511,7 @@ def _drop_incomplete_predictions(
         pl.col("component").alias("components")
     )
     incomplete = []
+    missing_counts: dict[str, int] = {}
     for row in present.iter_rows(named=True):
         wanted = {str(component) for component in expected[row["position"]]}
         found = set(row["components"])
@@ -512,16 +528,30 @@ def _drop_incomplete_predictions(
                 f"{sorted(wanted)}. Delete them from points_component, or "
                 "add them back to POSITION_COMPONENTS."
             )
-        if wanted - found:
+        missing = wanted - found
+        if missing:
             incomplete.append({key: row[key] for key in COMPOSE_GROUP})
+            for component in missing:
+                missing_counts[component] = (
+                    missing_counts.get(component, 0) + 1
+                )
     if not incomplete:
         return rows
     dropped = pl.DataFrame(incomplete)
+    # Naming the component is what turns "the defenders vanished" into a
+    # message. Declaring a new component drops every existing leg of that
+    # position until its backfill has run, and the optimiser reads the
+    # composed table, so the cause has to be in the log.
+    by_component = ", ".join(
+        f"{component} ({count} legs)"
+        for component, count in sorted(missing_counts.items())
+    )
     logger.warning(
         "Dropping %d fixture legs missing at least one declared component; "
-        "they get no composed prediction rather than a partial one. First: "
-        "%s",
+        "they get no composed prediction rather than a partial one. "
+        "Missing: %s. First: %s",
         dropped.height,
+        by_component,
         dropped.row(0, named=True),
     )
     return rows.join(dropped, on=COMPOSE_GROUP, how="anti")

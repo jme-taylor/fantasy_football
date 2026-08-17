@@ -30,6 +30,16 @@ from fantasy_football.features.match_form import (
     goalkeeper_covered_seasons,
 )
 from fantasy_football.logging_config import configure_logging
+from fantasy_football.modelling.assists import (
+    ASSISTS_SPEC,
+    AssistsRatePredictor,
+)
+from fantasy_football.modelling.assists import (
+    EXPERIMENT_NAME as ASSISTS_EXPERIMENT_NAME,
+)
+from fantasy_football.modelling.assists import (
+    TRAINING_SEASONS as ASSISTS_TRAINING_SEASONS,
+)
 from fantasy_football.modelling.components import (
     compose_points,
     write_appearance_components,
@@ -310,6 +320,23 @@ def main(
         goals_predictor.train_and_register_model()
         goals_predictor.backfill_model_predictions()
         goals_predictor.predict_forward()
+
+        # Pooled the same way and scored for DEF alone, for the same
+        # reason. An assist pays three points to every position, so this
+        # head needs no per-position conversion -- only the shared
+        # process behind the final pass justifies the pooling.
+        assists_predictor = AssistsRatePredictor(
+            experiment_name=ASSISTS_EXPERIMENT_NAME,
+            params={},
+            model_spec=ASSISTS_SPEC,
+            connection=connection,
+            fold_strategy=TrainTestSplitStrategy(
+                test_seasons=ASSISTS_TRAINING_SEASONS
+            ),
+        )
+        assists_predictor.train_and_register_model()
+        assists_predictor.backfill_model_predictions()
+        assists_predictor.predict_forward()
 
         residual_predictor = DefenderResidualPointsPredictor(
             experiment_name="def-residual-points-model",
