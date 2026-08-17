@@ -102,32 +102,15 @@ SELECT
     actual_cbit_per90 - predicted_cbit_per90 AS rate_error,
     abs(actual_cbit_per90 - predicted_cbit_per90) AS absolute_rate_error,
     -- What rate_mae actually averages.
-    abs(actual_cbit_per90 - predicted_cbit_per90) * minutes AS weighted_absolute_rate_error,
+    abs(actual_cbit_per90 - predicted_cbit_per90) * minutes
+        AS weighted_absolute_rate_error,
     expected_cbit,
     round(actual_cbit) AS actual_cbit,
-    -- Poisson P(CBIT >= 10 | lambda = expected_cbit), the same tail the
-    -- composition scores. Written as 1 - P(<= 9) because DuckDB has no
-    -- poisson_cdf.
-    1 - list_sum(
-        list_transform(
-            range(0, 10),
-            k -> exp(-expected_cbit) * pow(expected_cbit, k) / factorial(k)
-        )
-    ) AS p_ten_plus,
-    (round(actual_cbit) >= 10)::INT AS hit_ten_plus,
+    p_ten_plus,
+    hit::INT AS hit_ten_plus,
     -- Per-row Brier contribution: the rows the threshold model is most
     -- wrong about, as opposed to the rows the rate is most wrong about.
-    pow(
-        (round(actual_cbit) >= 10)::INT - (
-            1 - list_sum(
-                list_transform(
-                    range(0, 10),
-                    k -> exp(-expected_cbit) * pow(expected_cbit, k) / factorial(k)
-                )
-            )
-        ),
-        2
-    ) AS brier_contribution,
+    pow(hit::INT - p_ten_plus, 2) AS brier_contribution,
     json_extract(features, '$.is_home')::DOUBLE AS is_home,
     json_extract(features, '$.cbit_per90_rolling_5')::DOUBLE AS cbit_per90_rolling_5,
     json_extract(features, '$.cbit_ten_plus_rate_rolling_5')::DOUBLE AS cbit_ten_plus_rate_rolling_5,
@@ -140,6 +123,6 @@ SELECT
     json_extract(features, '$.goals_against_rolling_5')::DOUBLE AS goals_against,
     json_extract(features, '$.xg_for_rolling_5')::DOUBLE AS xg_for,
     json_extract(features, '$.goals_for_rolling_5')::DOUBLE AS goals_for
-FROM scored
+FROM tailed
 ORDER BY weighted_absolute_rate_error DESC
 LIMIT 100;
