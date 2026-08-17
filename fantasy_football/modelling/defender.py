@@ -20,6 +20,7 @@ from fantasy_football.modelling.components import (
     Component,
     RateComponent,
 )
+from fantasy_football.modelling.conceding import conceding_points_sql
 from fantasy_football.modelling.defcon import (
     CBIT_COUNT_SQL,
     DEFCON_JOINS,
@@ -173,6 +174,7 @@ RESIDUAL_TARGET_SQL = f"""(
     - {GOALS_POINTS_BY_POSITION[POSITION]}
       * coalesce({goals_count_sql("pmf", "oc")}, 0)
     - {ASSIST_POINTS} * coalesce({assists_count_sql("pmf")}, 0)
+    - {conceding_points_sql(POSITION)}
 ) * 90.0 / nullif(m.minutes, 0) AS residual_points_per_90"""
 
 RESIDUAL_REGISTERED_MODEL = "defender_residual_points_regressor"
@@ -206,14 +208,20 @@ class DefenderResidualPointsPredictor(DefenderPointsPredictor):
     @property
     @override
     def training_row_filter(self) -> str:
-        """Exclude legs with no published goal or assist count.
+        """Exclude legs with no published goal, assist or clean sheet.
 
         Those points are still inside this target, because the deduction
         coalesces an unknown count to nothing, so a fit that included
-        them would learn to pay for returns the goals and assists
-        components are separately paying for. A missed join is exactly a
-        deduction that did not happen. They are still scored: serving
-        reads features, not the target.
+        them would learn to pay for returns the goals, assists and
+        conceding components are separately paying for. A missed join is
+        exactly a deduction that did not happen. They are still scored:
+        serving reads features, not the target.
+
+        The clean sheet is stated separately rather than left to the
+        assist filter beside it. Both read the same relation today, so
+        one covers the other by accident -- and a clean sheet is four
+        points where an assist is three, so that is a large double-count
+        resting on a coincidence of aliases.
 
         The assist count comes from Vaastav alone, which the goals count
         does not, so a season Vaastav has not published drops out of
@@ -222,6 +230,7 @@ class DefenderResidualPointsPredictor(DefenderPointsPredictor):
         return (
             f"\n  AND {goals_count_sql('pmf', 'oc')} IS NOT NULL"
             f"\n  AND {assists_count_sql('pmf')} IS NOT NULL"
+            "\n  AND pmf.clean_sheets IS NOT NULL"
         )
 
     @property

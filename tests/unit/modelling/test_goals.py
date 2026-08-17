@@ -138,9 +138,10 @@ def _seed_player(
                     "opponent_team": TEAM_IDS[ARSENAL],
                     "minutes": minutes,
                     "goals_scored": goals[gw - 1],
-                    # A published nil, not an absent count: the residual
-                    # needs one to keep the leg in its fit.
+                    # Published nils, not absent counts: the residual
+                    # needs them to keep the leg in its fit.
                     "assists": 0,
+                    "clean_sheets": 0,
                 }
             ],
         )

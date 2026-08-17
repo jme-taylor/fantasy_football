@@ -149,10 +149,11 @@ def _seed_one_match(
                 "minutes": minutes,
                 "defensive_contribution": fpl_defcon,
                 # Published nils, not absent counts. The residual
-                # excludes legs with no published goal or assist count,
-                # since those points are still inside its target.
+                # excludes legs with no published goal, assist or clean
+                # sheet, since those points are still inside its target.
                 "goals_scored": 0,
                 "assists": 0,
+                "clean_sheets": 0,
             }
         ],
     )

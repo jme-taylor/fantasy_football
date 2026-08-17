@@ -153,6 +153,9 @@ def _seed_player(
                     "minutes": minutes,
                     "assists": assists[gw - 1],
                     "goals_scored": goals[gw - 1],
+                    # A published nil, not an absent count: the residual
+                    # needs one to keep the leg in its fit.
+                    "clean_sheets": 0,
                 }
             ],
         )
