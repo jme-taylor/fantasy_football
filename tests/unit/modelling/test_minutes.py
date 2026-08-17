@@ -684,6 +684,8 @@ def _seed_minutes_tables(connection: duckdb.DuckDBPyConnection) -> None:
                 "is_home": [True, True, False, False],
                 "minutes": [90, 0, 75, 20],
                 "total_points": [6, 0, 5, 1],
+                "yellow_cards": [0, 0, 1, 0],
+                "red_cards": [0, 0, 0, 0],
                 "kickoff_time": [kickoffs[0]] * 2 + [kickoffs[1]] * 2,
             }
         ),

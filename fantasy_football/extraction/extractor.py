@@ -111,13 +111,15 @@ def _build_player_match(frame: pl.DataFrame) -> pl.DataFrame:
     ----------
     frame : pl.DataFrame
         Per-fixture rows carrying ``season, gw, element, opponent_team,
-        was_home, minutes, total_points, kickoff_time``.
+        was_home, minutes, total_points, yellow_cards, red_cards,
+        kickoff_time``.
 
     Returns
     -------
     pl.DataFrame
         One row per fixture with columns ``season, gw, element, opponent,
-        is_home, minutes, total_points, kickoff_time``.
+        is_home, minutes, total_points, yellow_cards, red_cards,
+        kickoff_time``.
     """
     selected = frame.select(
         pl.col("season"),
@@ -127,6 +129,8 @@ def _build_player_match(frame: pl.DataFrame) -> pl.DataFrame:
         pl.col("was_home").alias("is_home"),
         pl.col("minutes"),
         pl.col("total_points"),
+        pl.col("yellow_cards"),
+        pl.col("red_cards"),
         # strict=False: Vaastav emits blank kickoff_time for a handful of
         # rows, and one bad value in a ~150k-row CSV would otherwise abort
         # the whole historic load. A bad value becomes a null instead.

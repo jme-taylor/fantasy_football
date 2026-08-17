@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS player_match (
     is_home BOOLEAN,
     minutes BIGINT,
     total_points BIGINT,
+    yellow_cards BIGINT,
+    red_cards BIGINT,
     kickoff_time TIMESTAMP,
     PRIMARY KEY (season, gw, element, opponent)
 )

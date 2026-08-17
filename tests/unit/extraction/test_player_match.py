@@ -41,6 +41,8 @@ def test_load_current_season_player_match_concatenates_and_upserts(
                 "is_home": [True],
                 "minutes": [90],
                 "total_points": [4],
+                "yellow_cards": [1],
+                "red_cards": [0],
                 "kickoff_time": [datetime(2025, 8, 9, 15, 0)],
             }
         )
@@ -57,3 +59,6 @@ def test_load_current_season_player_match_concatenates_and_upserts(
     assert out.height == 2
     assert set(out["element"].to_list()) == {5, 9}
     assert out["season"].unique().to_list() == ["2025-26"]
+    # The spine is the card source for the live season, so the loader
+    # has to carry them through rather than drop them on the floor.
+    assert out["yellow_cards"].to_list() == [1, 1]

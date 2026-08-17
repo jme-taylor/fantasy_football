@@ -751,6 +751,8 @@ class TestFplAPI:
                     "was_home": True,
                     "minutes": 90,
                     "total_points": 6,
+                    "yellow_cards": 1,
+                    "red_cards": 0,
                     "kickoff_time": "2023-08-11T19:00:00Z",
                 },
                 {
@@ -760,6 +762,8 @@ class TestFplAPI:
                     "was_home": False,
                     "minutes": 70,
                     "total_points": 2,
+                    "yellow_cards": 0,
+                    "red_cards": 0,
                     "kickoff_time": "2023-08-15T19:00:00Z",
                 },
             ]
@@ -777,16 +781,24 @@ class TestFplAPI:
             "is_home",
             "minutes",
             "total_points",
+            "yellow_cards",
+            "red_cards",
             "kickoff_time",
         ]
         assert result.height == 2
         assert result["gw"].to_list() == [1, 1]
         assert sorted(result["opponent"].to_list()) == [7, 12]
+        # Cards come from here for the live season: Vaastav's per-fixture
+        # files stop at 2025-26 and FCI has never published them.
+        assert result["yellow_cards"].to_list() == [1, 0]
+        assert result["red_cards"].to_list() == [0, 0]
         assert result.dtypes == [
             pl.Int64,
             pl.Int64,
             pl.Int64,
             pl.Boolean,
+            pl.Int64,
+            pl.Int64,
             pl.Int64,
             pl.Int64,
             pl.Datetime("us"),
@@ -807,6 +819,8 @@ class TestFplAPI:
                     "was_home": True,
                     "minutes": 90,
                     "total_points": 6,
+                    "yellow_cards": 0,
+                    "red_cards": 0,
                     "kickoff_time": "",
                 },
                 {
@@ -816,6 +830,8 @@ class TestFplAPI:
                     "was_home": False,
                     "minutes": 70,
                     "total_points": 2,
+                    "yellow_cards": 0,
+                    "red_cards": 0,
                     "kickoff_time": None,
                 },
                 {
@@ -825,6 +841,8 @@ class TestFplAPI:
                     "was_home": True,
                     "minutes": 45,
                     "total_points": 1,
+                    "yellow_cards": 0,
+                    "red_cards": 0,
                     "kickoff_time": "2023-08-25T19:00:00Z",
                 },
             ]
@@ -862,6 +880,8 @@ class TestFplAPI:
             "is_home",
             "minutes",
             "total_points",
+            "yellow_cards",
+            "red_cards",
             "kickoff_time",
         ]
         assert result.dtypes == [
@@ -869,6 +889,8 @@ class TestFplAPI:
             pl.Int64,
             pl.Int64,
             pl.Boolean,
+            pl.Int64,
+            pl.Int64,
             pl.Int64,
             pl.Int64,
             pl.Datetime("us"),

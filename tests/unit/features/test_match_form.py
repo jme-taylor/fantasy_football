@@ -44,8 +44,9 @@ def _build(
 
     Match ``i`` is in gameweek ``i + 1``, a week apart, alternating home
     and away against Arsenal and Spurs so each leg has a distinct
-    opponent. Cards go to ``player_match_fpl``, the only source that
-    publishes them.
+    opponent. Cards go to ``player_match``, the spine that carries them
+    for every season; passing ``None`` leaves them unfiled, which is what
+    a season no source covers looks like.
     """
     connection = get_connection(tmp_path / "test.duckdb")
     count = len(minutes)
@@ -81,6 +82,14 @@ def _build(
             "is_home": home,
             "minutes": minutes,
             "kickoff_time": kickoffs,
+            **(
+                {
+                    "yellow_cards": yellow_cards,
+                    "red_cards": [0] * count,
+                }
+                if yellow_cards is not None
+                else {}
+            ),
         },
     )
     _append(
@@ -121,7 +130,7 @@ def _build(
             ),
         },
     )
-    if yellow_cards is not None or saves is not None:
+    if saves is not None:
         _append(
             PLAYER_MATCH_FPL,
             connection,
@@ -132,9 +141,7 @@ def _build(
                 "fixture": gws,
                 "opponent_team": opponents,
                 "minutes": minutes,
-                "yellow_cards": yellow_cards or [0] * count,
-                "red_cards": [0] * count,
-                **({"saves": saves} if saves is not None else {}),
+                "saves": saves,
             },
         )
     register_lookups(connection)
@@ -169,6 +176,7 @@ def test_feature_columns_covers_every_stat_and_context_column() -> None:
         + len(match_form.CREATION_PER90_STATS)
         + len(match_form.GK_PER90_STATS)
         + len(match_form.FPL_PER90_STATS)
+        + len(match_form.MATCH_PER90_STATS)
         + len(match_form.GK_FPL_PER90_STATS)
         + len(match_form.CUMULATIVE_STATS)
         + len(match_form.DEFCON_FORM_STATS)
@@ -567,6 +575,33 @@ def test_card_rate_and_running_total_use_prior_matches(
         assert third["yellow_cards_season_to_date"].item() == 1
         # The current match's own booking is in neither figure.
         assert third["red_cards_season_to_date"].item() == 0
+    finally:
+        connection.close()
+
+
+def test_card_total_is_null_when_no_card_data_was_published(
+    tmp_path: Path,
+) -> None:
+    """A source that filed no cards reads null, not a clean disciplinary record.
+
+    Vaastav stopped publishing after 2025-26 and FCI never published
+    cards at all, so for a season neither covers every card join misses.
+    Coalescing that to zero made "we have no data" indistinguishable
+    from "he has never been booked", and the four positional models read
+    the column either way.
+    """
+    connection = _build(
+        tmp_path,
+        minutes=[90, 90],
+        tackles=[0, 0],
+        xg=[0.0] * 2,
+        yellow_cards=None,
+    )
+    try:
+        frame = match_form.load_match_form(connection)
+        second = frame.filter(pl.col("gw") == 2)
+        assert second["yellow_cards_season_to_date"].item() is None
+        assert second["yellow_cards_per90_rolling_5"].item() is None
     finally:
         connection.close()
 
