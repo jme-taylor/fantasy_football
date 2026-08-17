@@ -130,6 +130,10 @@ CREATION_PER90_STATS: tuple[str, ...] = (
     "accurate_crosses",
 )
 
+# Discipline stats, read only by the yellow-cards head. Held apart from
+# ``PER90_STATS`` for the same reason the creation stats are.
+DISCIPLINE_PER90_STATS: tuple[str, ...] = ("fouls_committed",)
+
 # GK specific stats
 GK_PER90_STATS: tuple[str, ...] = (
     "goals_prevented",
@@ -172,6 +176,7 @@ CUMULATIVE_STATS: tuple[str, ...] = (
 OPTA_RATE_STATS: tuple[str, ...] = (
     *PER90_STATS,
     *CREATION_PER90_STATS,
+    *DISCIPLINE_PER90_STATS,
     *GK_PER90_STATS,
 )
 FPL_RATE_STATS: tuple[str, ...] = (*FPL_PER90_STATS, *GK_FPL_PER90_STATS)

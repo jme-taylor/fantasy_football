@@ -441,6 +441,12 @@ class PositionPointsPredictor(Predictor):
         player = ",\n    ".join(
             f"mf.{column} AS {column}" for column in self.PLAYER_FORM_COLUMNS
         )
+        # Joined rather than interpolated one per line: a head that reads
+        # no own-team column is legitimate, and a fixed three-line layout
+        # would leave a dangling comma behind the empty one.
+        form = ",\n    ".join(
+            part for part in (player, own, opposition) if part
+        )
         extra = "".join(
             f"\n    {selection}," for selection in self.EXTRA_COLUMNS
         )
@@ -480,9 +486,7 @@ SELECT
     m.opponent,
     {self.target_sql},{extra}{dummies}
     m.is_home,{minutes}
-    {player},
-    {own},
-    {opposition}
+    {form}
 FROM player_match AS m
 INNER JOIN player_season AS s
     ON  m.element = s.element

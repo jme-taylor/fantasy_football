@@ -66,6 +66,10 @@ GOALS_POINTS_BY_POSITION: dict[str, float] = {
 #: would misstate where the variation is.
 ASSIST_POINTS = 3.0
 
+#: What a yellow card costs. Flat across every position, so a scalar
+#: rather than a table, for the reason :data:`ASSIST_POINTS` is one.
+YELLOW_CARD_POINTS = -1.0
+
 #: What a clean sheet pays, by position.
 CLEAN_SHEET_POINTS_BY_POSITION: dict[str, float] = {
     "GK": 4.0,
@@ -101,6 +105,8 @@ class Component(StrEnum):
     ASSISTS = "assists"
     #: The clean sheet, and the goals-conceded deduction against it.
     CONCEDING = "conceding"
+    #: Points lost to bookings. Yellows only -- see YellowCardsComponent.
+    YELLOW_CARDS = "yellow_cards"
     #: Everything not carved out into a component of its own.
     RESIDUAL = "residual"
 
@@ -116,6 +122,7 @@ POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
         Component.GOALS,
         Component.ASSISTS,
         Component.CONCEDING,
+        Component.YELLOW_CARDS,
         Component.RESIDUAL,
     ),
     "MID": (Component.TOTAL,),
@@ -560,6 +567,50 @@ class RateComponent:
                 pl.col("_p_scored").alias("p_scored"),
             ).struct.json_encode(),
         )
+
+
+@dataclass(frozen=True)
+class YellowCardsComponent:
+    """Points lost to bookings, from a per-90 yellow-card rate.
+
+    Reds are deliberately not here. They pay minus three against a
+    yellow's minus one and arrive roughly forty times less often -- 44
+    across the league in 2025-26 against 1422 yellows -- which is too
+    few to estimate a player rate from. They stay inside the residual
+    until they earn a component of their own, and naming this one for
+    yellows is what keeps that a separate component rather than a
+    nullable field in here.
+
+    The conversion is a scaled rate at minus one a card, which is
+    :class:`RateComponent`'s job, so that is what does the arithmetic.
+    The wrapper exists for the seam: a booking is not quite a linear
+    per-90 event -- late tactical fouls do not scale with minutes the
+    way tackles do -- and when that is modelled properly the change
+    belongs here rather than in the shared rate component every other
+    head uses.
+    """
+
+    rate: "RateComponent" = field(
+        default_factory=lambda: RateComponent(
+            Component.YELLOW_CARDS, points_per_event=YELLOW_CARD_POINTS
+        )
+    )
+
+    @property
+    def component(self) -> Component:
+        """Return the component these points are stored as."""
+        return Component.YELLOW_CARDS
+
+    @property
+    def model_features(self) -> tuple[str, ...]:
+        """Return no minutes features, by construction."""
+        return ()
+
+    def points(
+        self, rows: pl.DataFrame, minutes: pl.DataFrame, kind: str
+    ) -> pl.DataFrame:
+        """Return the booking rate scaled to the minutes expected."""
+        return self.rate.points(rows, minutes, kind)
 
 
 def composite_version(versions: Mapping[Component, str]) -> str:

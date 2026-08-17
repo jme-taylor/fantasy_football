@@ -174,6 +174,7 @@ def test_feature_columns_covers_every_stat_and_context_column() -> None:
     assert len(columns) == (
         len(match_form.PER90_STATS)
         + len(match_form.CREATION_PER90_STATS)
+        + len(match_form.DISCIPLINE_PER90_STATS)
         + len(match_form.GK_PER90_STATS)
         + len(match_form.FPL_PER90_STATS)
         + len(match_form.MATCH_PER90_STATS)
@@ -284,6 +285,41 @@ def test_creation_stats_stay_out_of_the_shared_lists() -> None:
         match_form.PER90_STATS + match_form.CREATION_PER90_STATS
     )
     assert set(match_form.covered_seasons()) >= set(with_creation)
+
+
+def test_discipline_stats_are_valid_against_their_source() -> None:
+    """The discipline list must pass the guard for FCI's table."""
+    match_form.validate_stats(match_form.DISCIPLINE_PER90_STATS)
+
+
+def test_discipline_stats_stay_out_of_the_shared_lists() -> None:
+    """Declared apart for the reason the creation stats are.
+
+    Only the yellow-cards head reads fouls, and ``covered_seasons`` over
+    the shared list drives three other models' fold test seasons.
+    """
+    shared = set(match_form.PER90_STATS) | set(match_form.FPL_PER90_STATS)
+    assert not shared & set(match_form.DISCIPLINE_PER90_STATS)
+    with_discipline = match_form.covered_seasons(
+        match_form.PER90_STATS + match_form.DISCIPLINE_PER90_STATS
+    )
+    assert set(match_form.covered_seasons()) >= set(with_discipline)
+
+
+def test_cards_come_from_the_spine_not_a_provider_table() -> None:
+    """The spine is the one relation filled for every season.
+
+    Vaastav stops at 2025-26 and FCI has never published cards, so a
+    provider-sourced card column is null for the live season.
+    """
+    assert set(match_form.MATCH_PER90_STATS) == {"yellow_cards", "red_cards"}
+    assert not set(match_form.FPL_PER90_STATS) & {"yellow_cards", "red_cards"}
+    match_form.validate_stats(
+        match_form.MATCH_PER90_STATS, source="player_match"
+    )
+    match_form.validate_stats(
+        match_form.CUMULATIVE_STATS, source="player_match"
+    )
 
 
 def test_the_assist_rate_comes_from_the_same_source_as_the_target() -> None:

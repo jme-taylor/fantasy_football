@@ -171,6 +171,8 @@ def seed_league(
                     "is_home": home,
                     "minutes": minutes,
                     "total_points": total_points,
+                    "yellow_cards": 0,
+                    "red_cards": 0,
                     "kickoff_time": kickoff(gw),
                 }
                 for element, opponent, home in [
@@ -452,6 +454,8 @@ def test_a_defender_is_fanned_out_once_in_a_double_gameweek(
                 "is_home": is_home,
                 "minutes": 90,
                 "total_points": 2,
+                "yellow_cards": 0,
+                "red_cards": 0,
                 "kickoff_time": second,
             }
             for element, opponent, is_home in [
