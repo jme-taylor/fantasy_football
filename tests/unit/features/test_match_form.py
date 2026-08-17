@@ -166,6 +166,7 @@ def test_feature_columns_covers_every_stat_and_context_column() -> None:
     columns = match_form.feature_columns(5)
     assert len(columns) == (
         len(match_form.PER90_STATS)
+        + len(match_form.CREATION_PER90_STATS)
         + len(match_form.GK_PER90_STATS)
         + len(match_form.FPL_PER90_STATS)
         + len(match_form.GK_FPL_PER90_STATS)
@@ -250,6 +251,43 @@ def test_goalkeeper_stats_stay_out_of_the_shared_lists() -> None:
     assert match_form.covered_seasons() == match_form.covered_seasons(
         match_form.PER90_STATS
     )
+
+
+def test_creation_stats_are_valid_against_their_source() -> None:
+    """The creation list must pass the guard for FCI's table."""
+    match_form.validate_stats(match_form.CREATION_PER90_STATS)
+
+
+def test_creation_stats_stay_out_of_the_shared_lists() -> None:
+    """Declared apart for the same reason the keeper stats are.
+
+    Only the assists head reads them, and ``covered_seasons`` over the
+    shared list drives three other models' fold test seasons. Today both
+    creation stats have FCI's own coverage and would narrow nothing, but
+    that is a property of these two columns rather than of the
+    arrangement.
+    """
+    shared = set(match_form.PER90_STATS) | set(match_form.FPL_PER90_STATS)
+    assert not shared & set(match_form.CREATION_PER90_STATS)
+    # The comparison has to put the creation stats *in* to mean
+    # anything: reading the default back is true by construction, since
+    # covered_seasons defaults its argument to PER90_STATS.
+    with_creation = match_form.covered_seasons(
+        match_form.PER90_STATS + match_form.CREATION_PER90_STATS
+    )
+    assert set(match_form.covered_seasons()) >= set(with_creation)
+
+
+def test_the_assist_rate_comes_from_the_same_source_as_the_target() -> None:
+    """FPL settles the assist, so FPL's count is what the rate windows.
+
+    FCI counts a stricter event -- it logs no assist for a penalty won or
+    a rebound -- so an FCI-sourced rate would describe a player by one
+    definition and score him by another.
+    """
+    assert "assists" in match_form.FPL_PER90_STATS
+    assert "assists" not in match_form.PER90_STATS
+    match_form.validate_stats(match_form.FPL_PER90_STATS, source="fpl")
 
 
 def test_goalkeeper_covered_seasons_starts_when_fci_publishes() -> None:

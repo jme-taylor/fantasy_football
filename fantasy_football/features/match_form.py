@@ -110,6 +110,17 @@ FPL_PER90_STATS: tuple[str, ...] = (
     "yellow_cards",
     "red_cards",
     "goals_scored",
+    "assists",
+)
+
+# Creation stats, read only by the assists head. Held apart from
+# ``PER90_STATS`` for the reason the keeper stats are: the default
+# ``covered_seasons`` window is computed over that list and drives three
+# other models' fold test seasons, so a creation stat added there could
+# shrink their validation for a measure none of them reads.
+CREATION_PER90_STATS: tuple[str, ...] = (
+    "chances_created",
+    "accurate_crosses",
 )
 
 # GK specific stats
@@ -150,7 +161,11 @@ CUMULATIVE_STATS: tuple[str, ...] = (
 # Every stat the view rates, by source. The view emits one column per
 # entry, so these are what ``form_sql`` and ``feature_columns`` iterate;
 # the lists above are what each model picks from.
-OPTA_RATE_STATS: tuple[str, ...] = (*PER90_STATS, *GK_PER90_STATS)
+OPTA_RATE_STATS: tuple[str, ...] = (
+    *PER90_STATS,
+    *CREATION_PER90_STATS,
+    *GK_PER90_STATS,
+)
 FPL_RATE_STATS: tuple[str, ...] = (*FPL_PER90_STATS, *GK_FPL_PER90_STATS)
 
 # The defcon features. A rate alone cannot describe a threshold: two

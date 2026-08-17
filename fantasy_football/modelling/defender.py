@@ -12,7 +12,9 @@ from fantasy_football.constants import (
     DEFCON_FIRST_SEASON,
     DEFCON_THRESHOLD_DEF,
 )
+from fantasy_football.modelling.assists import assists_count_sql
 from fantasy_football.modelling.components import (
+    ASSIST_POINTS,
     GOALS_POINTS_BY_POSITION,
     MINUTES_OUTPUTS,
     Component,
@@ -118,8 +120,8 @@ DEFENDER_SPEC = ModelSpec(
 )
 
 
-# The points left once appearance and defcon have been carved out:
-# goals, assists, clean sheets, cards and bonus. Predicted per 90 and
+# The points left once appearance, defcon, goals and assists have been
+# carved out: clean sheets, cards and bonus. Predicted per 90 and
 # scaled by the minutes forecast at composition, so this model reads no
 # minutes feature either.
 #
@@ -148,13 +150,17 @@ DEFENDER_SPEC = ModelSpec(
 # FCI's would leave the components summing to something other than the
 # total, and nothing would fail.
 #
+# Assists carry no season guard either, and read FPL alone: FPL settles
+# the assist and FCI counts a stricter event, so the deduction reads the
+# same single source the assists head targets.
+#
 # Coalesced to zero so the target stays defined for every scored leg --
 # a null here propagates through the whole expression and reaches the
-# fit as a NaN rather than dropping the row. Legs where neither provider
-# published a count are excluded from the *fit* instead, by
-# ``training_row_filter``: their goal points are still sitting in this
-# target while the goals component predicts them separately, so learning
-# from them would teach the residual to pay for goals twice.
+# fit as a NaN rather than dropping the row. Legs with no published
+# count are excluded from the *fit* instead, by ``training_row_filter``:
+# their goal and assist points are still sitting in this target while
+# those components predict them separately, so learning from them would
+# teach the residual to pay for the same return twice.
 RESIDUAL_TARGET_SQL = f"""(
     m.total_points
     - CASE WHEN m.minutes >= 60 THEN 2 WHEN m.minutes > 0 THEN 1 ELSE 0 END
@@ -166,13 +172,14 @@ RESIDUAL_TARGET_SQL = f"""(
       END
     - {GOALS_POINTS_BY_POSITION[POSITION]}
       * coalesce({goals_count_sql("pmf", "oc")}, 0)
+    - {ASSIST_POINTS} * coalesce({assists_count_sql("pmf")}, 0)
 ) * 90.0 / nullif(m.minutes, 0) AS residual_points_per_90"""
 
 RESIDUAL_REGISTERED_MODEL = "defender_residual_points_regressor"
 
 
 class DefenderResidualPointsPredictor(DefenderPointsPredictor):
-    """Everything a defender scores bar appearance and defcon points."""
+    """What a defender scores bar appearance, defcon, goals and assists."""
 
     TARGET = "residual_points_per_90"
     COMPONENT = Component.RESIDUAL
@@ -199,15 +206,23 @@ class DefenderResidualPointsPredictor(DefenderPointsPredictor):
     @property
     @override
     def training_row_filter(self) -> str:
-        """Exclude legs whose goal count neither provider published.
+        """Exclude legs with no published goal or assist count.
 
-        Their goal points are still inside this target, because the
-        deduction coalesces an unknown count to nothing, so a fit that
-        included them would learn to pay for goals the goals component
-        is separately paying for. They are still scored -- serving reads
-        features, not the target.
+        Those points are still inside this target, because the deduction
+        coalesces an unknown count to nothing, so a fit that included
+        them would learn to pay for returns the goals and assists
+        components are separately paying for. A missed join is exactly a
+        deduction that did not happen. They are still scored: serving
+        reads features, not the target.
+
+        The assist count comes from Vaastav alone, which the goals count
+        does not, so a season Vaastav has not published drops out of
+        this fit entirely. See ``assists.py`` for why that is accepted.
         """
-        return f"\n  AND {goals_count_sql('pmf', 'oc')} IS NOT NULL"
+        return (
+            f"\n  AND {goals_count_sql('pmf', 'oc')} IS NOT NULL"
+            f"\n  AND {assists_count_sql('pmf')} IS NOT NULL"
+        )
 
     @property
     @override

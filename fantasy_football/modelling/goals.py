@@ -61,6 +61,10 @@ from fantasy_football.modelling.defcon import (
     MINUTES_FLOOR as DEFCON_MINUTES_FLOOR,
 )
 from fantasy_football.modelling.distributions import PoissonCounts
+from fantasy_football.modelling.metrics import (
+    count_poisson_deviance,
+    top_decile_ratio,
+)
 from fantasy_football.modelling.points import (
     PositionPointsPredictor,
     position_dummy_names,
@@ -287,7 +291,7 @@ class GoalsRatePredictor(PositionPointsPredictor):
         brier = float(brier_score_loss(scored, probability, pos_label=1))
         base_brier = float(brier_score_loss(scored, baseline, pos_label=1))
         return GoalsMetrics(
-            poisson_deviance=_poisson_deviance(goals, expected),
+            poisson_deviance=count_poisson_deviance(goals, expected),
             brier=brier,
             # Labelled for the same reason the defcon head labels them: a
             # fold in which nobody scores is single-class, and both
@@ -308,40 +312,8 @@ class GoalsRatePredictor(PositionPointsPredictor):
                     weights=minutes,
                 )
             ),
-            top_decile_ratio=_top_decile_ratio(rate, goals, expected),
+            top_decile_ratio=top_decile_ratio(rate, goals, expected),
         )
-
-
-def _poisson_deviance(goals: "np.ndarray", expected: "np.ndarray") -> float:
-    """Return the mean Poisson deviance of the expected counts.
-
-    Written out rather than taken from sklearn so the zero-goal rows --
-    which are almost all of them -- contribute their ``2 * expected``
-    term rather than a nan from ``0 * log(0)``.
-    """
-    safe = np.clip(expected, 1e-9, None)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        term = np.where(goals > 0, goals * np.log(goals / safe), 0.0)
-    return float(np.mean(2.0 * (term - (goals - safe))))
-
-
-def _top_decile_ratio(
-    rate: "np.ndarray", goals: "np.ndarray", expected: "np.ndarray"
-) -> float:
-    """Return predicted over actual goals in the top predicted decile.
-
-    One below means the head under-predicts its own best players, which
-    is the compression a squared-error forest is expected to show and
-    the reason to reach for a Poisson objective.
-    """
-    if rate.size == 0:
-        return float("nan")
-    cutoff = float(np.quantile(rate, 0.9))
-    top = rate >= cutoff
-    actual = float(np.sum(goals[top]))
-    if actual == 0.0:
-        return float("nan")
-    return float(np.sum(expected[top]) / actual)
 
 
 GOALS_SPEC = ModelSpec(
