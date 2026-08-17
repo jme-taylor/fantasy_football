@@ -44,6 +44,16 @@ from fantasy_football.modelling.components import (
     compose_points,
     write_appearance_components,
 )
+from fantasy_football.modelling.conceding import (
+    CONCEDING_SPEC,
+    ConcedingPredictor,
+)
+from fantasy_football.modelling.conceding import (
+    EXPERIMENT_NAME as CONCEDING_EXPERIMENT_NAME,
+)
+from fantasy_football.modelling.conceding import (
+    TRAINING_SEASONS as CONCEDING_TRAINING_SEASONS,
+)
 from fantasy_football.modelling.defcon import (
     DEFCON_SPEC,
     DefconRatePredictor,
@@ -337,6 +347,22 @@ def main(
         assists_predictor.train_and_register_model()
         assists_predictor.backfill_model_predictions()
         assists_predictor.predict_forward()
+
+        # Team grain: one prediction per fixture, fanned out to that
+        # club's defenders at scoring time. Wired into DEF alone, though
+        # the payoff table prices a keeper and a midfielder too.
+        conceding_predictor = ConcedingPredictor(
+            experiment_name=CONCEDING_EXPERIMENT_NAME,
+            params={},
+            model_spec=CONCEDING_SPEC,
+            connection=connection,
+            fold_strategy=TrainTestSplitStrategy(
+                test_seasons=CONCEDING_TRAINING_SEASONS
+            ),
+        )
+        conceding_predictor.train_and_register_model()
+        conceding_predictor.backfill_model_predictions()
+        conceding_predictor.predict_forward()
 
         residual_predictor = DefenderResidualPointsPredictor(
             experiment_name="def-residual-points-model",

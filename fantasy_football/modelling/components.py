@@ -17,7 +17,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+import numpy as np
 import polars as pl
+from numpy.typing import NDArray
 
 from fantasy_football.constants import DEFCON_THRESHOLD_DEF
 from fantasy_football.modelling.distributions import (
@@ -64,6 +66,25 @@ GOALS_POINTS_BY_POSITION: dict[str, float] = {
 #: would misstate where the variation is.
 ASSIST_POINTS = 3.0
 
+#: What a clean sheet pays, by position.
+CLEAN_SHEET_POINTS_BY_POSITION: dict[str, float] = {
+    "GK": 4.0,
+    "DEF": 4.0,
+    "MID": 1.0,
+    "FWD": 0.0,
+}
+
+# Held apart from the table above rather than folded into it: the two
+# are different rules with different position scopes, and a single table
+# would have to say "a midfielder keeps a clean sheet but is never
+# docked" as a zero that reads like a price.
+CONCEDING_DEDUCTION_POSITIONS: frozenset[str] = frozenset({"GK", "DEF"})
+
+# How many terms of E[floor(N / 2)] = sum over k >= 1 of P(N >= 2k) are
+# summed. The terms fall away fast: at a rate of three, the sixth is
+# under a thousandth of a point.
+DEDUCTION_TERMS = 5
+
 
 class Component(StrEnum):
     """One scoring component of an FPL points total."""
@@ -78,6 +99,8 @@ class Component(StrEnum):
     GOALS = "goals"
     #: Points for the final pass, worth three to everyone.
     ASSISTS = "assists"
+    #: The clean sheet, and the goals-conceded deduction against it.
+    CONCEDING = "conceding"
     #: Everything not carved out into a component of its own.
     RESIDUAL = "residual"
 
@@ -92,6 +115,7 @@ POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
         Component.DEFCON,
         Component.GOALS,
         Component.ASSISTS,
+        Component.CONCEDING,
         Component.RESIDUAL,
     ),
     "MID": (Component.TOTAL,),
@@ -327,6 +351,119 @@ class DefconComponent:
                 pl.col(PREDICTED_VALUE).alias("rate"),
                 pl.col("_lambda").alias("lambda"),
                 pl.col("_p_hit").alias("p_hit"),
+            ).struct.json_encode(),
+        )
+
+
+def expected_deduction(
+    rate: NDArray[np.float64], distribution: CountDistribution
+) -> NDArray[np.float64]:
+    """Return E[floor(N / 2)] for each expected count.
+
+    What FPL docks: a point per two goals conceded, so a team expected
+    to ship three loses more than one and ``P(N >= 2)`` is not the
+    quantity. Summed as P(N >= 2) + P(N >= 4) + ..., the same
+    expectation written so that only the survival function is needed.
+
+    Shared with the conceding head's metrics, which score this leg
+    separately from the clean-sheet one. Two spellings of it would let
+    the number the model is judged on drift from the number it is paid.
+
+    Parameters
+    ----------
+    rate : NDArray[np.float64]
+        Expected goals conceded over the exposure being priced.
+    distribution : CountDistribution
+        The count distribution the rate is read through.
+
+    Returns
+    -------
+    NDArray[np.float64]
+        One expected deduction per element of ``rate``.
+    """
+    docked = np.zeros_like(np.asarray(rate, dtype=float))
+    for term in range(1, DEDUCTION_TERMS + 1):
+        docked += distribution.p_at_least(rate, 2 * term)
+    return docked
+
+
+@dataclass(frozen=True)
+class ConcedingComponent:
+    """The clean sheet and the goals-conceded deduction, from one rate.
+
+    The model behind this predicts goals conceded by a *team* in a
+    fixture, per match rather than per 90, and the fan-out puts the same
+    rate on every player of that team. Both payoffs come off that one
+    rate, which is what stops a defender being read as likely to keep a
+    clean sheet and likely to ship two in the same breath.
+
+    The two legs read different exposures, deliberately. The deduction
+    counts only goals conceded while the player was on, so it takes the
+    rate scaled by expected minutes. The clean sheet already conditions
+    on sixty minutes, and a defender who reaches sixty almost always
+    finishes, so it takes the full-match rate -- scaling that leg too
+    would raise the clean-sheet chance of exactly the rotation risks it
+    should be lowering.
+
+    What it does not model: goals conceded after the player is
+    substituted still count against the clean-sheet leg here, where FPL
+    would not count them.
+    """
+
+    distribution: CountDistribution = field(default_factory=PoissonCounts)
+
+    @property
+    def component(self) -> Component:
+        """Return :attr:`Component.CONCEDING`."""
+        return Component.CONCEDING
+
+    @property
+    def model_features(self) -> tuple[str, ...]:
+        """Return no minutes features, by construction."""
+        return ()
+
+    def points(
+        self, rows: pl.DataFrame, minutes: pl.DataFrame, kind: str
+    ) -> pl.DataFrame:
+        """Return the clean sheet less the deduction, for each row."""
+        joined = _with_minutes(rows, minutes)
+        unpriced = sorted(
+            set(joined["position"].to_list())
+            - set(CLEAN_SHEET_POINTS_BY_POSITION)
+        )
+        if unpriced:
+            raise ValueError(
+                f"{self.component} rows carry positions with no clean sheet "
+                f"value: {unpriced}. A missing price would silently score "
+                "them null and blank the whole composed prediction."
+            )
+        rate = np.clip(joined[PREDICTED_VALUE].to_numpy(), 0.0, None)
+        exposed = rate * joined["expected_minutes"].to_numpy() / 90.0
+        clean = 1.0 - self.distribution.p_at_least(rate, 1)
+        deduction = expected_deduction(exposed, self.distribution)
+        price = pl.col("position").replace_strict(
+            CLEAN_SHEET_POINTS_BY_POSITION, return_dtype=pl.Float64
+        )
+        docked = pl.col("position").is_in(CONCEDING_DEDUCTION_POSITIONS)
+        joined = joined.with_columns(
+            _p_clean=pl.Series(clean).cast(pl.Float64),
+            _clean_sheet_points=price,
+            _deduction=pl.when(docked)
+            .then(pl.Series(deduction).cast(pl.Float64))
+            .otherwise(0.0),
+        )
+        return _component_rows(
+            joined,
+            self.component,
+            kind,
+            pl.col("_clean_sheet_points")
+            * pl.col("p_sixty_plus")
+            * pl.col("_p_clean")
+            - pl.col("_deduction"),
+            pl.struct(
+                pl.col(PREDICTED_VALUE).alias("rate"),
+                pl.col("_p_clean").alias("p_clean_sheet"),
+                pl.col("_deduction").alias("expected_deduction"),
             ).struct.json_encode(),
         )
 

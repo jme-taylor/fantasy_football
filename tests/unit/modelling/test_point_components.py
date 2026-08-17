@@ -6,9 +6,11 @@ returns component rows whose points can be hand-computed.
 """
 
 import json
+import math
 
 import polars as pl
 import pytest
+from scipy.stats import poisson
 
 from fantasy_football.modelling.components import (
     ASSIST_POINTS,
@@ -17,6 +19,7 @@ from fantasy_football.modelling.components import (
     PREDICTED_VALUE,
     AppearanceComponent,
     Component,
+    ConcedingComponent,
     DefconComponent,
     PointsComponent,
     RateComponent,
@@ -82,7 +85,12 @@ def defcon() -> DefconComponent:
 
 @pytest.mark.parametrize(
     "component",
-    [AppearanceComponent(), defcon(), RateComponent(Component.RESIDUAL)],
+    [
+        AppearanceComponent(),
+        defcon(),
+        ConcedingComponent(),
+        RateComponent(Component.RESIDUAL),
+    ],
     ids=lambda c: str(c.component),
 )
 def test_every_component_satisfies_the_protocol(component) -> None:
@@ -92,7 +100,12 @@ def test_every_component_satisfies_the_protocol(component) -> None:
 
 @pytest.mark.parametrize(
     "component",
-    [AppearanceComponent(), defcon(), RateComponent(Component.RESIDUAL)],
+    [
+        AppearanceComponent(),
+        defcon(),
+        ConcedingComponent(),
+        RateComponent(Component.RESIDUAL),
+    ],
     ids=lambda c: str(c.component),
 )
 def test_every_component_returns_keyed_component_rows(component) -> None:
@@ -116,7 +129,12 @@ def test_every_component_returns_keyed_component_rows(component) -> None:
 
 @pytest.mark.parametrize(
     "component",
-    [AppearanceComponent(), defcon(), RateComponent(Component.RESIDUAL)],
+    [
+        AppearanceComponent(),
+        defcon(),
+        ConcedingComponent(),
+        RateComponent(Component.RESIDUAL),
+    ],
     ids=lambda c: str(c.component),
 )
 def test_no_component_reads_a_minutes_feature(component) -> None:
@@ -258,7 +276,12 @@ def test_rate_component_passes_negative_points_through() -> None:
 
 @pytest.mark.parametrize(
     "component",
-    [AppearanceComponent(), defcon(), RateComponent(Component.RESIDUAL)],
+    [
+        AppearanceComponent(),
+        defcon(),
+        ConcedingComponent(),
+        RateComponent(Component.RESIDUAL),
+    ],
     ids=lambda c: str(c.component),
 )
 def test_a_row_with_no_minutes_forecast_scores_zero(component) -> None:
@@ -303,6 +326,7 @@ def test_every_decomposed_def_component_is_declared() -> None:
         Component.DEFCON,
         Component.GOALS,
         Component.ASSISTS,
+        Component.CONCEDING,
         Component.RESIDUAL,
     }
 
@@ -350,3 +374,165 @@ def test_the_residual_model_is_the_monolith_minus_minutes() -> None:
     assert set(DefenderResidualPointsPredictor.FEATURES) == (
         set(DefenderPointsPredictor.FEATURES) - set(MINUTES_OUTPUTS)
     )
+
+
+# --- Conceding -------------------------------------------------------
+
+
+def test_conceding_pays_the_clean_sheet_off_the_full_match_rate() -> None:
+    """A midfielder's only conceding leg is the clean sheet.
+
+    Hand-computed against ``exp(-rate)``, which is P(no goals) for a
+    Poisson arrived at independently of the distribution the component
+    walks the rate through.
+    """
+    rate = 1.2
+    rows = ConcedingComponent().points(
+        scored_rows(rate, position="MID"),
+        minutes_rows(expected_minutes=90.0, p_sixty_plus=0.8),
+        BACKFILL_KIND,
+    )
+
+    assert rows["points"].item() == pytest.approx(1.0 * 0.8 * math.exp(-rate))
+
+
+def test_conceding_docks_the_expected_floor_of_half_the_goals() -> None:
+    """The deduction is E[floor(N / 2)], not P(N >= 2).
+
+    Hand-computed by summing ``floor(n / 2)`` against the Poisson mass at
+    each count -- a different expression from the survival-function sum
+    the component uses to reach the same expectation. The clean-sheet leg
+    is switched off with ``p_sixty_plus`` so the deduction stands alone.
+    """
+    rate = 2.0
+    rows = ConcedingComponent().points(
+        scored_rows(rate),
+        minutes_rows(expected_minutes=45.0, p_partial=0.0, p_sixty_plus=0.0),
+        BACKFILL_KIND,
+    )
+
+    exposed = rate * 45.0 / 90.0
+    expected = sum((n // 2) * poisson.pmf(n, exposed) for n in range(0, 30))
+    assert rows["points"].item() == pytest.approx(-expected, abs=1e-9)
+
+
+def test_conceding_docks_more_than_a_single_point_at_a_high_rate() -> None:
+    """A defence expected to ship three loses more than one point.
+
+    The specific mistake this guards: paying ``-1 * P(N >= 2)``, which is
+    bounded at one point however bad the defence, and which would price a
+    disaster fixture the same as a merely poor one.
+    """
+    rows = ConcedingComponent().points(
+        scored_rows(4.0),
+        minutes_rows(p_partial=0.0, p_sixty_plus=0.0),
+        BACKFILL_KIND,
+    )
+
+    assert rows["points"].item() < -1.0
+
+
+def test_conceding_rejects_a_position_it_has_no_clean_sheet_price_for() -> (
+    None
+):
+    """An unpriced position must fail rather than score null.
+
+    A null points value survives the sum as a null and blanks the whole
+    composed prediction, so this is the one failure mode worth raising on.
+    """
+    rows = scored_rows(1.0).with_columns(position=pl.lit("MNG"))
+
+    with pytest.raises(ValueError, match="no clean sheet value"):
+        ConcedingComponent().points(rows, minutes_rows(), BACKFILL_KIND)
+
+
+def test_conceding_docks_only_the_positions_fpl_docks() -> None:
+    """A midfielder keeps the clean sheet but is never docked."""
+    paid = {
+        position: ConcedingComponent()
+        .points(
+            scored_rows(3.0, position=position),
+            minutes_rows(p_partial=0.0, p_sixty_plus=0.0),
+            BACKFILL_KIND,
+        )["points"]
+        .item()
+        for position in ("GK", "DEF", "MID", "FWD")
+    }
+
+    assert paid["GK"] == pytest.approx(paid["DEF"])
+    assert paid["GK"] < 0.0
+    assert paid["MID"] == pytest.approx(0.0)
+    assert paid["FWD"] == pytest.approx(0.0)
+
+
+def test_conceding_pays_a_forward_nothing_at_all() -> None:
+    """No clean sheet, no deduction, whatever the fixture."""
+    rows = ConcedingComponent().points(
+        scored_rows(0.2, position="FWD"), minutes_rows(), BACKFILL_KIND
+    )
+
+    assert rows["points"].item() == pytest.approx(0.0)
+
+
+def test_conceding_reads_full_minutes_for_the_sheet_and_part_for_the_dock() -> (
+    None
+):
+    """The two legs take different exposures, by design.
+
+    Halving expected minutes must halve the deduction's exposure while
+    leaving the clean-sheet probability alone -- the asymmetry that stops
+    a rotation risk being credited with a better clean-sheet chance than
+    the defender who plays every minute of the same fixture.
+    """
+    rate = 1.5
+    full = ConcedingComponent().points(
+        scored_rows(rate, position="MID"),
+        minutes_rows(expected_minutes=90.0, p_sixty_plus=0.7),
+        BACKFILL_KIND,
+    )
+    half = ConcedingComponent().points(
+        scored_rows(rate, position="MID"),
+        minutes_rows(expected_minutes=45.0, p_sixty_plus=0.7),
+        BACKFILL_KIND,
+    )
+
+    # MID is never docked, so any difference could only come from the
+    # clean-sheet leg having been scaled.
+    assert full["points"].item() == pytest.approx(half["points"].item())
+
+    docked = [
+        ConcedingComponent()
+        .points(
+            scored_rows(rate),
+            minutes_rows(
+                expected_minutes=expected, p_partial=0.0, p_sixty_plus=0.0
+            ),
+            BACKFILL_KIND,
+        )["points"]
+        .item()
+        for expected in (90.0, 45.0)
+    ]
+    assert docked[0] < docked[1] < 0.0
+
+
+def test_conceding_records_its_intermediates() -> None:
+    """The rate, clean-sheet chance and deduction are stored."""
+    rows = ConcedingComponent().points(
+        scored_rows(1.1), minutes_rows(), BACKFILL_KIND
+    )
+
+    diagnostics = json.loads(rows["diagnostics"].item())
+    assert diagnostics["rate"] == pytest.approx(1.1)
+    assert 0.0 <= diagnostics["p_clean_sheet"] <= 1.0
+    assert diagnostics["expected_deduction"] > 0.0
+
+
+def test_conceding_survives_a_negative_predicted_rate() -> None:
+    """A regressor undershooting below zero is a certain clean sheet."""
+    rows = ConcedingComponent().points(
+        scored_rows(-1.0, position="MID"),
+        minutes_rows(p_sixty_plus=1.0),
+        BACKFILL_KIND,
+    )
+
+    assert rows["points"].item() == pytest.approx(1.0)

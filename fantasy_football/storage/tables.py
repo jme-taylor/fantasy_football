@@ -429,6 +429,27 @@ TEST_POINTS_PREDICTION = Table(
     order_by=("run_id", "season", "gw", "element", "opponent"),
 )
 
+# Team grain, unlike every other evaluation table. The conceding head
+# predicts one number per team-fixture; fanning its fold rows out to the
+# eleven players who share it would store the same prediction eleven
+# times and make the error analysis report a sample size the model never
+# saw.
+TEST_CONCEDING_PREDICTION = Table(
+    name="test_conceding_prediction",
+    schema={
+        "run_id": pl.Utf8,
+        "season": pl.Utf8,
+        "gw": pl.Int64,
+        "team": pl.Utf8,
+        "opposition": pl.Utf8,
+        "predicted_conceded": pl.Float64,
+        "actual_conceded": pl.Float64,
+        "features": pl.Utf8,
+    },
+    primary_key=("run_id", "season", "gw", "team", "opposition"),
+    order_by=("run_id", "season", "gw", "team", "opposition"),
+)
+
 TEST_MINUTES_PREDICTION = Table(
     name="test_minutes_prediction",
     schema={
@@ -499,6 +520,7 @@ TABLES: tuple[Table, ...] = (
     POINTS_PREDICTION,
     TEST_POINTS_PREDICTION,
     TEST_MINUTES_PREDICTION,
+    TEST_CONCEDING_PREDICTION,
     PLAYER_SEASON,
     PLAYER_SNAPSHOT,
 )
