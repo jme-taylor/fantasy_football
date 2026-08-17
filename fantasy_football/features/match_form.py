@@ -65,7 +65,11 @@ from fantasy_football.features.naming import (
     FALLBACK_IDENTITY_PREFIX,
     rolling_column_name,
 )
-from fantasy_football.features.team_form import window_frame
+from fantasy_football.features.team_form import (
+    penalty_exposure_sql,
+    register_team_penalty_form,
+    window_frame,
+)
 from fantasy_football.storage.coverage import (
     FCI_COLUMN_SEASONS,
     FCI_EMPTY_COLUMNS,
@@ -98,10 +102,14 @@ PER90_STATS: tuple[str, ...] = (
 
 # Stats windowed the same way but sourced from ``player_match_fpl``.
 # FCI publishes no cards at all, and Vaastav's go back to 2016-17 -- six
-# seasons further than any FCI column.
+# seasons further than any FCI column. ``goals_scored`` is here rather
+# than in ``PER90_STATS`` for the same reason the goals target is: FCI's
+# match stats span every competition, so its goals column would carry a
+# cup goal into a league gameweek.
 FPL_PER90_STATS: tuple[str, ...] = (
     "yellow_cards",
     "red_cards",
+    "goals_scored",
 )
 
 # GK specific stats
@@ -154,6 +162,29 @@ DEFCON_FORM_STATS: tuple[str, ...] = (
     "cbit_ten_plus_rate",
     "cbit_std",
 )
+
+
+# The player's own penalty counters, summed into one attempt count.
+PENALTY_COMPONENT_STATS: tuple[str, ...] = (
+    "penalties_scored",
+    "penalties_missed",
+)
+
+#: Expected penalty attempts per 90, built in ``features/team_form.py``.
+PENALTY_EXPOSURE_COLUMN = "expected_pen_attempts_per_90"
+
+#: 1.0 when the window carried no xG-bearing appearance. Read the
+#: comment on :data:`ANCHOR_STAT` for what that does and does not mean.
+NO_FORM_COLUMN = "has_no_form"
+
+# The stat whose absence stands in for "no evidence". FCI publishes xG
+# for every appearance it files, so a null rate means the window held no
+# such appearance -- a debut, or a window sitting entirely before FCI
+# coverage begins in 2024-25. The second case is why this reads as "no
+# xG behind him" rather than "no form at all": an established player
+# early in 2024-25 trips it despite a full window of appearances, which
+# is honest about the feature set even though it is not a debut.
+ANCHOR_STAT = "xg"
 
 
 def defcon_form_columns(
@@ -385,6 +416,7 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
         ]
         + [cumulative_column_name(stat) for stat in CUMULATIVE_STATS]
         + list(defcon_form_columns(rolling_window))
+        + [PENALTY_EXPOSURE_COLUMN, NO_FORM_COLUMN]
         + list(FORM_CONTEXT_COLUMNS)
     )
 
@@ -461,6 +493,18 @@ def form_sql(
         f"coalesce(o.{stat}, 0)" for stat in DEFCON_COMPONENT_STATS
     )
     cbit = f"CASE WHEN {absent} THEN NULL ELSE {totalled} END AS cbit"
+    validate_stats(PENALTY_COMPONENT_STATS)
+    pen_attempts = " + ".join(
+        f"coalesce(o.{stat}, 0)" for stat in PENALTY_COMPONENT_STATS
+    )
+    pen = f"{pen_attempts} AS pen_attempts"
+    player_pen_std = "sum(a.pen_attempts) OVER season_to_date"
+    penalty_exposure = penalty_exposure_sql(
+        player_pen_std,
+        "a.team_pen_attempts_season_to_date",
+        "a.team_matches_season_to_date",
+    )
+    anchor = per90_column_name(ANCHOR_STAT, rolling_window)
     defcon_rate, defcon_hit_rate, defcon_spread = defcon_form_columns(
         rolling_window
     )
@@ -506,6 +550,9 @@ appearances AS (
         m.total_points,
         {rolling_identity_sql()} AS rolling_identity,
         {cbit},
+        {pen},
+        tp.team_pen_attempts_season_to_date,
+        tp.team_matches_season_to_date,
         {stat_columns}
     FROM player_match AS m
     LEFT JOIN player_season AS s
@@ -523,6 +570,22 @@ appearances AS (
         AND f.gw            = m.gw
         AND f.element       = m.element
         AND f.opponent_team = m.opponent
+    -- The club he turned out for that week, not the club the FCI
+    -- snapshot ends the season with. Opposition is in the join for the
+    -- same reason it is in points.py's: without it a double gameweek
+    -- matches both of the club's fixtures and fans the row out.
+    LEFT JOIN player_week AS pw
+        ON  pw.season  = m.season
+        AND pw.gw      = m.gw
+        AND pw.element = m.element
+    LEFT JOIN fpl_team_id AS opp_id
+        ON  opp_id.season  = m.season
+        AND opp_id.team_id = m.opponent
+    LEFT JOIN team_penalty_form AS tp
+        ON  tp.season     = m.season
+        AND tp.gw         = m.gw
+        AND tp.team       = pw.team
+        AND tp.opposition = opp_id.team
     WHERE m.minutes > 0
 )"""
     if inclusive:
@@ -551,6 +614,8 @@ SELECT
              WHEN a.cbit >= {DEFCON_THRESHOLD_DEF} THEN 1.0
              ELSE 0.0 END) OVER form AS {defcon_hit_rate},
     stddev_samp(a.cbit) OVER form AS {defcon_spread},
+    {penalty_exposure} AS {PENALTY_EXPOSURE_COLUMN},
+    CASE WHEN {anchor} IS NULL THEN 1.0 ELSE 0.0 END AS {NO_FORM_COLUMN},
     count(*) OVER form AS form_matches,
     sum(a.minutes) OVER form AS form_minutes,
     date_diff('day', max(a.kickoff_time) OVER form, a.kickoff_time)
@@ -568,10 +633,21 @@ WINDOW
         {std_frame}
     )
 """
+    # The defcon columns are windowed exactly like the per-90 rates, so
+    # they are computed in the same CTE and carried by the same as-of
+    # join. Emitting them on the inclusive view alone would leave the
+    # forward path working and training unable to bind at all.
+    defcon_windowed = f"""90.0 * sum(a.cbit) OVER form
+            / nullif(sum(CASE WHEN a.cbit IS NOT NULL THEN a.minutes END)
+                     OVER form, 0) AS {defcon_rate},
+        avg(CASE WHEN a.cbit IS NULL THEN NULL
+                 WHEN a.cbit >= {DEFCON_THRESHOLD_DEF} THEN 1.0
+                 ELSE 0.0 END) OVER form AS {defcon_hit_rate},
+        stddev_samp(a.cbit) OVER form AS {defcon_spread}"""
     rate_names = [
         per90_column_name(stat, rolling_window)
         for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
-    ]
+    ] + [defcon_rate, defcon_hit_rate, defcon_spread]
     carried_rates = ",\n    ".join(f"p.{name}" for name in rate_names)
     # Season-scoped: a player whose last appearance was last season
     # starts this one on nil rather than inheriting its closing tally.
@@ -589,6 +665,8 @@ form AS (
         a.kickoff_time,
         {rates},
         {totals},
+        {defcon_windowed},
+        {penalty_exposure} AS {PENALTY_EXPOSURE_COLUMN},
         count(*) OVER form AS form_matches,
         sum(a.minutes) OVER form AS form_minutes
     FROM appearances AS a
@@ -631,6 +709,12 @@ SELECT
     f.total_points,
     {carried_rates},
     {carried_totals},
+    -- Not season-guarded, unlike the card totals above. A card count is
+    -- a running tally that resets; penalty duty is a standing role that
+    -- does not, so an early-season row is better served by last
+    -- season's settled figures than by a zero.
+    p.{PENALTY_EXPOSURE_COLUMN},
+    CASE WHEN p.{anchor} IS NULL THEN 1.0 ELSE 0.0 END AS {NO_FORM_COLUMN},
     coalesce(p.form_matches, 0) AS form_matches,
     p.form_minutes,
     date_diff('day', p.kickoff_time, f.kickoff_time)
@@ -668,6 +752,10 @@ def register_match_form(
         f"CREATE OR REPLACE TEMP VIEW {_VIEW_NAME}_opta AS "
         "SELECT * FROM opta_match"
     )
+    # The penalty exposure feature is the one cross-player quantity here:
+    # a player's share of his club's penalties needs his team-mates'
+    # attempts, which is a team-level aggregation and lives there.
+    register_team_penalty_form(connection)
     view = _INCLUSIVE_VIEW_NAME if inclusive else _VIEW_NAME
     connection.execute(
         f"CREATE OR REPLACE TEMP VIEW {view} AS "

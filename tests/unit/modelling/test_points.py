@@ -122,7 +122,7 @@ def test_model_frame_sql_filters_to_position_and_played_matches(
 ) -> None:
     """The SQL restricts to this position and rows with recorded minutes."""
     sql = predictor.model_frame_sql()
-    assert f"s.position = '{predictor.POSITION}'" in sql
+    assert f"s.position IN ('{predictor.POSITION}')" in sql
     assert "m.minutes IS NOT NULL" in sql
 
 
@@ -1507,9 +1507,12 @@ def test_a_model_fitted_on_other_features_is_refused(
     # Fitted on one more column than the code now builds, exactly as the
     # live models were before their feature lists were trimmed.
     stale = predictor.make_pipeline()
+    # Named for a column no position builds. Using one that is still in
+    # FEATURES overwrites it rather than adding a column, so the fitted
+    # feature list matches and the guard never fires.
     stale.fit(
         frame.select(predictor.FEATURES)
-        .with_columns(days_since_last_appearance=pl.lit(1.0))
+        .with_columns(a_since_retired_feature=pl.lit(1.0))
         .to_pandas(),
         frame[predictor.TARGET].to_list(),
     )
@@ -1522,7 +1525,7 @@ def test_a_model_fitted_on_other_features_is_refused(
         assert predictor.production_model() is None
 
     assert "move the alias" in caplog.text.lower()
-    assert "days_since_last_appearance" in caplog.text
+    assert "a_since_retired_feature" in caplog.text
 
 
 def test_a_matching_model_is_returned(

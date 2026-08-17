@@ -56,6 +56,16 @@ from fantasy_football.modelling.goalkeeper import (
     GOALKEEPER_SPEC,
     GoalkeeperPointsPredictor,
 )
+from fantasy_football.modelling.goals import (
+    EXPERIMENT_NAME as GOALS_EXPERIMENT_NAME,
+)
+from fantasy_football.modelling.goals import (
+    GOALS_SPEC,
+    GoalsRatePredictor,
+)
+from fantasy_football.modelling.goals import (
+    TRAINING_SEASONS as GOALS_TRAINING_SEASONS,
+)
 from fantasy_football.modelling.midfielder import (
     MIDFIELDER_SPEC,
     MidfielderPointsPredictor,
@@ -283,6 +293,23 @@ def main(
         defcon_predictor.train_and_register_model()
         defcon_predictor.backfill_model_predictions()
         defcon_predictor.predict_forward()
+
+        # Pooled over DEF, MID and FWD but scored only for DEF, since
+        # the other two are still one undecomposed model each. Wiring
+        # them up later is a subclass with a different POSITION reading
+        # this same artefact, not a retrain.
+        goals_predictor = GoalsRatePredictor(
+            experiment_name=GOALS_EXPERIMENT_NAME,
+            params={},
+            model_spec=GOALS_SPEC,
+            connection=connection,
+            fold_strategy=TrainTestSplitStrategy(
+                test_seasons=GOALS_TRAINING_SEASONS
+            ),
+        )
+        goals_predictor.train_and_register_model()
+        goals_predictor.backfill_model_predictions()
+        goals_predictor.predict_forward()
 
         residual_predictor = DefenderResidualPointsPredictor(
             experiment_name="def-residual-points-model",

@@ -148,6 +148,10 @@ def _seed_one_match(
                 "opponent_team": TEAM_IDS[ARSENAL],
                 "minutes": minutes,
                 "defensive_contribution": fpl_defcon,
+                # A published nil, not an absent count. The residual
+                # excludes legs whose goal count no provider published,
+                # since their goal points are still inside its target.
+                "goals_scored": 0,
             }
         ],
     )

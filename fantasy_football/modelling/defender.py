@@ -13,6 +13,7 @@ from fantasy_football.constants import (
     DEFCON_THRESHOLD_DEF,
 )
 from fantasy_football.modelling.components import (
+    GOALS_POINTS_BY_POSITION,
     MINUTES_OUTPUTS,
     Component,
     RateComponent,
@@ -22,6 +23,7 @@ from fantasy_football.modelling.defcon import (
     DEFCON_JOINS,
     MINUTES_FLOOR,
 )
+from fantasy_football.modelling.goals import goals_count_sql
 from fantasy_football.modelling.points import PositionPointsPredictor
 from fantasy_football.modelling.predictor import ModelSpec
 from fantasy_football.storage.tables import (
@@ -138,6 +140,21 @@ DEFENDER_SPEC = ModelSpec(
 # all. They are awarded per match on a BPS ranking, so scaling them by
 # minutes is an approximation, and they are the largest source of noise
 # left in this target. Bonus is the next component to split out.
+#
+# Goals carry no season guard, unlike defcon: they have always scored,
+# so there is no regime to key the deduction on. The count deducted is
+# the expression the goals model targets, and they must stay the same
+# expression -- a target reading FPL's count against a deduction reading
+# FCI's would leave the components summing to something other than the
+# total, and nothing would fail.
+#
+# Coalesced to zero so the target stays defined for every scored leg --
+# a null here propagates through the whole expression and reaches the
+# fit as a NaN rather than dropping the row. Legs where neither provider
+# published a count are excluded from the *fit* instead, by
+# ``training_row_filter``: their goal points are still sitting in this
+# target while the goals component predicts them separately, so learning
+# from them would teach the residual to pay for goals twice.
 RESIDUAL_TARGET_SQL = f"""(
     m.total_points
     - CASE WHEN m.minutes >= 60 THEN 2 WHEN m.minutes > 0 THEN 1 ELSE 0 END
@@ -147,6 +164,8 @@ RESIDUAL_TARGET_SQL = f"""(
           THEN 2
           ELSE 0
       END
+    - {GOALS_POINTS_BY_POSITION[POSITION]}
+      * coalesce({goals_count_sql("pmf", "oc")}, 0)
 ) * 90.0 / nullif(m.minutes, 0) AS residual_points_per_90"""
 
 RESIDUAL_REGISTERED_MODEL = "defender_residual_points_regressor"
@@ -174,8 +193,21 @@ class DefenderResidualPointsPredictor(DefenderPointsPredictor):
     @property
     @override
     def target_sql(self) -> str:
-        """Return points per 90 net of appearance and defcon."""
+        """Return points per 90 net of appearance, defcon and goals."""
         return RESIDUAL_TARGET_SQL
+
+    @property
+    @override
+    def training_row_filter(self) -> str:
+        """Exclude legs whose goal count neither provider published.
+
+        Their goal points are still inside this target, because the
+        deduction coalesces an unknown count to nothing, so a fit that
+        included them would learn to pay for goals the goals component
+        is separately paying for. They are still scored -- serving reads
+        features, not the target.
+        """
+        return f"\n  AND {goals_count_sql('pmf', 'oc')} IS NOT NULL"
 
     @property
     @override

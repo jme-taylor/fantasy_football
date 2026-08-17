@@ -89,6 +89,95 @@ TEAM_CONTEXT_COLUMNS: tuple[str, ...] = (
 _MATCH_VIEW = "team_match"
 _FORM_VIEW = "team_match_form"
 _INCLUSIVE_FORM_VIEW = "team_match_form_inclusive"
+_PENALTY_VIEW = "team_penalty_form"
+
+# Pseudo-matches of prior belief behind the penalty share, and the share
+# they assert. A club wins roughly six penalties a season, so an
+# unshrunk share is 1.0 off a single attempt; these pull an unproven
+# taker back towards "probably not him".
+PENALTY_PRIOR_WEIGHT = 2.0
+PENALTY_PRIOR_SHARE = 0.1
+
+# The team penalty columns a consumer needs to build a player's share.
+TEAM_PENALTY_COLUMNS: tuple[str, ...] = (
+    "team_pen_attempts_season_to_date",
+    "team_matches_season_to_date",
+)
+
+# Season-scoped and inclusive of the row's own match. Consumers offset
+# it themselves: the player form view carries these through an as-of
+# join to the player's *previous* appearance, which is what keeps a
+# match out of its own feature.
+_TEAM_PENALTY_SQL = f"""
+CREATE OR REPLACE TEMP VIEW {_PENALTY_VIEW} AS
+SELECT
+    season,
+    gw,
+    team,
+    opposition,
+    kickoff_time,
+    coalesce(sum(pen_attempts_for) OVER season_to_date, 0)
+        AS team_pen_attempts_season_to_date,
+    count(*) OVER season_to_date AS team_matches_season_to_date
+FROM {_MATCH_VIEW}
+WINDOW season_to_date AS (
+    PARTITION BY team, season
+    ORDER BY kickoff_time
+    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+)
+"""
+
+
+def penalty_exposure_sql(
+    player_attempts: str,
+    team_attempts: str,
+    team_matches: str,
+) -> str:
+    """Return the SQL for a player's expected penalty attempts per 90.
+
+    The product of two things, neither of which is worth much alone: how
+    often the club wins a penalty, and how much of its penalty duty is
+    this player's. A nominal taker at a club that never wins one is
+    worth nothing, and a club that wins plenty tells you nothing about
+    which of its eleven players steps up.
+
+    The share is shrunk towards :data:`PENALTY_PRIOR_SHARE`, so one
+    attempt does not make a player the designated taker, and the rate is
+    null-guarded so a club with no matches behind it scores zero rather
+    than dividing by nothing.
+
+    The share is clamped rather than merely bounded by construction. A
+    player's attempts are accumulated across every club he turned out
+    for this season while the denominator is only his current club's, so
+    a mid-season signing who took two penalties for his old side and
+    joins one that has won none would otherwise exceed one.
+
+    Per 90 rather than per match needs no scaling: a club's penalty rate
+    is already per full match, and a player on the pitch for all of one
+    is exposed to all of it.
+
+    Parameters
+    ----------
+    player_attempts : str
+        Expression for the player's season-to-date penalty attempts.
+    team_attempts : str
+        Expression for his club's season-to-date penalty attempts.
+    team_matches : str
+        Expression for his club's season-to-date match count.
+
+    Returns
+    -------
+    str
+        A scalar expression, unaliased.
+    """
+    share = (
+        f"least(1.0, (coalesce({player_attempts}, 0) "
+        f"+ {PENALTY_PRIOR_WEIGHT} * {PENALTY_PRIOR_SHARE}) "
+        f"/ (coalesce({team_attempts}, 0) + {PENALTY_PRIOR_WEIGHT}))"
+    )
+    rate = f"coalesce({team_attempts}, 0) " f"/ nullif({team_matches}, 0)"
+    return f"coalesce({rate}, 0.0) * {share}"
+
 
 # One row per team per fixture. The self-join flips each side's own
 # figures into the other's "against" columns.
@@ -102,6 +191,8 @@ WITH sides AS (
         o.is_home,
         sum(o.xg)                     AS xg_for,
         max(o.team_goals_conceded)    AS goals_against,
+        sum(coalesce(o.penalties_scored, 0)
+            + coalesce(o.penalties_missed, 0)) AS pen_attempts_for,
         count(*)                      AS players
     FROM opta_match AS o
     GROUP BY o.season, o.gw, o.match_id, o.is_home
@@ -138,6 +229,7 @@ SELECT
         WHEN n.goals_against = 0 THEN 1
         ELSE 0
     END AS clean_sheet,
+    n.pen_attempts_for,
     n.players,
     opp.players       AS opposition_players
 FROM named AS n
@@ -266,6 +358,25 @@ WINDOW form AS (
 """
 
 
+def register_team_penalty_form(
+    connection: "DuckDBPyConnection",
+) -> None:
+    """Create ``team_match`` and the team penalty view.
+
+    Split out of :func:`register_team_form` because the player form view
+    reads it too, and a player-level module should not have to know that
+    a team-level view is what it depends on. Idempotent, so the two
+    callers can both run it on one connection.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection with ``register_lookups`` already run.
+    """
+    connection.execute(_TEAM_MATCH_SQL)
+    connection.execute(_TEAM_PENALTY_SQL)
+
+
 def register_team_form(
     connection: "DuckDBPyConnection",
     rolling_window: int = ROLLING_WINDOW,
@@ -285,7 +396,7 @@ def register_team_form(
         When True, register ``team_match_form_inclusive`` built on the
         inclusive frame instead of ``team_match_form``.
     """
-    connection.execute(_TEAM_MATCH_SQL)
+    register_team_penalty_form(connection)
     view = _INCLUSIVE_FORM_VIEW if inclusive else _FORM_VIEW
     connection.execute(
         f"CREATE OR REPLACE TEMP VIEW {view} AS "

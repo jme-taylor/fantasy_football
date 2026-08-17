@@ -185,6 +185,39 @@ def attach_rolling_identity(
     return frame.join(identities, on=["season", "element"], how="left")
 
 
+#: The indicator column standing for each position, for models pooled
+#: across more than one. A tree cannot split on a string, and the shared
+#: pipeline carries no categorical encoder, so these are selected as
+#: dummies in SQL the same way ``is_home`` is.
+POSITION_DUMMIES: dict[str, str] = {
+    "GK": "is_goalkeeper",
+    "DEF": "is_defender",
+    "MID": "is_midfielder",
+    "FWD": "is_forward",
+}
+
+
+def position_dummy_names(positions: Sequence[str]) -> list[str]:
+    """Return the indicator column names for a pooled model's positions.
+
+    Empty for a single position: the column would be constant, which
+    tells a model nothing and costs a split to discover.
+
+    Parameters
+    ----------
+    positions : Sequence[str]
+        The positions a model trains on.
+
+    Returns
+    -------
+    list[str]
+        One name per position, in the order given, or empty.
+    """
+    if len(positions) < 2:
+        return []
+    return [POSITION_DUMMIES[position] for position in positions]
+
+
 class PositionPointsPredictor(Predictor):
     """Points regressor for one FPL position.
 
@@ -193,10 +226,21 @@ class PositionPointsPredictor(Predictor):
     :class:`~fantasy_football.modelling.predictor.ModelSpec`, since that
     is what keeps each position's rows in ``points_prediction`` from
     overwriting another's.
+
+    ``POSITION`` is the position this model *serves*, which is not
+    necessarily the population it learns from: see
+    ``TRAINING_POSITIONS``. Neither ``POSITION`` nor the spec's
+    ``position`` describes the training population.
     """
 
-    #: The ``player_season.position`` value this model serves.
+    #: The ``player_season.position`` value this model serves. Scoped
+    #: scoring, writing and evaluation, not training.
     POSITION: ClassVar[str]
+    #: The positions this model trains on, or empty for ``POSITION``
+    #: alone. A pooled model learns from positions it never writes a
+    #: prediction for -- goals are the same event whoever scores them,
+    #: and a defender's are far too rare to estimate on their own.
+    TRAINING_POSITIONS: ClassVar[tuple[str, ...]] = ()
     #: The column this model predicts.
     TARGET: ClassVar[str] = TARGET
     #: The scoring component this model's predictions are stored as.
@@ -225,6 +269,25 @@ class PositionPointsPredictor(Predictor):
     #: keys, target and features -- scoring inputs rather than model
     #: inputs, so they must never appear in ``FEATURES``.
     EXTRA_COLUMNS: ClassVar[tuple[str, ...]] = ()
+    #: Values to fill a feature's nulls with, by feature name. Only for
+    #: features whose null has a known meaning; everything else is left
+    #: to the pipeline's imputer, which learns the fill from the data.
+    FEATURE_FILLS: ClassVar[dict[str, float]] = {}
+
+    @property
+    def training_positions(self) -> tuple[str, ...]:
+        """Return the positions this model's training frame spans."""
+        return self.TRAINING_POSITIONS or (self.POSITION,)
+
+    def fill_features(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """Apply ``FEATURE_FILLS`` to whichever columns are present."""
+        return frame.with_columns(
+            [
+                pl.col(name).fill_null(value)
+                for name, value in self.FEATURE_FILLS.items()
+                if name in frame.columns
+            ]
+        )
 
     @property
     @override
@@ -244,7 +307,25 @@ class PositionPointsPredictor(Predictor):
 
     @property
     def row_filter(self) -> str:
-        """Return an extra WHERE predicate. Empty by default."""
+        """Return an extra WHERE predicate. Empty by default.
+
+        Applied when fitting *and* when scoring, so it governs which
+        fixture legs this component exists for at all. A leg missing one
+        of its position's components is dropped from the composed
+        prediction entirely, so narrowing this narrows the whole
+        position's output -- put fit-only restrictions in
+        ``training_row_filter`` instead.
+        """
+        return ""
+
+    @property
+    def training_row_filter(self) -> str:
+        """Return a WHERE predicate applied when fitting only.
+
+        For rows that would teach the model something false but still
+        have to be scored: a cameo whose per-90 rate is arithmetic
+        noise, or a debut with no form behind it.
+        """
         return ""
 
     @property
@@ -314,7 +395,7 @@ class PositionPointsPredictor(Predictor):
             if column not in SEASON_TO_DATE_COLUMNS
         ]
 
-    def model_frame_sql(self) -> str:
+    def model_frame_sql(self, training: bool = True) -> str:
         """Return the SELECT behind this position's model frame.
 
         Joins the match-grain target on ``player_match`` to the minutes
@@ -326,6 +407,13 @@ class PositionPointsPredictor(Predictor):
         ``TRAINING_SEASONS``, where a position sets it, adds a season
         predicate. Positions leaving it None generate exactly the SQL
         they generated before it existed.
+
+        Parameters
+        ----------
+        training : bool, optional
+            When False, ``training_row_filter`` is left off, so the
+            frame spans every leg this component must be scored for
+            rather than only the ones it may learn from.
 
         Returns
         -------
@@ -372,13 +460,25 @@ class PositionPointsPredictor(Predictor):
                 f"'{season}'" for season in self.TRAINING_SEASONS
             )
             seasons = f"\n  AND m.season IN ({named})"
+        fit_only = self.training_row_filter if training else ""
+        positions = ", ".join(
+            f"'{position}'" for position in self.training_positions
+        )
+        dummies = "".join(
+            f"\n    CAST(s.position = '{position}' AS DOUBLE) AS {name},"
+            for position, name in zip(
+                self.training_positions,
+                position_dummy_names(self.training_positions),
+                strict=False,
+            )
+        )
         return f"""
 SELECT
     m.season,
     m.gw,
     m.element,
     m.opponent,
-    {self.target_sql},{extra}
+    {self.target_sql},{extra}{dummies}
     m.is_home,{minutes}
     {player},
     {own},
@@ -387,7 +487,7 @@ FROM player_match AS m
 INNER JOIN player_season AS s
     ON  m.element = s.element
     AND m.season  = s.season
-    AND s.position = '{self.POSITION}'
+    AND s.position IN ({positions})
 -- prediction_kind is part of the minutes primary key, so a fixture that
 -- was forward-scored before it was played and backfilled afterwards
 -- carries both kinds. Joining unfiltered would fan the training row out.
@@ -421,7 +521,7 @@ LEFT JOIN team_match_form AS opp
     AND opp.gw         = m.gw
     AND opp.team       = opp_id.team
     AND opp.opposition = pw.team{self.extra_joins}
-WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}
+WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}{fit_only}
 """
 
     @override
@@ -438,10 +538,67 @@ WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}
             ``KEY_COLUMNS``, ``TARGET`` and ``FEATURES``, in that order.
         """
         register_feature_views(self.connection)
-        frame = self.connection.sql(self.model_frame_sql()).pl()
+        frame = self.fill_features(
+            self.connection.sql(self.model_frame_sql()).pl()
+        )
         return frame.select(
             KEY_COLUMNS + [self.TARGET] + self.frame_columns + self.FEATURES
         )
+
+    @override
+    def scoring_frame(self) -> pl.DataFrame:
+        """Return every leg this model must write a component for.
+
+        Two things separate this from the training frame, and both are
+        silent if they are missed. It keeps the legs
+        ``training_row_filter`` drops, because a leg missing one of its
+        position's components is dropped from the composed prediction
+        altogether -- a stricter fit would otherwise delete predictions
+        the other components were happy to make. And it restricts a
+        pooled model to the position it serves, because the written rows
+        are stamped ``POSITION`` regardless of which position they came
+        from, so a pooled model would file every midfielder as a
+        defender and price his goals at six points.
+        """
+        if not self._scoring_differs_from_training:
+            return super().scoring_frame()
+        if self._scoring_dataframe is None:
+            register_feature_views(self.connection)
+            frame = self.fill_features(
+                self.connection.sql(self.model_frame_sql(training=False)).pl()
+            ).select(
+                KEY_COLUMNS
+                + [self.TARGET]
+                + self.frame_columns
+                + self.FEATURES
+            )
+            self._scoring_dataframe = self._own_position_rows(frame)
+        return self._scoring_dataframe
+
+    @property
+    def _scoring_differs_from_training(self) -> bool:
+        """Whether this model scores rows it does not train on.
+
+        Only two things make it so, and a model with neither reuses the
+        training frame exactly as it did before the split existed.
+        """
+        return (
+            bool(self.training_row_filter) or len(self.training_positions) > 1
+        )
+
+    def _own_position_rows(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """Keep only the rows belonging to the position this serves.
+
+        Read off the position indicator rather than a position column,
+        which the frame does not carry. A model spanning one position
+        has no indicator and needs no filter -- every row is already
+        its own.
+        """
+        names = position_dummy_names(self.training_positions)
+        if not names:
+            return frame
+        own = POSITION_DUMMIES[self.POSITION]
+        return frame.filter(pl.col(own) == 1.0)
 
     def make_pipeline(self) -> Pipeline:
         """Build the median-imputing random-forest pipeline.
@@ -618,6 +775,20 @@ WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}
             frame, opposition, ["opponent_name"], self.opposition_feature_names
         )
         frame = frame.with_columns(pl.col("is_home").cast(pl.Float64))
+        # Constant on this path, unlike in training: the forward frame
+        # was filtered to POSITION a few lines up, so every row is this
+        # model's own position whatever else it was trained on.
+        frame = frame.with_columns(
+            [
+                pl.lit(float(position == self.POSITION)).alias(name)
+                for position, name in zip(
+                    self.training_positions,
+                    position_dummy_names(self.training_positions),
+                    strict=False,
+                )
+            ]
+        )
+        frame = self.fill_features(frame)
         missing = [name for name in self.FEATURES if name not in frame.columns]
         if missing:
             frame = frame.with_columns(
