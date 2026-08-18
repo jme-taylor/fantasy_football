@@ -99,6 +99,28 @@ def delete_season(
     connection.execute(f"DELETE FROM {table_name} WHERE season = ?", [season])
 
 
+def equality_clauses(
+    equals: dict[str, object],
+) -> tuple[list[str], list[object]]:
+    """Return SQL clauses and params for column-to-value predicates.
+
+    A tuple or list value becomes an ``IN`` instead of an ``=`` -- what a
+    model serving several positions needs, since deleting one position's
+    rows and inserting all of them would store the rest twice.
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    for column, value in equals.items():
+        if isinstance(value, (tuple, list)):
+            placeholders = ", ".join("?" for _ in value)
+            clauses.append(f"{column} IN ({placeholders})")
+            params.extend(value)
+        else:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    return clauses, params
+
+
 def delete_where(
     connection: duckdb.DuckDBPyConnection,
     table_name: str,
@@ -121,16 +143,7 @@ def delete_where(
     gw_from : int | None, optional
         When given, also require ``gw >= gw_from``. Defaults to None.
     """
-    clauses: list[str] = []
-    params: list[object] = []
-    for column, value in equals.items():
-        if isinstance(value, (tuple, list)):
-            placeholders = ", ".join("?" for _ in value)
-            clauses.append(f"{column} IN ({placeholders})")
-            params.extend(value)
-        else:
-            clauses.append(f"{column} = ?")
-            params.append(value)
+    clauses, params = equality_clauses(equals)
     if gw_from is not None:
         clauses.append("gw >= ?")
         params.append(gw_from)
@@ -201,15 +214,7 @@ def distinct(
     query = f"SELECT DISTINCT {column} FROM {table_name}"
     params: list[object] = []
     if equals:
-        clauses: list[str] = []
-        for name, value in equals.items():
-            if isinstance(value, (tuple, list)):
-                placeholders = ", ".join("?" for _ in value)
-                clauses.append(f"{name} IN ({placeholders})")
-                params.extend(value)
-            else:
-                clauses.append(f"{name} = ?")
-                params.append(value)
+        clauses, params = equality_clauses(equals)
         query += " WHERE " + " AND ".join(clauses)
     rows = connection.execute(query, params).fetchall()
     return {row[0] for row in rows}

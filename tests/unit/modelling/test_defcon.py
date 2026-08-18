@@ -11,8 +11,10 @@ import pytest
 
 from fantasy_football.modelling.components import Component
 from fantasy_football.modelling.defcon import (
+    CBIRT_SPEC,
     DEFCON_SPEC,
     MINUTES_FLOOR,
+    CbirtRatePredictor,
     DefconRatePredictor,
 )
 from fantasy_football.modelling.folds import ExpandingGameweekFoldStrategy
@@ -363,3 +365,26 @@ def test_fold_metrics_survive_a_fold_where_nobody_clears_the_threshold(
 
     assert metrics.hit_rate == pytest.approx(0.0)
     assert metrics.brier >= 0.0
+
+
+# --- Weighting -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("cls", "spec"),
+    [
+        (DefconRatePredictor, DEFCON_SPEC),
+        (CbirtRatePredictor, CBIRT_SPEC),
+    ],
+    ids=["cbit", "cbirt"],
+)
+def test_training_rows_are_weighted_by_minutes(
+    cls, spec, connection, synthetic_frame
+) -> None:
+    """A full ninety counts for more than a cameo when fitting."""
+    predictor = _predictor(cls, spec, connection)
+    frame = synthetic_frame(predictor, n_gws=1, n_players=3).with_columns(
+        minutes=pl.Series([90.0, 45.0, 9.0])
+    )
+
+    assert predictor.sample_weight(frame) == pytest.approx([90.0, 45.0, 9.0])

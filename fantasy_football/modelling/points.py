@@ -287,6 +287,7 @@ class PositionPointsPredictor(Predictor):
         return self.TRAINING_POSITIONS or (self.POSITION,)
 
     @property
+    @override
     def serving_positions(self) -> tuple[str, ...]:
         """Return the positions this model writes predictions for.
 
@@ -306,12 +307,6 @@ class PositionPointsPredictor(Predictor):
                 f"on them; TRAINING_POSITIONS is {self.training_positions}."
             )
         return served
-
-    @property
-    @override
-    def served_positions(self) -> tuple[str, ...]:
-        """Return every position this model writes rows for."""
-        return self.serving_positions
 
     def _served_position(self) -> pl.Expr:
         """Return each row's own position, read off its dummies.

@@ -28,9 +28,12 @@ from sklearn.metrics import brier_score_loss, log_loss
 
 from fantasy_football.constants import DEFCON_THRESHOLD_BY_POSITION
 from fantasy_football.features.match_form import (
+    CBIRT_VARIANT,
+    CBIT_VARIANT,
     DEFCON_COMPONENT_STATS,
     DEFCON_MID_FWD_COMPONENT_STATS,
     NO_FORM_COLUMN,
+    opta_count_sql,
 )
 from fantasy_football.modelling.components import (
     Component,
@@ -67,20 +70,9 @@ TRAINING_SEASONS = FCI_SEASONS
 MINUTES_FLOOR = 15
 
 
-def _opta_count(stats: tuple[str, ...], alias: str = "oc") -> str:
-    """Return the SQL summing FCI's counters into one count.
-
-    Null when FCI published none of them, rather than zero: a player
-    with no data did not make no clearances.
-    """
-    absent = " AND ".join(f"{alias}.{stat} IS NULL" for stat in stats)
-    totalled = " + ".join(f"coalesce({alias}.{stat}, 0)" for stat in stats)
-    return f"CASE WHEN {absent} THEN NULL ELSE {totalled} END"
-
-
 def _opta_cbit(alias: str = "oc") -> str:
     """Return the SQL summing FCI's four defender counters."""
-    return _opta_count(DEFCON_COMPONENT_STATS, alias)
+    return opta_count_sql(DEFCON_COMPONENT_STATS, alias)
 
 
 # FPL's own count where it is published, and FCI's reconstruction only
@@ -120,8 +112,7 @@ class DefconMetrics:
         return asdict(self)
 
 
-# Both decomposed DEF models read both CBIT sources: the rate model to
-# build its target, the residual model to know what to deduct.
+# Both CBIT sources, joined at match grain.
 DEFCON_JOINS = """
 LEFT JOIN opta_match AS oc
     ON  oc.season   = m.season
@@ -160,9 +151,7 @@ class DefconRatePredictor(PositionPointsPredictor):
     # in it, and composition would multiply them in a second time.
     FEATURES = [
         "is_home",
-        "cbit_per90_rolling_5",
-        "cbit_ten_plus_rate_rolling_5",
-        "cbit_std_rolling_5",
+        *CBIT_VARIANT.form_columns(),
         "tackles_per90_rolling_5",
         "interceptions_per90_rolling_5",
         "clearances_per90_rolling_5",
@@ -174,9 +163,7 @@ class DefconRatePredictor(PositionPointsPredictor):
     ]
 
     PLAYER_FORM_COLUMNS = [
-        "cbit_per90_rolling_5",
-        "cbit_ten_plus_rate_rolling_5",
-        "cbit_std_rolling_5",
+        *CBIT_VARIANT.form_columns(),
         "tackles_per90_rolling_5",
         "interceptions_per90_rolling_5",
         "clearances_per90_rolling_5",
@@ -271,27 +258,15 @@ MID_FWD_POSITION = "MID"
 
 CBIRT_REGISTERED_MODEL = "cbirt_rate_regressor"
 
-#: The positions paid on CBIRT. Pooled into one head: the rule, the
-#: count and the threshold are identical for both, so the target is the
-#: same quantity and only the level differs -- which the position dummy
-#: carries. Forwards clear twelve in under 1% of their appearances, far
-#: too rare to fit on their own.
+#: The positions paid on CBIRT, pooled into one head.
 CBIRT_POSITIONS: tuple[str, ...] = ("MID", "FWD")
 
-# FPL's own count first, FCI's published count second, FCI's
-# reconstruction from the five counters last. Reconciled on 2025-26,
-# where all three exist: FCI's published count agrees with FPL exactly on
-# every row it covers, and the reconstruction agrees on 93.0% of
-# midfielder and 97.0% of forward gameweeks, differing by one on most of
-# the rest. Only 15 rows in 5,585 fall on opposite sides of the
-# threshold, which is the only disagreement that reaches a prediction.
-#
-# The reconstruction is not a fallback for tidiness: FCI publishes its
-# own count from 2025-26 and Vaastav's ends there, so 2024-25 has
-# nothing else, and the live season has no Vaastav column at all.
+# FPL's count first, FCI's published count second, FCI's reconstruction
+# from the five counters last. See the module docstring for why all
+# three are needed.
 CBIRT_COUNT_SQL = (
     "coalesce(pmf.defensive_contribution, oc.defensive_contributions, "
-    f"{_opta_count(DEFCON_MID_FWD_COMPONENT_STATS)})"
+    f'{opta_count_sql(DEFCON_MID_FWD_COMPONENT_STATS, "oc")})'
 )
 
 
@@ -318,16 +293,11 @@ class CbirtRatePredictor(DefconRatePredictor):
     )
     FEATURE_FILLS: ClassVar[dict[str, float]] = {NO_FORM_COLUMN: 1.0}
 
-    # The defender head's list, on the CBIRT trio rather than the CBIT
-    # one and with recoveries added -- the counter that separates the two
-    # counts. The team columns run the same way for the same reason: a
-    # midfielder defends more when his club is under pressure.
+    # The defender head's list on the CBIRT trio, with recoveries added.
     FEATURES = [
         "is_home",
         *position_dummy_names(CBIRT_POSITIONS),
-        "cbirt_per90_rolling_5",
-        "cbirt_twelve_plus_rate_rolling_5",
-        "cbirt_std_rolling_5",
+        *CBIRT_VARIANT.form_columns(),
         "tackles_per90_rolling_5",
         "interceptions_per90_rolling_5",
         "clearances_per90_rolling_5",
@@ -340,9 +310,7 @@ class CbirtRatePredictor(DefconRatePredictor):
     ]
 
     PLAYER_FORM_COLUMNS = [
-        "cbirt_per90_rolling_5",
-        "cbirt_twelve_plus_rate_rolling_5",
-        "cbirt_std_rolling_5",
+        *CBIRT_VARIANT.form_columns(),
         "tackles_per90_rolling_5",
         "interceptions_per90_rolling_5",
         "clearances_per90_rolling_5",

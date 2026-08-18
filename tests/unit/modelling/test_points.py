@@ -76,6 +76,58 @@ SPECS = {
 }
 
 
+def test_training_seasons_drops_rows_outside_the_window(
+    connection, seed_model_frame
+) -> None:
+    """A model that sets TRAINING_SEASONS sees only those seasons.
+
+    Without this the restriction can silently do nothing: the frame would
+    look right, and the only symptom would be a model quietly fitted on
+    median-imputed values for features that did not exist yet.
+    """
+
+    class Restricted(GoalkeeperPointsPredictor):
+        TRAINING_SEASONS = (SEASON,)
+
+    predictor = Restricted(
+        experiment_name="test-restricted",
+        params={},
+        model_spec=GOALKEEPER_SPEC,
+        connection=connection,
+        fold_strategy=ExpandingGameweekFoldStrategy(),
+    )
+    seed_model_frame(connection, Restricted.POSITION)
+    _seed_prior_season_match(connection, Restricted.POSITION)
+
+    seasons = set(predictor.build_training_data()["season"].to_list())
+
+    assert seasons == {SEASON}
+
+
+def test_empty_training_seasons_names_the_cause(connection) -> None:
+    """A collapsed window fails with a message, not a parser error.
+
+    The window is derived by intersecting coverage maps, so a stat whose
+    seasons do not overlap the rest empties it. Emitting ``IN ()`` would
+    surface as a DuckDB parser error naming neither the model nor the
+    stat lists behind it.
+    """
+
+    class Collapsed(GoalkeeperPointsPredictor):
+        TRAINING_SEASONS = ()
+
+    predictor = Collapsed(
+        experiment_name="test-collapsed",
+        params={},
+        model_spec=GOALKEEPER_SPEC,
+        connection=connection,
+        fold_strategy=ExpandingGameweekFoldStrategy(),
+    )
+
+    with pytest.raises(ValueError, match="empty tuple"):
+        predictor.model_frame_sql()
+
+
 def _probe(predictor: PositionPointsPredictor) -> str:
     """Return a cross-season player-form column this position reads.
 

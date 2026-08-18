@@ -40,7 +40,6 @@ ROLLING_WINDOW: int = 5
 # contribution points. Defenders need 10 CBIT; midfielders and forwards
 # need 12, and their count includes recoveries as well.
 DEFCON_THRESHOLD_BY_POSITION: dict[str, int] = {
-    "GK": 10,
     "DEF": 10,
     "MID": 12,
     "FWD": 12,

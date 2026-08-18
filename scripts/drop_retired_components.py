@@ -24,6 +24,11 @@ from fantasy_football.storage.tables import POINTS_COMPONENT
 logger = logging.getLogger(__name__)
 
 
+def _count(row: tuple | None) -> int:
+    """Return the row count DuckDB reports for a DELETE."""
+    return int(row[0]) if row else 0
+
+
 def main() -> None:
     """Delete every stored component its position no longer declares."""
     configure_logging()
@@ -35,15 +40,16 @@ def main() -> None:
                 f"DELETE FROM {POINTS_COMPONENT.name} "
                 f"WHERE position = ? AND component NOT IN ({declared})",
                 [position],
-            ).fetchall()
-            logger.info("Deleted %s rows for %s", deleted, position)
+            ).fetchone()
+            logger.info("Deleted %d rows for %s", _count(deleted), position)
         # A position no longer in the table at all -- there is none
         # today, but a row for one would fail compose the same way.
         known = ", ".join(f"'{name}'" for name in POSITION_COMPONENTS)
-        connection.execute(
+        deleted = connection.execute(
             f"DELETE FROM {POINTS_COMPONENT.name} "
             f"WHERE position NOT IN ({known})"
-        )
+        ).fetchone()
+        logger.info("Deleted %d rows for unknown positions", _count(deleted))
     finally:
         connection.close()
 

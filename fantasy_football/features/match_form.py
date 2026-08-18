@@ -201,14 +201,11 @@ RATE_STATS: tuple[str, ...] = (
 class DefconVariant:
     """One position group's defensive-contribution count and threshold.
 
-    FPL pays the same rule off two different counts: defenders on CBIT
-    at 10, midfielders and forwards on CBIRT at 12. Both need the same
-    three windowed features, so the view emits one trio per variant
-    rather than one hard-coded trio.
-
-    A rate alone cannot describe a threshold -- two players averaging
-    9.5 per 90 with different spreads have very different chances of
-    clearing 10 -- so the hit rate and the spread go alongside the rate.
+    FPL pays the same rule off two counts: defenders on CBIT at 10,
+    midfielders and forwards on CBIRT at 12. Each gets a rate, a hit
+    rate and a spread -- a rate alone cannot describe a threshold, since
+    two players on the same mean clear it at different frequencies
+    depending on their spread.
     """
 
     #: Prefix of the emitted columns, and the count's own alias.
@@ -551,20 +548,20 @@ def rolling_identity_sql(identity: str = "s", row: str = "m") -> str:
     )
 
 
-def defcon_count_sql(variant: DefconVariant, alias: str = "o") -> str:
-    """Return the SQL summing one variant's counters into its count.
+def opta_count_sql(stats: tuple[str, ...], alias: str) -> str:
+    """Return the SQL summing FCI counters into one count.
 
     Null when FCI published none of them, rather than zero: a player
     with no data did not make no clearances, we simply do not know. Zero
     here would drag the rolling rate down and read as a quiet player.
+
+    ``alias`` is required: the feature view and the modelling frames
+    join the same table under different names, and a default would bind
+    silently to whichever module declared it.
     """
-    absent = " AND ".join(f"{alias}.{stat} IS NULL" for stat in variant.stats)
-    totalled = " + ".join(
-        f"coalesce({alias}.{stat}, 0)" for stat in variant.stats
-    )
-    return (
-        f"CASE WHEN {absent} THEN NULL ELSE {totalled} END AS {variant.count}"
-    )
+    absent = " AND ".join(f"{alias}.{stat} IS NULL" for stat in stats)
+    totalled = " + ".join(f"coalesce({alias}.{stat}, 0)" for stat in stats)
+    return f"CASE WHEN {absent} THEN NULL ELSE {totalled} END"
 
 
 def _defcon_windowed_sql(variant: DefconVariant, rolling_window: int) -> str:
@@ -607,7 +604,8 @@ def form_sql(
     for variant in DEFCON_VARIANTS:
         validate_stats(variant.stats)
     defcon_counts = ",\n        ".join(
-        defcon_count_sql(variant) for variant in DEFCON_VARIANTS
+        f'{opta_count_sql(variant.stats, "o")} AS {variant.count}'
+        for variant in DEFCON_VARIANTS
     )
     validate_stats(PENALTY_COMPONENT_STATS)
     pen_attempts = " + ".join(

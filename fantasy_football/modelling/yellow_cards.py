@@ -11,7 +11,7 @@ Goalkeepers are excluded. They are booked, but for different reasons and
 at a fraction of the rate, and their defensive counters describe
 something structurally different.
 
-Reds are not modelled and stay in the residual. They pay minus three
+Reds are not modelled at all, and so are in no prediction. They pay minus three
 against a yellow's minus one and arrive roughly forty times less often,
 which is too thin to fit a player rate to. This head is named for
 yellows so that a red component, if it ever earns one, has somewhere to
@@ -26,11 +26,6 @@ why this head needs no extra join: the count is on the match row.
 Like its sibling heads this reads no minutes features. It predicts a
 rate and minutes turn that rate into an expected count at composition,
 so the minutes forecast is applied exactly once across every component.
-
-The residual model deducts the same expression through
-:func:`yellow_card_points_sql`, and the two must not diverge: if the
-target and the deduction disagree about what a booking costs, the
-components stop summing to the total and nothing fails loudly.
 
 Two deliberate departures from the sibling heads:
 
@@ -53,10 +48,6 @@ far more than the minus three the card itself costs, and the minutes
 model knows nothing about it. That belongs in the minutes model rather
 than here.
 
-Promotion order: promote the *residual* alias before this one. The two
-carry separately promoted aliases and between the two promotions the
-composed total is wrong either way, but under-charging bookings briefly
-is the smaller error.
 """
 
 import logging
@@ -128,10 +119,10 @@ SCORING_MINUTES_FLOOR = DEFCON_MINUTES_FLOOR
 def yellow_card_points_sql(match: str = "m") -> str:
     """Return the points a leg's yellow cards cost.
 
-    Negative, because that is what the points are: the residual deducts
+    Negative, because that is what the points are: a booking costs
     this expression and so adds the cost back to what it must explain.
 
-    Aliased rather than fixed so the residual model can deduct the very
+    Aliased rather than fixed so a caller can point it at whichever
     same expression off its own joins. One definition, two aliasings --
     a second spelling of this is how the components quietly stop summing
     to the total.

@@ -18,12 +18,20 @@ from fantasy_football.features.match_form import (
     goalkeeper_covered_seasons,
     per90_column_name,
 )
+from fantasy_football.modelling.assists import ASSISTS_SPEC
+from fantasy_football.modelling.conceding import (
+    CONCEDING_SPEC,
+    MIDFIELDER_CONCEDING_SPEC,
+)
+from fantasy_football.modelling.defcon import CBIRT_SPEC, DEFCON_SPEC
 from fantasy_football.modelling.folds import ExpandingGameweekFoldStrategy
 from fantasy_football.modelling.goalkeeper import (
     GOALKEEPER_SPEC,
     POSITION,
     GoalkeeperPointsPredictor,
 )
+from fantasy_football.modelling.goals import GOALS_SPEC
+from fantasy_football.modelling.yellow_cards import YELLOW_CARDS_SPEC
 from fantasy_football.storage.tables import PLAYER_MATCH, PLAYER_SEASON
 from tests.unit.modelling.conftest import (
     ARSENAL,
@@ -230,3 +238,27 @@ def test_own_team_and_opposition_form_are_not_swapped(
     assert row["clean_sheet_rolling_5"].item() == pytest.approx(1.0)
     assert row["opposition_xg_for_rolling_5"].item() == pytest.approx(1.0)
     assert row["opposition_goals_for_rolling_5"].item() == pytest.approx(1.0)
+
+
+def test_every_spec_registers_under_a_distinct_name() -> None:
+    """No two models share a registered name.
+
+    They share ``production`` as an alias, so a shared registered name
+    would have one model's promotion silently serve another. Conceding
+    is the deliberate exception: its two instances are one artefact
+    fanned out to two positions.
+    """
+    specs = [
+        GOALKEEPER_SPEC,
+        GOALS_SPEC,
+        ASSISTS_SPEC,
+        YELLOW_CARDS_SPEC,
+        DEFCON_SPEC,
+        CBIRT_SPEC,
+    ]
+    names = [spec.registered_model_name for spec in specs]
+
+    assert len(names) == len(set(names))
+    assert CONCEDING_SPEC.registered_model_name == (
+        MIDFIELDER_CONCEDING_SPEC.registered_model_name
+    )

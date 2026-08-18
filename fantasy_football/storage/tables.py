@@ -7,6 +7,7 @@ and an entry in ``TABLES``; nothing else in the storage layer changes.
 import duckdb
 import polars as pl
 
+from fantasy_football.storage import engine
 from fantasy_football.storage.table import Table
 
 # How a stored prediction was produced. Backfilled rows are in-sample --
@@ -557,14 +558,9 @@ def prediction_versions(
         placeholders = ", ".join("?" for _ in seasons)
         clauses.append(f"season IN ({placeholders})")
         params.extend(seasons)
-    for name, value in (equals or {}).items():
-        if isinstance(value, (tuple, list)):
-            names = ", ".join("?" for _ in value)
-            clauses.append(f"{name} IN ({names})")
-            params.extend(value)
-        else:
-            clauses.append(f"{name} = ?")
-            params.append(value)
+    equality, equality_params = engine.equality_clauses(equals or {})
+    clauses.extend(equality)
+    params.extend(equality_params)
     query = f"SELECT DISTINCT model_version FROM {table_name}"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)

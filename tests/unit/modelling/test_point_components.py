@@ -12,6 +12,7 @@ import polars as pl
 import pytest
 from scipy.stats import poisson
 
+from fantasy_football.modelling.assists import AssistsRatePredictor
 from fantasy_football.modelling.components import (
     ASSIST_POINTS,
     MINUTES_OUTPUTS,
@@ -29,6 +30,8 @@ from fantasy_football.modelling.defcon import (
     DefconRatePredictor,
 )
 from fantasy_football.modelling.distributions import PoissonCounts
+from fantasy_football.modelling.goals import GoalsRatePredictor
+from fantasy_football.modelling.yellow_cards import YellowCardsRatePredictor
 from fantasy_football.storage.tables import BACKFILL_KIND
 
 SEASON = "2025-26"
@@ -282,7 +285,13 @@ def test_a_row_with_no_minutes_forecast_scores_zero(component) -> None:
 
 @pytest.mark.parametrize(
     "predictor",
-    [DefconRatePredictor, CbirtRatePredictor],
+    [
+        DefconRatePredictor,
+        CbirtRatePredictor,
+        GoalsRatePredictor,
+        AssistsRatePredictor,
+        YellowCardsRatePredictor,
+    ],
     ids=lambda cls: cls.__name__,
 )
 def test_no_decomposed_model_takes_a_minutes_feature(predictor) -> None:

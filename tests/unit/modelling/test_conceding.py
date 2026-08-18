@@ -15,6 +15,10 @@ import polars as pl
 import pytest
 
 from fantasy_football.features.views import register_feature_views
+from fantasy_football.modelling.assists import (
+    ASSISTS_SPEC,
+    AssistsRatePredictor,
+)
 from fantasy_football.modelling.components import Component
 from fantasy_football.modelling.conceding import (
     CONCEDING_SPEC,
@@ -22,7 +26,15 @@ from fantasy_football.modelling.conceding import (
     POSITION,
     ConcedingPredictor,
 )
+from fantasy_football.modelling.defcon import (
+    DEFCON_SPEC,
+    DefconRatePredictor,
+)
 from fantasy_football.modelling.folds import TrainTestSplitStrategy
+from fantasy_football.modelling.goals import (
+    GOALS_SPEC,
+    GoalsRatePredictor,
+)
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
     PLAYER_MATCH,
@@ -331,6 +343,39 @@ def test_a_club_with_no_match_data_never_reaches_the_fit(connection) -> None:
 
 
 # --- The decomposition holds ------------------------------------------
+
+
+def test_the_fan_out_matches_the_sibling_components_row_for_row(
+    connection,
+) -> None:
+    """No sibling may cover a leg the fan-out does not.
+
+    ``compose`` drops a fixture leg missing any one of its position's
+    components, so a fan-out narrower than its siblings deletes whole
+    predictions without failing. The converse is harmless -- a leg the
+    others cannot score was already being dropped -- which is why this
+    is a subset check and not an equality: the defcon head really does
+    cover fewer legs, having no count to rate on some of them.
+    """
+    seed_league(connection)
+    keys = ["season", "gw", "element", "opponent"]
+    sibling_specs = [
+        (DefconRatePredictor, DEFCON_SPEC),
+        (GoalsRatePredictor, GOALS_SPEC),
+        (AssistsRatePredictor, ASSISTS_SPEC),
+    ]
+    conceding = _predictor(ConcedingPredictor, CONCEDING_SPEC, connection)
+
+    covered = set(conceding.scoring_frame().select(keys).iter_rows())
+
+    assert covered
+    for cls, spec in sibling_specs:
+        sibling = _predictor(cls, spec, connection)
+        sibling_legs = set(sibling.scoring_frame().select(keys).iter_rows())
+        assert sibling_legs, f"{cls.__name__} seeded no legs to compare"
+        assert (
+            not sibling_legs - covered
+        ), f"{cls.__name__} covers legs the conceding fan-out misses"
 
 
 def test_a_defender_is_fanned_out_once_in_a_double_gameweek(

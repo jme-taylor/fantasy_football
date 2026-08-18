@@ -9,6 +9,13 @@ so nothing downstream needs to ask whether a position has been split up.
 Components live as rows in ``points_component`` rather than as a table
 each, so adding one is a new :class:`Component` value and an entry in
 :data:`POSITION_COMPONENTS`.
+
+There is no residual component. Bonus points and red cards are therefore
+in no outfield prediction at all, so every outfield score is low by
+roughly a player's bonus expectation -- concentrated in the high-BPS
+players, which makes it a ranking distortion rather than a constant
+offset. GK is still one model and still carries its bonus, so a GK total
+and an outfield total are not directly comparable.
 """
 
 import logging
@@ -113,16 +120,8 @@ class Component(StrEnum):
 # configuration rather than branched on in code, so putting a position
 # back to a single model is an edit here and not a revert.
 #
-# There is no residual. Bonus points and red cards are therefore in no
-# outfield prediction at all, and every outfield score is low by roughly
-# a player's bonus expectation -- concentrated in the high-BPS players,
-# so it is a ranking distortion rather than a constant offset. GK is
-# still one model and still carries its bonus, which makes a GK total
-# and an outfield total not directly comparable.
-#
-# TODO (JT): nothing scores the composed total. Every head reports fold
-# metrics for its own component, but no measure exists of whether the
-# sum is any good, so the cost of dropping the residual is unmeasured.
+# TODO (JT): nothing scores the composed total, so the cost of dropping
+# the residual is unmeasured.
 POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
     "GK": (Component.TOTAL,),
     "DEF": (
@@ -141,9 +140,7 @@ POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
         Component.CONCEDING,
         Component.YELLOW_CARDS,
     ),
-    # No conceding: a forward is paid nothing for a clean sheet and
-    # docked nothing for conceding, so the component would be a column
-    # of zeros.
+    # No conceding: a forward is paid nothing either way.
     "FWD": (
         Component.APPEARANCE,
         Component.DEFCON,
@@ -517,7 +514,7 @@ class RateComponent:
     variation by position, and there is none.
     """
 
-    component_name: Component = Component.GOALS
+    component_name: Component
     points_per_event: Mapping[str, float] | float | None = None
     distribution: CountDistribution = field(default_factory=PoissonCounts)
 
@@ -600,10 +597,9 @@ class YellowCardsComponent:
     Reds are deliberately not here. They pay minus three against a
     yellow's minus one and arrive roughly forty times less often -- 44
     across the league in 2025-26 against 1422 yellows -- which is too
-    few to estimate a player rate from. They stay inside the residual
-    until they earn a component of their own, and naming this one for
-    yellows is what keeps that a separate component rather than a
-    nullable field in here.
+    few to estimate a player rate from, so they are in no component at
+    all. Naming this one for yellows is what keeps reds a separate
+    component when they earn one, rather than a nullable field in here.
 
     The conversion is a scaled rate at minus one a card, which is
     :class:`RateComponent`'s job, so that is what does the arithmetic.
