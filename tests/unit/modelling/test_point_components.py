@@ -327,6 +327,7 @@ def test_every_decomposed_def_component_is_declared() -> None:
         Component.GOALS,
         Component.ASSISTS,
         Component.CONCEDING,
+        Component.YELLOW_CARDS,
         Component.RESIDUAL,
     }
 

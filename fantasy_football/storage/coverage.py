@@ -66,7 +66,6 @@ _VAASTAV_ALWAYS: tuple[str, ...] = (
     "own_goals",
     "penalties_missed",
     "penalties_saved",
-    "red_cards",
     "round",
     "saves",
     "season",
@@ -80,11 +79,21 @@ _VAASTAV_ALWAYS: tuple[str, ...] = (
     "transfers_out",
     "value",
     "was_home",
-    "yellow_cards",
 )
+
+# Every season the map below can reference. Wider than VAASTAV_SEASONS
+# because cards outlive Vaastav: they are read from the ``player_match``
+# spine rather than a provider table, so they carry on into the live
+# season the FPL API fills. That makes this map "the FPL scoring stats,
+# whoever supplied them" rather than strictly "what the Vaastav repo
+# publishes" -- taken over splitting one column's history across two
+# maps.
+FPL_STAT_SEASONS: tuple[str, ...] = VAASTAV_SEASONS + ("2026-27",)
 
 VAASTAV_COLUMN_SEASONS: dict[str, tuple[str, ...]] = {
     **{column: VAASTAV_SEASONS for column in _VAASTAV_ALWAYS},
+    "yellow_cards": FPL_STAT_SEASONS,
+    "red_cards": FPL_STAT_SEASONS,
     "attempted_passes": _EARLY,
     "big_chances_created": _EARLY,
     "big_chances_missed": _EARLY,

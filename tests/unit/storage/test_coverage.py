@@ -5,8 +5,8 @@ import pytest
 from fantasy_football.storage.coverage import (
     FCI_COLUMN_SEASONS,
     FCI_SEASONS,
+    FPL_STAT_SEASONS,
     VAASTAV_COLUMN_SEASONS,
-    VAASTAV_SEASONS,
     seasons_covering,
 )
 from fantasy_football.storage.tables import PLAYER_MATCH_FPL, PLAYER_MATCH_OPTA
@@ -25,7 +25,7 @@ def test_every_fci_schema_column_has_coverage():
 def test_coverage_seasons_are_known_seasons():
     """Coverage maps only reference seasons the source actually has."""
     for seasons in VAASTAV_COLUMN_SEASONS.values():
-        assert set(seasons) <= set(VAASTAV_SEASONS)
+        assert set(seasons) <= set(FPL_STAT_SEASONS)
     for seasons in FCI_COLUMN_SEASONS.values():
         assert set(seasons) <= set(FCI_SEASONS)
 
@@ -65,7 +65,7 @@ def test_seasons_covering_single_column():
 
 def test_seasons_covering_no_columns_returns_all_seasons():
     """An empty column list is covered by every season in the map."""
-    assert seasons_covering(VAASTAV_COLUMN_SEASONS, []) == VAASTAV_SEASONS
+    assert seasons_covering(VAASTAV_COLUMN_SEASONS, []) == FPL_STAT_SEASONS
 
 
 def test_seasons_covering_rejects_unknown_column():

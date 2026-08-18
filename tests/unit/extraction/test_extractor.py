@@ -460,6 +460,8 @@ def test_build_player_match_keeps_both_fixtures_of_a_dgw() -> None:
             "was_home": [True, False],
             "minutes": [90, 70],
             "total_points": [6, 2],
+            "yellow_cards": [1, 0],
+            "red_cards": [0, 0],
             "name": ["A", "A"],
             "kickoff_time": [
                 "2023-08-11T19:00:00Z",
@@ -476,6 +478,8 @@ def test_build_player_match_keeps_both_fixtures_of_a_dgw() -> None:
         "is_home",
         "minutes",
         "total_points",
+        "yellow_cards",
+        "red_cards",
         "kickoff_time",
     ]
     assert result.height == 2
@@ -494,6 +498,8 @@ def test_build_player_match_carries_kickoff_time() -> None:
             "was_home": [True],
             "minutes": [90],
             "total_points": [8],
+            "yellow_cards": [0],
+            "red_cards": [0],
             "kickoff_time": ["2023-08-11T19:00:00Z"],
         }
     )
@@ -519,6 +525,8 @@ def test_build_player_match_tolerates_blank_kickoff_time() -> None:
             "was_home": [True, False, True],
             "minutes": [90, 45, 0],
             "total_points": [8, 2, 0],
+            "yellow_cards": [0, 0, 0],
+            "red_cards": [0, 0, 0],
             "kickoff_time": ["2023-08-11T19:00:00Z", "", None],
         },
         schema_overrides={"kickoff_time": pl.Utf8},
@@ -549,6 +557,8 @@ def test_build_player_match_drops_verbatim_duplicate_rows() -> None:
         "was_home": False,
         "minutes": 0,
         "total_points": 0,
+        "yellow_cards": 0,
+        "red_cards": 0,
         "kickoff_time": "2025-08-15T19:00:00Z",
     }
     frame = pl.DataFrame([row, row])
@@ -570,6 +580,8 @@ def test_build_player_match_keeps_dgw_legs_that_share_a_gameweek() -> None:
             "was_home": [True, False],
             "minutes": [90, 90],
             "total_points": [6, 6],
+            "yellow_cards": [0, 1],
+            "red_cards": [0, 0],
             "kickoff_time": [
                 "2026-02-01T15:00:00Z",
                 "2026-02-04T19:45:00Z",

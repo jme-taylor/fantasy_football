@@ -29,6 +29,7 @@ from fantasy_football.modelling.defcon import (
 from fantasy_football.modelling.goals import goals_count_sql
 from fantasy_football.modelling.points import PositionPointsPredictor
 from fantasy_football.modelling.predictor import ModelSpec
+from fantasy_football.modelling.yellow_cards import yellow_card_points_sql
 from fantasy_football.storage.tables import (
     POINTS_COMPONENT,
     TEST_POINTS_PREDICTION,
@@ -121,8 +122,8 @@ DEFENDER_SPEC = ModelSpec(
 )
 
 
-# The points left once appearance, defcon, goals and assists have been
-# carved out: clean sheets, cards and bonus. Predicted per 90 and
+# The points left once appearance, defcon, goals, assists, conceding and
+# yellow cards have been carved out: bonus, and red cards. Predicted per 90 and
 # scaled by the minutes forecast at composition, so this model reads no
 # minutes feature either.
 #
@@ -155,6 +156,12 @@ DEFENDER_SPEC = ModelSpec(
 # the assist and FCI counts a stricter event, so the deduction reads the
 # same single source the assists head targets.
 #
+# Yellows are deducted; reds are not, and stay in here. The two are one
+# expression in yellow_cards.py, negative because that is what the
+# points are, so subtracting it adds the booking's cost back to what
+# this target must explain. Do not extend it to reds without giving them
+# a component: the deduction and the component pay for the same thing.
+#
 # Coalesced to zero so the target stays defined for every scored leg --
 # a null here propagates through the whole expression and reaches the
 # fit as a NaN rather than dropping the row. Legs with no published
@@ -175,6 +182,7 @@ RESIDUAL_TARGET_SQL = f"""(
       * coalesce({goals_count_sql("pmf", "oc")}, 0)
     - {ASSIST_POINTS} * coalesce({assists_count_sql("pmf")}, 0)
     - {conceding_points_sql(POSITION)}
+    - ({yellow_card_points_sql()})
 ) * 90.0 / nullif(m.minutes, 0) AS residual_points_per_90"""
 
 RESIDUAL_REGISTERED_MODEL = "defender_residual_points_regressor"
@@ -231,6 +239,7 @@ class DefenderResidualPointsPredictor(DefenderPointsPredictor):
             f"\n  AND {goals_count_sql('pmf', 'oc')} IS NOT NULL"
             f"\n  AND {assists_count_sql('pmf')} IS NOT NULL"
             "\n  AND pmf.clean_sheets IS NOT NULL"
+            "\n  AND m.yellow_cards IS NOT NULL"
         )
 
     @property

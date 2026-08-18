@@ -116,6 +116,8 @@ def _seed_player(
                     "is_home": True,
                     "minutes": minutes,
                     "total_points": total_points,
+                    "yellow_cards": 0,
+                    "red_cards": 0,
                     "kickoff_time": kickoff,
                 }
             ],

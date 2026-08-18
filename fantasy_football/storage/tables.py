@@ -125,6 +125,8 @@ PLAYER_MATCH = Table(
         "is_home": pl.Boolean,
         "minutes": pl.Int64,
         "total_points": pl.Int64,
+        "yellow_cards": pl.Int64,
+        "red_cards": pl.Int64,
         "kickoff_time": pl.Datetime("us"),
     },
     primary_key=("season", "gw", "element", "opponent"),

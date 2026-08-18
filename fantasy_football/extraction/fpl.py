@@ -22,6 +22,8 @@ PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
     "is_home",
     "minutes",
     "total_points",
+    "yellow_cards",
+    "red_cards",
     "kickoff_time",
 ]
 
@@ -404,8 +406,8 @@ class FplAPI:
         -------
         pl.DataFrame
             Columns ``element, gw, opponent, is_home, minutes, total_points,
-            kickoff_time``; empty (with that schema) when the player has no
-            fixtures.
+            yellow_cards, red_cards, kickoff_time``; empty (with that schema)
+            when the player has no fixtures.
         """
         url = f"{self.BASE_URL}element-summary/{element_id}/"
         history = requests.get(url).json()["history"]
@@ -417,6 +419,8 @@ class FplAPI:
                     pl.Int64,
                     pl.Int64,
                     pl.Boolean,
+                    pl.Int64,
+                    pl.Int64,
                     pl.Int64,
                     pl.Int64,
                     pl.Datetime("us"),
@@ -432,6 +436,8 @@ class FplAPI:
             pl.col("was_home").alias("is_home"),
             pl.col("minutes").cast(pl.Int64),
             pl.col("total_points").cast(pl.Int64),
+            pl.col("yellow_cards").cast(pl.Int64),
+            pl.col("red_cards").cast(pl.Int64),
             # strict=False so a blank or malformed timestamp becomes a
             # null rather than aborting the whole load.
             pl.col("kickoff_time")

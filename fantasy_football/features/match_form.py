@@ -77,6 +77,7 @@ from fantasy_football.storage.coverage import (
     seasons_covering,
 )
 from fantasy_football.storage.tables import (
+    PLAYER_MATCH,
     PLAYER_MATCH_FPL,
     PLAYER_MATCH_OPTA,
 )
@@ -101,16 +102,22 @@ PER90_STATS: tuple[str, ...] = (
 )
 
 # Stats windowed the same way but sourced from ``player_match_fpl``.
-# FCI publishes no cards at all, and Vaastav's go back to 2016-17 -- six
-# seasons further than any FCI column. ``goals_scored`` is here rather
-# than in ``PER90_STATS`` for the same reason the goals target is: FCI's
-# match stats span every competition, so its goals column would carry a
-# cup goal into a league gameweek.
+# ``goals_scored`` is here rather than in ``PER90_STATS`` for the same
+# reason the goals target is: FCI's match stats span every competition,
+# so its goals column would carry a cup goal into a league gameweek.
 FPL_PER90_STATS: tuple[str, ...] = (
-    "yellow_cards",
-    "red_cards",
     "goals_scored",
     "assists",
+)
+
+# Cards, sourced from the ``player_match`` spine rather than from either
+# provider table. FCI has never published cards and Vaastav's per-fixture
+# files stop at 2025-26, so a provider-sourced card column is null for
+# the live season -- and the spine is the one relation filled for every
+# season, from Vaastav historically and from the FPL API now.
+MATCH_PER90_STATS: tuple[str, ...] = (
+    "yellow_cards",
+    "red_cards",
 )
 
 # Creation stats, read only by the assists head. Held apart from
@@ -122,6 +129,10 @@ CREATION_PER90_STATS: tuple[str, ...] = (
     "chances_created",
     "accurate_crosses",
 )
+
+# Discipline stats, read only by the yellow-cards head. Held apart from
+# ``PER90_STATS`` for the same reason the creation stats are.
+DISCIPLINE_PER90_STATS: tuple[str, ...] = ("fouls_committed",)
 
 # GK specific stats
 GK_PER90_STATS: tuple[str, ...] = (
@@ -152,7 +163,8 @@ DEFCON_COMPONENT_STATS: tuple[str, ...] = (
 # that needs it: a per-90 rate says how freely a player is booked, but
 # suspensions are triggered by a running count, and that count resets
 # each season -- so the cumulative window is season-scoped where the
-# rolling one is not.
+# rolling one is not. Sourced from ``player_match``, as
+# :data:`MATCH_PER90_STATS` is.
 CUMULATIVE_STATS: tuple[str, ...] = (
     "yellow_cards",
     "red_cards",
@@ -164,9 +176,18 @@ CUMULATIVE_STATS: tuple[str, ...] = (
 OPTA_RATE_STATS: tuple[str, ...] = (
     *PER90_STATS,
     *CREATION_PER90_STATS,
+    *DISCIPLINE_PER90_STATS,
     *GK_PER90_STATS,
 )
 FPL_RATE_STATS: tuple[str, ...] = (*FPL_PER90_STATS, *GK_FPL_PER90_STATS)
+MATCH_RATE_STATS: tuple[str, ...] = MATCH_PER90_STATS
+
+#: Every rated stat, in the order the view emits them.
+RATE_STATS: tuple[str, ...] = (
+    *OPTA_RATE_STATS,
+    *FPL_RATE_STATS,
+    *MATCH_RATE_STATS,
+)
 
 # The defcon features. A rate alone cannot describe a threshold: two
 # defenders averaging 9.5 CBIT per 90 with different spreads have very
@@ -263,6 +284,12 @@ _NON_RATEABLE: frozenset[str] = frozenset(
 _VIEW_NAME = "player_match_form"
 _INCLUSIVE_VIEW_NAME = "player_match_form_inclusive"
 
+_VALIDATION_SOURCES = {
+    "opta": PLAYER_MATCH_OPTA,
+    "fpl": PLAYER_MATCH_FPL,
+    "player_match": PLAYER_MATCH,
+}
+
 
 def validate_stats(
     stats: "tuple[str, ...] | list[str]",
@@ -284,16 +311,17 @@ def validate_stats(
         Candidate column names.
     source : str, optional
         ``"opta"`` to check against ``player_match_opta`` (the default),
-        ``"fpl"`` for ``player_match_fpl``. The two tables publish
-        different stats -- only Vaastav has cards, only FCI has xG -- so
-        a name valid for one is usually a mistake for the other.
+        ``"fpl"`` for ``player_match_fpl``, ``"player_match"`` for the
+        spine. The tables publish different stats -- only FCI has xG,
+        only the spine carries cards for every season -- so a name valid
+        for one is usually a mistake for the other.
 
     Raises
     ------
     ValueError
         If a stat is unknown, not rateable, or never populated.
     """
-    table = PLAYER_MATCH_FPL if source == "fpl" else PLAYER_MATCH_OPTA
+    table = _VALIDATION_SOURCES.get(source, PLAYER_MATCH_OPTA)
     seen: set[str] = set()
     repeated = sorted({s for s in stats if s in seen or seen.add(s)})
     if repeated:
@@ -352,8 +380,9 @@ def goalkeeper_covered_seasons() -> tuple[str, ...]:
     The keeper feature set draws on both sources, so the usable range is
     the intersection of the two: FCI opens at 2024-25, Vaastav's keeper
     columns go back to 2016-17, and the intersection is therefore FCI's
-    range. The cards the goalkeeper model also reads are Vaastav columns
-    published from 2016-17, so they cannot narrow this and are left out.
+    range. The cards the goalkeeper model also reads come from the
+    ``player_match`` spine, which is filled for every season either
+    source covers, so they cannot narrow this and are left out.
 
     Computed rather than written down, so a keeper stat with narrower
     coverage narrows the window automatically and a new season widens it
@@ -425,10 +454,7 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
         Per-90 rate columns followed by ``FORM_CONTEXT_COLUMNS``.
     """
     return (
-        [
-            per90_column_name(stat, rolling_window)
-            for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
-        ]
+        [per90_column_name(stat, rolling_window) for stat in RATE_STATS]
         + [cumulative_column_name(stat) for stat in CUMULATIVE_STATS]
         + list(defcon_form_columns(rolling_window))
         + [PENALTY_EXPOSURE_COLUMN, NO_FORM_COLUMN]
@@ -495,7 +521,8 @@ def form_sql(
     """
     validate_stats(OPTA_RATE_STATS)
     validate_stats(FPL_RATE_STATS, source="fpl")
-    validate_stats(CUMULATIVE_STATS, source="fpl")
+    validate_stats(MATCH_RATE_STATS, source="player_match")
+    validate_stats(CUMULATIVE_STATS, source="player_match")
     validate_stats(DEFCON_COMPONENT_STATS)
     # Null when FCI published no defensive counters for the appearance at
     # all, rather than zero: a defender with no data did not make no
@@ -527,24 +554,28 @@ def form_sql(
         f"90.0 * sum(a.{stat}) OVER form "
         f"/ nullif(sum(CASE WHEN a.{stat} IS NOT NULL THEN a.minutes END) "
         f"OVER form, 0) AS {per90_column_name(stat, rolling_window)}"
-        for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
+        for stat in RATE_STATS
     )
     # Season-scoped and offset by one, so a booking counts towards every
     # later match in the season but never towards its own.
-    # Coalesced to 0: an empty window is the season's first appearance,
-    # where the running total genuinely is zero. That differs from the
-    # rolling rates, where an empty window means "no evidence" and has to
-    # stay null.
+    # An empty window is the season's first appearance, where the running
+    # total genuinely is zero. A window holding appearances but no
+    # non-null value is a source that filed nothing, which is not the
+    # same thing and must stay null -- a zero there reads as a clean
+    # disciplinary record.
     totals = ",\n    ".join(
-        f"coalesce(sum(a.{stat}) OVER season_to_date, 0) "
+        f"CASE WHEN count(*) OVER season_to_date > 0 "
+        f"AND count(a.{stat}) OVER season_to_date = 0 THEN NULL "
+        f"ELSE coalesce(sum(a.{stat}) OVER season_to_date, 0) END "
         f"AS {cumulative_column_name(stat)}"
         for stat in CUMULATIVE_STATS
     )
     stat_columns = ",\n            ".join(
         [f"o.{stat}" for stat in OPTA_RATE_STATS]
+        + [f"f.{stat}" for stat in FPL_RATE_STATS]
         + [
-            f"f.{stat}"
-            for stat in dict.fromkeys((*FPL_RATE_STATS, *CUMULATIVE_STATS))
+            f"m.{stat}"
+            for stat in dict.fromkeys((*MATCH_RATE_STATS, *CUMULATIVE_STATS))
         ]
     )
     std_frame = (
@@ -660,15 +691,17 @@ WINDOW
                  ELSE 0.0 END) OVER form AS {defcon_hit_rate},
         stddev_samp(a.cbit) OVER form AS {defcon_spread}"""
     rate_names = [
-        per90_column_name(stat, rolling_window)
-        for stat in (*OPTA_RATE_STATS, *FPL_RATE_STATS)
+        per90_column_name(stat, rolling_window) for stat in RATE_STATS
     ] + [defcon_rate, defcon_hit_rate, defcon_spread]
     carried_rates = ",\n    ".join(f"p.{name}" for name in rate_names)
     # Season-scoped: a player whose last appearance was last season
-    # starts this one on nil rather than inheriting its closing tally.
+    # starts this one on nil rather than inheriting its closing tally,
+    # and so does one who has not appeared at all. A null carried through
+    # from a matched row is left alone -- it means the source filed no
+    # cards, which the inner total already distinguishes from zero.
     carried_totals = ",\n    ".join(
-        f"CASE WHEN p.season = f.season THEN coalesce(p.{name}, 0) "
-        f"ELSE 0 END AS {name}"
+        f"CASE WHEN p.season IS NULL OR p.season <> f.season THEN 0 "
+        f"ELSE p.{name} END AS {name}"
         for name in (cumulative_column_name(stat) for stat in CUMULATIVE_STATS)
     )
     return f"""

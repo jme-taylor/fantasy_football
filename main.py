@@ -94,6 +94,16 @@ from fantasy_football.modelling.minutes import (
     MINUTES_SPEC,
     MinutesPredictor,
 )
+from fantasy_football.modelling.yellow_cards import (
+    EXPERIMENT_NAME as YELLOW_CARDS_EXPERIMENT_NAME,
+)
+from fantasy_football.modelling.yellow_cards import (
+    TEST_SEASONS as YELLOW_CARDS_TEST_SEASONS,
+)
+from fantasy_football.modelling.yellow_cards import (
+    YELLOW_CARDS_SPEC,
+    YellowCardsRatePredictor,
+)
 from fantasy_football.optimisation.inputs import forward_gameweeks
 from fantasy_football.optimisation.optimiser import optimise_plan
 from fantasy_football.optimisation.team_input import (
@@ -363,6 +373,23 @@ def main(
         conceding_predictor.train_and_register_model()
         conceding_predictor.backfill_model_predictions()
         conceding_predictor.predict_forward()
+
+        # Pooled like goals and assists, and priced flat at minus one.
+        # Trains far wider than its siblings -- cards go back to 2016-17
+        # -- but is tested only where the FCI features it also reads are
+        # published, so the holdout describes the regime it serves in.
+        yellow_cards_predictor = YellowCardsRatePredictor(
+            experiment_name=YELLOW_CARDS_EXPERIMENT_NAME,
+            params={},
+            model_spec=YELLOW_CARDS_SPEC,
+            connection=connection,
+            fold_strategy=TrainTestSplitStrategy(
+                test_seasons=YELLOW_CARDS_TEST_SEASONS
+            ),
+        )
+        yellow_cards_predictor.train_and_register_model()
+        yellow_cards_predictor.backfill_model_predictions()
+        yellow_cards_predictor.predict_forward()
 
         residual_predictor = DefenderResidualPointsPredictor(
             experiment_name="def-residual-points-model",
