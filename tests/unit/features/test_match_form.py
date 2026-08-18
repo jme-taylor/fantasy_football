@@ -39,6 +39,7 @@ def _build(
     yellow_cards: list[int] | None = None,
     goals_prevented: list[float | None] | None = None,
     saves: list[int | None] | None = None,
+    recoveries: list[int | None] | None = None,
 ) -> duckdb.DuckDBPyConnection:
     """Return a connection holding one player's run of matches.
 
@@ -128,6 +129,7 @@ def _build(
                 if goals_prevented is not None
                 else {}
             ),
+            **({"recoveries": recoveries} if recoveries is not None else {}),
         },
     )
     if saves is not None:
@@ -180,7 +182,9 @@ def test_feature_columns_covers_every_stat_and_context_column() -> None:
         + len(match_form.MATCH_PER90_STATS)
         + len(match_form.GK_FPL_PER90_STATS)
         + len(match_form.CUMULATIVE_STATS)
-        + len(match_form.DEFCON_FORM_STATS)
+        + sum(
+            len(variant.form_stats) for variant in match_form.DEFCON_VARIANTS
+        )
         # Penalty exposure and the no-form flag, neither of which is a
         # windowed stat.
         + 2
@@ -855,16 +859,92 @@ def test_defcon_form_columns_follow_the_window(tmp_path: Path) -> None:
     ROLLING_WINDOW would have left them claiming five appearances while
     computing over another number.
     """
-    assert match_form.defcon_form_columns(5) == (
+    assert match_form.CBIT_VARIANT.form_columns(5) == (
         "cbit_per90_rolling_5",
         "cbit_ten_plus_rate_rolling_5",
         "cbit_std_rolling_5",
     )
-    assert match_form.defcon_form_columns(3) == (
+    assert match_form.CBIT_VARIANT.form_columns(3) == (
         "cbit_per90_rolling_3",
         "cbit_ten_plus_rate_rolling_3",
         "cbit_std_rolling_3",
     )
+
+
+def test_cbirt_columns_are_named_for_their_own_threshold() -> None:
+    """The midfield trio names its count and its threshold, not DEF's."""
+    assert match_form.CBIRT_VARIANT.form_columns(5) == (
+        "cbirt_per90_rolling_5",
+        "cbirt_twelve_plus_rate_rolling_5",
+        "cbirt_std_rolling_5",
+    )
+
+
+def test_cbirt_counts_recoveries_and_cbit_does_not(tmp_path: Path) -> None:
+    """The two counts differ by exactly the recoveries.
+
+    Recoveries are what separate the midfield and forward threshold of
+    12 from the defender threshold of 10, so a variant that summed the
+    same four counters twice would be two names for one feature.
+    """
+    conn = _build(
+        tmp_path,
+        minutes=[90, 90],
+        tackles=[4, 4],
+        xg=[0.0, 0.0],
+        recoveries=[6, 6],
+    )
+    try:
+        frame = match_form.load_match_form(conn)
+        second = frame.filter(pl.col("gw") == 2)
+
+        assert second["cbit_per90_rolling_5"].item() == pytest.approx(4.0)
+        assert second["cbirt_per90_rolling_5"].item() == pytest.approx(10.0)
+    finally:
+        conn.close()
+
+
+def test_cbirt_hit_rate_uses_the_twelve_threshold(tmp_path: Path) -> None:
+    """Eleven does not clear twelve, though it clears ten."""
+    conn = _build(
+        tmp_path,
+        minutes=[90, 90, 90],
+        tackles=[5, 7, 0],
+        xg=[0.0, 0.0, 0.0],
+        recoveries=[6, 6, 0],
+    )
+    try:
+        frame = match_form.load_match_form(conn)
+        third = frame.filter(pl.col("gw") == 3)
+
+        # Eleven then thirteen: one of the two cleared twelve, but both
+        # cleared ten.
+        assert third["cbirt_twelve_plus_rate_rolling_5"].item() == (
+            pytest.approx(0.5)
+        )
+        assert third["cbit_ten_plus_rate_rolling_5"].item() == (
+            pytest.approx(0.0)
+        )
+    finally:
+        conn.close()
+
+
+def test_cbirt_is_null_when_no_counter_was_published(tmp_path: Path) -> None:
+    """No FCI data is unknown CBIRT, not zero CBIRT."""
+    conn = _build(
+        tmp_path,
+        minutes=[90, 90],
+        tackles=[None, None],
+        xg=[0.0, 0.0],
+        recoveries=[None, None],
+    )
+    try:
+        frame = match_form.load_match_form(conn)
+        second = frame.filter(pl.col("gw") == 2)
+
+        assert second["cbirt_per90_rolling_5"].item() is None
+    finally:
+        conn.close()
 
 
 def test_a_different_window_emits_the_renamed_defcon_columns(
@@ -883,8 +963,9 @@ def test_a_different_window_emits_the_renamed_defcon_columns(
             conn.sql("SELECT * FROM player_match_form LIMIT 0").pl().columns
         )
 
-        for name in match_form.defcon_form_columns(3):
-            assert name in columns
+        for variant in match_form.DEFCON_VARIANTS:
+            for name in variant.form_columns(3):
+                assert name in columns
     finally:
         conn.close()
 

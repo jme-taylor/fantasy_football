@@ -10,7 +10,7 @@ from typing import ClassVar, override
 
 from fantasy_football.constants import (
     DEFCON_FIRST_SEASON,
-    DEFCON_THRESHOLD_DEF,
+    DEFCON_THRESHOLD_BY_POSITION,
 )
 from fantasy_football.modelling.assists import assists_count_sql
 from fantasy_football.modelling.components import (
@@ -174,7 +174,7 @@ RESIDUAL_TARGET_SQL = f"""(
     - CASE WHEN m.minutes >= 60 THEN 2 WHEN m.minutes > 0 THEN 1 ELSE 0 END
     - CASE
           WHEN m.season >= '{DEFCON_FIRST_SEASON}'
-           AND {CBIT_COUNT_SQL} >= {DEFCON_THRESHOLD_DEF}
+           AND {CBIT_COUNT_SQL} >= {DEFCON_THRESHOLD_BY_POSITION[POSITION]}
           THEN 2
           ELSE 0
       END

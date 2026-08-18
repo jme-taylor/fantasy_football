@@ -21,7 +21,7 @@ import numpy as np
 import polars as pl
 from numpy.typing import NDArray
 
-from fantasy_football.constants import DEFCON_THRESHOLD_DEF
+from fantasy_football.constants import DEFCON_THRESHOLD_BY_POSITION
 from fantasy_football.modelling.distributions import (
     CountDistribution,
     PoissonCounts,
@@ -321,7 +321,7 @@ class DefconComponent:
     defenders sitting closest to it.
     """
 
-    threshold: int = DEFCON_THRESHOLD_DEF
+    threshold: int = DEFCON_THRESHOLD_BY_POSITION["DEF"]
     distribution: CountDistribution = field(default_factory=PoissonCounts)
 
     @property

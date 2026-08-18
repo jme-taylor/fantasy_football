@@ -24,7 +24,7 @@ import numpy as np
 import polars as pl
 from sklearn.metrics import brier_score_loss, log_loss
 
-from fantasy_football.constants import DEFCON_THRESHOLD_DEF
+from fantasy_football.constants import DEFCON_THRESHOLD_BY_POSITION
 from fantasy_football.features.match_form import DEFCON_COMPONENT_STATS
 from fantasy_football.modelling.components import (
     Component,
@@ -132,7 +132,7 @@ class DefconRatePredictor(PositionPointsPredictor):
     TARGET = "cbit_per_90"
     COMPONENT = Component.DEFCON
     COMPONENT_IMPL = DefconComponent(
-        threshold=DEFCON_THRESHOLD_DEF, distribution=PoissonCounts()
+        threshold=DEFCON_THRESHOLD_BY_POSITION["DEF"], distribution=PoissonCounts()
     )
     TRAINING_SEASONS = TRAINING_SEASONS
     WEIGHT_COLUMN = "minutes"
@@ -208,10 +208,10 @@ class DefconRatePredictor(PositionPointsPredictor):
         minutes = test_df["minutes"].cast(pl.Float64).to_numpy()
         rate = np.clip(np.asarray(predicted, dtype=float), 0.0, None)
         probability = self.COMPONENT_IMPL.distribution.p_at_least(
-            rate * minutes / 90.0, DEFCON_THRESHOLD_DEF
+            rate * minutes / 90.0, DEFCON_THRESHOLD_BY_POSITION["DEF"]
         )
         actual = (
-            (test_df["cbit_count"] >= DEFCON_THRESHOLD_DEF)
+            (test_df["cbit_count"] >= DEFCON_THRESHOLD_BY_POSITION["DEF"])
             .cast(pl.Int64)
             .to_list()
         )

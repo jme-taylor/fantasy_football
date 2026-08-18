@@ -36,10 +36,15 @@ VASTAAV_BRIDGE_SEASONS: list[str] = ["2024-25", "2025-26"]
 # Prediction model tunables
 ROLLING_WINDOW: int = 5
 
-# CBIT a defender must reach in a match to be paid defensive-contribution
-# points. Midfielders and forwards need 12, and their count includes
-# recoveries; only the defender threshold is modelled today.
-DEFCON_THRESHOLD_DEF: int = 10
+# The count a player must reach in a match to be paid defensive-
+# contribution points. Defenders need 10 CBIT; midfielders and forwards
+# need 12, and their count includes recoveries as well.
+DEFCON_THRESHOLD_BY_POSITION: dict[str, int] = {
+    "GK": 10,
+    "DEF": 10,
+    "MID": 12,
+    "FWD": 12,
+}
 
 # The first season defensive-contribution points were awarded. Before it
 # a defender clearing the threshold was paid nothing, so the residual
