@@ -18,16 +18,13 @@ from sklearn.impute import SimpleImputer
 
 from fantasy_football.features.views import register_feature_views
 from fantasy_football.modelling.components import (
+    MINUTES_OUTPUTS,
     Component,
     compose,
 )
 from fantasy_football.modelling.folds import (
     ExpandingGameweekFoldStrategy,
     TrainTestSplitStrategy,
-)
-from fantasy_football.modelling.goalkeeper import (
-    GOALKEEPER_SPEC,
-    GoalkeeperPointsPredictor,
 )
 from fantasy_football.modelling.goals import (
     GOALS_SPEC,
@@ -37,6 +34,10 @@ from fantasy_football.modelling.points import (
     KEY_COLUMNS,
     TARGET,
     PositionPointsPredictor,
+)
+from fantasy_football.modelling.saves import (
+    SAVES_SPEC,
+    SavesRatePredictor,
 )
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
@@ -66,13 +67,53 @@ from tests.unit.modelling.conftest import (
 
 PRIOR_SEASON = "2024-25"
 
+
+class FrameworkPredictor(PositionPointsPredictor):
+    """A single-position head keeping every base-class default.
+
+    The tests below are about the machinery in ``points.py`` -- the
+    as-of join, the partition scoping, the fold plumbing -- rather than
+    about any one head. They need a subject that keeps the base
+    ``make_pipeline`` and ``fold_metrics``, and since every real head
+    overrides at least one of those, none of them is that subject.
+
+    It therefore derives from ``PositionPointsPredictor`` directly and
+    borrows the saves head's column lists, which keeps the frame it
+    builds a real one while leaving the defaults in place. The two
+    things it does not share with a real head -- a whole-points target
+    and minutes read as features -- are exactly the base-class surface
+    these tests exist to pin.
+    """
+
+    POSITION = SavesRatePredictor.POSITION
+    COMPONENT = SavesRatePredictor.COMPONENT
+    COMPONENT_IMPL = SavesRatePredictor.COMPONENT_IMPL
+    TRAINING_SEASONS = SavesRatePredictor.TRAINING_SEASONS
+    OPPOSITION_PREFIX = SavesRatePredictor.OPPOSITION_PREFIX
+    OWN_TEAM_COLUMNS = SavesRatePredictor.OWN_TEAM_COLUMNS
+    OPPOSITION_COLUMNS = SavesRatePredictor.OPPOSITION_COLUMNS
+    # The one place a minutes column may be selected as a feature. No
+    # component may read one -- ``test_point_components.py`` guards that
+    # over the real heads -- but the selection is base-class machinery,
+    # and the fan-out it can cause is what several tests below pin.
+    MINUTES_COLUMNS = list(MINUTES_OUTPUTS)
+    # A season-scoped form column, so the forward path's separate
+    # handling of those is exercised here rather than only in the
+    # yellow-cards head that reads one in production.
+    PLAYER_FORM_COLUMNS = SavesRatePredictor.PLAYER_FORM_COLUMNS + [
+        "yellow_cards_season_to_date"
+    ]
+    FEATURES = (
+        SavesRatePredictor.FEATURES
+        + ["yellow_cards_season_to_date"]
+        + list(MINUTES_OUTPUTS)
+    )
+
+
 # The framework tests below seed a generic frame and expect one
-# position's rows out of it. GK is the only position still served by a
-# single undecomposed model, so it is the one that fits that shape --
-# the component heads restrict their own rows and serve several
-# positions at once, and each has its own test module for that.
+# position's rows out of it, so the subject has to serve exactly one.
 SPECS = {
-    GoalkeeperPointsPredictor: GOALKEEPER_SPEC,
+    FrameworkPredictor: SAVES_SPEC,
 }
 
 
@@ -86,13 +127,13 @@ def test_training_seasons_drops_rows_outside_the_window(
     median-imputed values for features that did not exist yet.
     """
 
-    class Restricted(GoalkeeperPointsPredictor):
+    class Restricted(SavesRatePredictor):
         TRAINING_SEASONS = (SEASON,)
 
     predictor = Restricted(
         experiment_name="test-restricted",
         params={},
-        model_spec=GOALKEEPER_SPEC,
+        model_spec=SAVES_SPEC,
         connection=connection,
         fold_strategy=ExpandingGameweekFoldStrategy(),
     )
@@ -113,13 +154,13 @@ def test_empty_training_seasons_names_the_cause(connection) -> None:
     stat lists behind it.
     """
 
-    class Collapsed(GoalkeeperPointsPredictor):
+    class Collapsed(SavesRatePredictor):
         TRAINING_SEASONS = ()
 
     predictor = Collapsed(
         experiment_name="test-collapsed",
         params={},
-        model_spec=GOALKEEPER_SPEC,
+        model_spec=SAVES_SPEC,
         connection=connection,
         fold_strategy=ExpandingGameweekFoldStrategy(),
     )
@@ -175,9 +216,15 @@ def test_model_frame_sql_filters_to_position_and_played_matches(
 def test_build_training_data_returns_keys_target_and_features(
     predictor,
 ) -> None:
-    """The frame's columns are keys, then target, then features."""
+    """The frame's columns are keys, then target, then scoring, then features."""
     frame = predictor.build_training_data()
-    assert frame.columns == KEY_COLUMNS + [TARGET] + predictor.FEATURES
+    assert (
+        frame.columns
+        == KEY_COLUMNS
+        + [TARGET]
+        + predictor.frame_columns
+        + predictor.FEATURES
+    )
 
 
 def test_model_frame_selects_every_declared_minutes_column(
@@ -586,7 +633,7 @@ def test_build_prediction_rows_shapes_rows_for_storage(
     assert scored["position"].unique().to_list() == [predictor.POSITION]
     assert scored["model_version"].unique().to_list() == ["4"]
     assert scored["prediction_kind"].unique().to_list() == [BACKFILL_KIND]
-    assert scored["component"].unique().to_list() == [Component.TOTAL]
+    assert scored["component"].unique().to_list() == [Component.SAVES]
 
 
 def test_undecomposed_position_composes_back_to_its_raw_prediction(
@@ -1392,7 +1439,11 @@ def test_predict_forward_stores_and_freezes(
     assert fresh.select("element", "opponent").rows() == [
         (1, TEAM_IDS[ARSENAL])
     ]
-    assert fresh["points"].to_list() == [4.5]
+    # Not the frozen number, and stamped with the live model rather than
+    # the version the frozen row carries. The value itself belongs to the
+    # component, which is scored where the component is tested; what this
+    # pins is that gw3 was rewritten and gw2 was not.
+    assert fresh["points"].to_list() != [999.0]
     assert fresh["prediction_kind"].to_list() == [FORWARD_KIND]
     assert fresh["model_version"].to_list() == ["9"]
     assert fresh["position"].to_list() == [predictor.POSITION]
@@ -1436,11 +1487,11 @@ def test_positions_do_not_overwrite_each_others_predictions(
     mocker.patch("fantasy_football.modelling.predictor.CURRENT_SEASON", SEASON)
     _mock_fpl_teams(mocker)
 
-    # The keeper's undecomposed model and one pooled head, which serves
-    # the two outfield positions seeded here. Both write into
-    # points_component, and neither may clear the other's rows.
+    # The keeper's saves head and one pooled head, which serves the two
+    # outfield positions seeded here. Both write into points_component,
+    # and neither may clear the other's rows.
     for cls, spec in (
-        (GoalkeeperPointsPredictor, GOALKEEPER_SPEC),
+        (SavesRatePredictor, SAVES_SPEC),
         (GoalsRatePredictor, GOALS_SPEC),
     ):
         cls(

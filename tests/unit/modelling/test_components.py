@@ -53,6 +53,26 @@ def component_row(
     }
 
 
+def gk_leg(
+    *points: float,
+    gw: int = 1,
+    kind: str = BACKFILL_KIND,
+    version: str = "3",
+) -> list[dict[str, object]]:
+    """Build a keeper's whole fixture leg, one row per declared component.
+
+    ``compose`` drops a leg missing any component its position declares,
+    so a test about composition rather than about completeness has to
+    supply all three. The points are handed out in the declared order.
+    """
+    return [
+        component_row(component, value, gw=gw, kind=kind, version=version)
+        for component, value in zip(
+            POSITION_COMPONENTS["GK"], points, strict=True
+        )
+    ]
+
+
 def frame(*rows: dict[str, object]) -> pl.DataFrame:
     """Shape component dicts into the stored component schema."""
     if not rows:
@@ -65,11 +85,11 @@ def frame(*rows: dict[str, object]) -> pl.DataFrame:
 
 def test_single_component_keeps_the_bare_version() -> None:
     """A lone component keeps its bare version string."""
-    # A monolithic position must produce the exact string it produced
-    # before decomposition existed, or the backfill rebuild check
+    # A position paid a single component must produce a bare version
+    # string, or the backfill rebuild check
     # compares a composite against a bare production version and
     # rebuilds every run.
-    assert composite_version({Component.TOTAL: "7"}) == "7"
+    assert composite_version({Component.SAVES: "7"}) == "7"
 
 
 def test_no_components_is_an_error() -> None:
@@ -83,14 +103,14 @@ def test_no_components_is_an_error() -> None:
 
 def test_single_component_passes_the_points_through() -> None:
     """One component composes to exactly its own points."""
-    composed = compose(frame(component_row(Component.TOTAL, 4.5)))
+    composed = compose(frame(component_row(Component.SAVES, 4.5)))
     assert composed["predicted_points"].to_list() == [4.5]
     assert composed["model_version"].to_list() == ["3"]
 
 
 def test_output_matches_the_points_prediction_schema() -> None:
     """Composed rows are shaped for points_prediction."""
-    composed = compose(frame(component_row(Component.TOTAL, 4.5)))
+    composed = compose(frame(component_row(Component.SAVES, 4.5)))
     assert composed.columns == POINTS_PREDICTION.columns
 
 
@@ -100,8 +120,8 @@ def test_fixture_legs_stay_separate() -> None:
     # row, or the optimiser's per-gameweek sum halves.
     composed = compose(
         frame(
-            component_row(Component.TOTAL, 4.0, opponent=2),
-            component_row(Component.TOTAL, 3.0, opponent=5),
+            component_row(Component.SAVES, 4.0, opponent=2),
+            component_row(Component.SAVES, 3.0, opponent=5),
         )
     )
     assert sorted(composed["predicted_points"].to_list()) == [3.0, 4.0]
@@ -111,8 +131,8 @@ def test_prediction_kinds_stay_separate() -> None:
     """Backfill and forward rows do not collapse together."""
     composed = compose(
         frame(
-            component_row(Component.TOTAL, 4.0, kind=BACKFILL_KIND),
-            component_row(Component.TOTAL, 3.0, kind=FORWARD_KIND),
+            component_row(Component.SAVES, 4.0, kind=BACKFILL_KIND),
+            component_row(Component.SAVES, 3.0, kind=FORWARD_KIND),
         )
     )
     assert composed.height == 2
@@ -122,10 +142,10 @@ def test_positions_stay_separate() -> None:
     """Each position keeps its own composed row."""
     composed = compose(
         frame(
-            component_row(Component.TOTAL, 4.0, position="GK"),
-            component_row(Component.TOTAL, 3.0, position="MID", element=2),
+            component_row(Component.SAVES, 4.0, position="GK"),
+            component_row(Component.GOALS, 3.0, position="MID", element=2),
         ),
-        expected={"GK": (Component.TOTAL,), "MID": (Component.TOTAL,)},
+        expected={"GK": (Component.SAVES,), "MID": (Component.GOALS,)},
     )
     assert set(composed["position"].to_list()) == {"GK", "MID"}
 
@@ -139,7 +159,7 @@ def test_empty_input_yields_an_empty_frame_of_the_right_shape() -> None:
 
 def test_unknown_component_is_an_error() -> None:
     """A component name that is not declared is refused."""
-    rows = frame(component_row(Component.TOTAL, 4.0)).with_columns(
+    rows = frame(component_row(Component.SAVES, 4.0)).with_columns(
         component=pl.lit("bonus")
     )
     with pytest.raises(ValueError, match="bonus"):
@@ -190,8 +210,8 @@ def test_the_dropped_legs_name_the_component_they_are_missing(
 def test_duplicate_component_for_one_leg_is_an_error() -> None:
     """One leg carrying a component twice is refused."""
     rows = frame(
-        component_row(Component.TOTAL, 4.0, version="3"),
-        component_row(Component.TOTAL, 1.0, version="4"),
+        component_row(Component.SAVES, 4.0, version="3"),
+        component_row(Component.SAVES, 1.0, version="4"),
     )
     with pytest.raises(ValueError, match="more than once"):
         compose(rows)
@@ -202,15 +222,17 @@ def test_duplicate_component_for_one_leg_is_an_error() -> None:
 
 def test_writes_the_composed_total(connection) -> None:
     """compose_points stores the summed prediction."""
-    POINTS_COMPONENT.append(
-        connection, frame(component_row(Component.TOTAL, 4.5))
-    )
+    POINTS_COMPONENT.append(connection, frame(*gk_leg(1.5, 2.0, 1.0)))
 
     compose_points(connection)
 
     stored = POINTS_PREDICTION.load(connection)
     assert stored["predicted_points"].to_list() == [4.5]
-    assert stored["model_version"].to_list() == ["3"]
+    # Several components, so the version names each rather than
+    # standing bare.
+    assert stored["model_version"].to_list() == [
+        "appearance=3|conceding=3|saves=3"
+    ]
 
 
 def test_nothing_stored_leaves_the_table_alone(connection) -> None:
@@ -222,9 +244,7 @@ def test_nothing_stored_leaves_the_table_alone(connection) -> None:
 
 def test_recomposing_replaces_rather_than_duplicates(connection) -> None:
     """Composing twice replaces the partition, not appends."""
-    POINTS_COMPONENT.append(
-        connection, frame(component_row(Component.TOTAL, 4.5))
-    )
+    POINTS_COMPONENT.append(connection, frame(*gk_leg(1.5, 2.0, 1.0)))
     compose_points(connection)
     compose_points(connection)
 
@@ -239,20 +259,19 @@ def test_frozen_forward_rows_survive_recomposition(connection) -> None:
     POINTS_COMPONENT.append(
         connection,
         frame(
-            component_row(
-                Component.TOTAL, 9.9, gw=2, kind=FORWARD_KIND, version="1"
-            ),
-            component_row(
-                Component.TOTAL, 4.5, gw=3, kind=FORWARD_KIND, version="9"
-            ),
+            *gk_leg(3.3, 3.3, 3.3, gw=2, kind=FORWARD_KIND, version="1"),
+            *gk_leg(1.5, 2.0, 1.0, gw=3, kind=FORWARD_KIND, version="9"),
         ),
     )
 
     compose_points(connection)
 
     stored = POINTS_PREDICTION.load(connection).sort("gw")
-    assert stored["predicted_points"].to_list() == [9.9, 4.5]
-    assert stored["model_version"].to_list() == ["1", "9"]
+    assert stored["predicted_points"].to_list() == pytest.approx([9.9, 4.5])
+    assert stored["model_version"].to_list() == [
+        "appearance=1|conceding=1|saves=1",
+        "appearance=9|conceding=9|saves=9",
+    ]
 
 
 def test_kinds_land_in_separate_partitions(connection) -> None:
@@ -260,8 +279,8 @@ def test_kinds_land_in_separate_partitions(connection) -> None:
     POINTS_COMPONENT.append(
         connection,
         frame(
-            component_row(Component.TOTAL, 4.5, kind=BACKFILL_KIND),
-            component_row(Component.TOTAL, 6.5, kind=FORWARD_KIND),
+            *gk_leg(1.5, 2.0, 1.0, kind=BACKFILL_KIND),
+            *gk_leg(2.5, 3.0, 1.0, kind=FORWARD_KIND),
         ),
     )
 
@@ -318,17 +337,23 @@ def test_appearance_is_not_written_where_no_component_landed(
     assert POINTS_COMPONENT.load(connection).is_empty()
 
 
-def test_appearance_skips_positions_that_are_not_decomposed(
+def test_appearance_skips_positions_that_do_not_declare_it(
     connection,
 ) -> None:
-    """A monolithic position's total already includes appearance points."""
+    """Appearance is written only where a position is paid for it.
+
+    Every position declares it today, so the declaration is passed in
+    explicitly rather than taken from POSITION_COMPONENTS: what is being
+    pinned is that the check is made, not that some position currently
+    fails it.
+    """
     append_rows(
         PLAYER_SEASON,
         connection,
         [{"season": SEASON, "element": 1, "position": "GK"}],
     )
     POINTS_COMPONENT.append(
-        connection, frame(component_row(Component.TOTAL, 4.0, position="GK"))
+        connection, frame(component_row(Component.SAVES, 4.0, position="GK"))
     )
     append_rows(
         MINUTES_PREDICTION,
@@ -349,7 +374,9 @@ def test_appearance_skips_positions_that_are_not_decomposed(
         ],
     )
 
-    write_appearance_components(connection, BACKFILL_KIND)
+    write_appearance_components(
+        connection, BACKFILL_KIND, expected={"GK": (Component.SAVES,)}
+    )
 
     assert (
         POINTS_COMPONENT.load(connection)

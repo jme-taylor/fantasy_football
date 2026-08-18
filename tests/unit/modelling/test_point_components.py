@@ -25,7 +25,6 @@ from fantasy_football.modelling.components import (
     PointsComponent,
     RateComponent,
     SavesComponent,
-    TotalComponent,
     expected_floor,
 )
 from fantasy_football.modelling.defcon import (
@@ -138,6 +137,7 @@ def test_every_component_returns_keyed_component_rows(component) -> None:
         defcon(),
         ConcedingComponent(),
         RateComponent(Component.GOALS),
+        SavesComponent(),
     ],
     ids=lambda c: str(c.component),
 )
@@ -148,20 +148,10 @@ def test_no_component_reads_a_minutes_feature(component) -> None:
     at composition. A component that took a minutes column as a model
     feature would double-count it the moment a second component was
     added, and the arithmetic would stop being a decomposition without
-    anything failing.
+    anything failing. There is no exception left: every position is
+    decomposed, so no component reads its own minutes.
     """
     assert not set(component.model_features) & set(MINUTES_OUTPUTS)
-
-
-def test_the_undecomposed_component_is_the_stated_exception() -> None:
-    """TOTAL declares the minutes it reads rather than hiding them.
-
-    An undecomposed model still takes expected_minutes as a feature, and
-    that is fine because nothing else scales its output. Declaring it
-    keeps the rule above meaningful: the exception is written down rather
-    than silently passing because the component happens to list nothing.
-    """
-    assert set(TotalComponent().model_features) == set(MINUTES_OUTPUTS)
 
 
 # --- Appearance ------------------------------------------------------

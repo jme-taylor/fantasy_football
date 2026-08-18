@@ -2,20 +2,22 @@
 
 A prediction used to be one number from one model. It is now a sum of
 components -- ``E[total] = sum of E[component]``, which holds by
-linearity even though the components correlate. A position that has not
-been decomposed is the degenerate case of a single ``TOTAL`` component,
-so nothing downstream needs to ask whether a position has been split up.
+linearity even though the components correlate. Every position is
+decomposed; there is no longer a whole-prediction component, so a new
+position is an entry in :data:`POSITION_COMPONENTS` naming the
+components it is paid, not a model of its own.
 
 Components live as rows in ``points_component`` rather than as a table
 each, so adding one is a new :class:`Component` value and an entry in
 :data:`POSITION_COMPONENTS`.
 
-There is no residual component. Bonus points and red cards are therefore
-in no outfield prediction at all, so every outfield score is low by
-roughly a player's bonus expectation -- concentrated in the high-BPS
-players, which makes it a ranking distortion rather than a constant
-offset. GK is still one model and still carries its bonus, so a GK total
-and an outfield total are not directly comparable.
+There is no residual component. Bonus points and red cards are in no
+prediction at all, so every score is low by roughly a player's bonus
+expectation -- concentrated in the high-BPS players, which makes it a
+ranking distortion rather than a constant offset. It applies to all four
+positions equally now, so totals remain comparable across them; a
+keeper's is additionally missing yellow cards, which is worth about a
+tenth of a point a match.
 """
 
 import logging
@@ -108,8 +110,6 @@ SAVES_DIVISOR = 3
 class Component(StrEnum):
     """One scoring component of an FPL points total."""
 
-    #: A whole undecomposed prediction, for positions not yet split up.
-    TOTAL = "total"
     #: Points for playing at all, and for playing an hour.
     APPEARANCE = "appearance"
     #: Points for clearing the defensive-contribution threshold.
@@ -133,7 +133,18 @@ class Component(StrEnum):
 # TODO (JT): nothing scores the composed total, so the cost of dropping
 # the residual is unmeasured.
 POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
-    "GK": (Component.TOTAL,),
+    # No defcon: FPL does not pay keepers defensive contributions, so
+    # there is no threshold for them in DEFCON_THRESHOLD_BY_POSITION.
+    # No goals or assists either -- both are rare enough in a keeper to
+    # be a mass of exact zeros, which is why the pooled heads train on
+    # the outfield only. No yellow cards: the pooled head leans on
+    # fouls committed, which is near-constant zero for a keeper, so it
+    # would return the intercept for about a tenth of a point a match.
+    "GK": (
+        Component.APPEARANCE,
+        Component.SAVES,
+        Component.CONCEDING,
+    ),
     "DEF": (
         Component.APPEARANCE,
         Component.DEFCON,
@@ -265,44 +276,6 @@ def _component_rows(
         model_version=pl.lit(None, dtype=pl.Utf8),
         diagnostics=diagnostics,
     ).select(POINTS_COMPONENT.columns)
-
-
-@dataclass(frozen=True)
-class TotalComponent:
-    """A whole undecomposed prediction, stored as a single component.
-
-    Takes the model's output as the points, untouched. The minutes
-    argument is ignored because an undecomposed points model already
-    reads minutes as a feature -- which is exactly what decomposing a
-    position removes.
-    """
-
-    @property
-    def component(self) -> Component:
-        """Return :attr:`Component.TOTAL`."""
-        return Component.TOTAL
-
-    @property
-    def model_features(self) -> tuple[str, ...]:
-        """Return the minutes columns an undecomposed model still reads.
-
-        Deliberately not empty. This is the one component allowed to read
-        minutes as a feature, and saying so keeps the guardrail test
-        honest rather than letting the exception pass unnoticed.
-        """
-        return MINUTES_OUTPUTS
-
-    def points(
-        self, rows: pl.DataFrame, minutes: pl.DataFrame, kind: str
-    ) -> pl.DataFrame:
-        """Return the model's output as the points, unscaled."""
-        return _component_rows(
-            rows,
-            self.component,
-            kind,
-            pl.col(PREDICTED_VALUE),
-            pl.lit(None, dtype=pl.Utf8),
-        )
 
 
 @dataclass(frozen=True)

@@ -30,7 +30,6 @@ from fantasy_football.modelling.components import (
     PREDICTED_VALUE,
     Component,
     PointsComponent,
-    TotalComponent,
 )
 from fantasy_football.modelling.folds import Fold, FoldResult
 from fantasy_football.modelling.metrics import (
@@ -251,7 +250,10 @@ class PositionPointsPredictor(Predictor):
     #: The column this model predicts.
     TARGET: ClassVar[str] = TARGET
     #: The scoring component this model's predictions are stored as.
-    COMPONENT: ClassVar[Component] = Component.TOTAL
+    #: Required: a default would let a head write its rows under
+    #: another component's name, which composes into a wrong total
+    #: rather than failing.
+    COMPONENT: ClassVar[Component]
     #: Model inputs, in the order the frame presents them.
     FEATURES: ClassVar[list[str]]
     #: Per-player form columns read from the player form views.
@@ -267,7 +269,7 @@ class PositionPointsPredictor(Predictor):
     #: Prefix applied to the opposition copies of the team form columns.
     OPPOSITION_PREFIX: ClassVar[str] = ""
     #: Turns this model's output into stored component points.
-    COMPONENT_IMPL: ClassVar[PointsComponent] = TotalComponent()
+    COMPONENT_IMPL: ClassVar[PointsComponent]
     #: Column weighting each training row, or None to weight equally.
     #: Per-90 targets need this: two CBIT in eight minutes is a rate of
     #: 22.5, and unweighted those rows dominate the fit.

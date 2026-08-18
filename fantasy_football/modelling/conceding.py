@@ -563,6 +563,28 @@ class MidfielderConcedingPredictor(ConcedingPredictor):
     POSITION = MID_POSITION
 
 
+GK_POSITION = "GK"
+
+
+class GoalkeeperConcedingPredictor(ConcedingPredictor):
+    """The same team-grain model, fanned out to goalkeepers.
+
+    A separate instance for the reason the midfielder one is: the model
+    predicts goals conceded by a *team* and carries no position in its
+    features or its target, so there is nothing for a position dummy to
+    tell apart. It reads the same registered model and the same alias --
+    only the rows it writes differ.
+
+    A keeper is paid the defender's four points for the sheet and docked
+    on the same schedule, so the prices in ``components.py`` already fit
+    him. The clean-sheet leg reading the full-match rate rather than the
+    minutes-scaled one is if anything safer here than at DEF: a keeper
+    who starts almost always finishes.
+    """
+
+    POSITION = GK_POSITION
+
+
 CONCEDING_SPEC = ModelSpec(
     registered_model_name=REGISTERED_MODEL,
     production_alias=PRODUCTION_ALIAS,
@@ -579,5 +601,15 @@ MIDFIELDER_CONCEDING_SPEC = ModelSpec(
     table=POINTS_COMPONENT,
     evaluation_table=TEST_CONCEDING_PREDICTION,
     position=MID_POSITION,
+    component=Component.CONCEDING,
+)
+
+
+GOALKEEPER_CONCEDING_SPEC = ModelSpec(
+    registered_model_name=REGISTERED_MODEL,
+    production_alias=PRODUCTION_ALIAS,
+    table=POINTS_COMPONENT,
+    evaluation_table=TEST_CONCEDING_PREDICTION,
+    position=GK_POSITION,
     component=Component.CONCEDING,
 )

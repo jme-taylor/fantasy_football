@@ -74,7 +74,6 @@ from fantasy_football.features.team_form import (
 from fantasy_football.storage.coverage import (
     FCI_COLUMN_SEASONS,
     FCI_EMPTY_COLUMNS,
-    VAASTAV_COLUMN_SEASONS,
     seasons_covering,
 )
 from fantasy_football.storage.tables import (
@@ -135,14 +134,6 @@ CREATION_PER90_STATS: tuple[str, ...] = (
 # ``PER90_STATS`` for the same reason the creation stats are.
 DISCIPLINE_PER90_STATS: tuple[str, ...] = ("fouls_committed",)
 
-# GK specific stats
-GK_PER90_STATS: tuple[str, ...] = (
-    "goals_prevented",
-    "xgot_faced",
-    "high_claim",
-    "sweeper_actions",
-)
-
 # GK specific stats taken from Vaastav rather than FCI.
 GK_FPL_PER90_STATS: tuple[str, ...] = (
     "saves",
@@ -184,7 +175,6 @@ OPTA_RATE_STATS: tuple[str, ...] = (
     *PER90_STATS,
     *CREATION_PER90_STATS,
     *DISCIPLINE_PER90_STATS,
-    *GK_PER90_STATS,
 )
 FPL_RATE_STATS: tuple[str, ...] = (*FPL_PER90_STATS, *GK_FPL_PER90_STATS)
 MATCH_RATE_STATS: tuple[str, ...] = MATCH_PER90_STATS
@@ -417,33 +407,6 @@ def covered_seasons(
         Sorted seasons covering every named stat.
     """
     return seasons_covering(FCI_COLUMN_SEASONS, stats or PER90_STATS)
-
-
-def goalkeeper_covered_seasons() -> tuple[str, ...]:
-    """Return the seasons every goalkeeper form stat is published in.
-
-    The keeper feature set draws on both sources, so the usable range is
-    the intersection of the two: FCI opens at 2024-25, Vaastav's keeper
-    columns go back to 2016-17, and the intersection is therefore FCI's
-    range. The cards the goalkeeper model also reads come from the
-    ``player_match`` spine, which is filled for every season either
-    source covers, so they cannot narrow this and are left out.
-
-    Computed rather than written down, so a keeper stat with narrower
-    coverage narrows the window automatically and a new season widens it
-    without an edit here.
-
-    Returns
-    -------
-    tuple[str, ...]
-        Sorted seasons covering every keeper stat.
-    """
-    return tuple(
-        sorted(
-            set(seasons_covering(FCI_COLUMN_SEASONS, GK_PER90_STATS))
-            & set(seasons_covering(VAASTAV_COLUMN_SEASONS, GK_FPL_PER90_STATS))
-        )
-    )
 
 
 def per90_column_name(stat: str, rolling_window: int) -> str:
