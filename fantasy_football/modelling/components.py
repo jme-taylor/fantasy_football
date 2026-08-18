@@ -91,10 +91,18 @@ CLEAN_SHEET_POINTS_BY_POSITION: dict[str, float] = {
 # docked" as a zero that reads like a price.
 CONCEDING_DEDUCTION_POSITIONS: frozenset[str] = frozenset({"GK", "DEF"})
 
-# How many terms of E[floor(N / 2)] = sum over k >= 1 of P(N >= 2k) are
+# How many terms of E[floor(N / d)] = sum over k >= 1 of P(N >= dk) are
 # summed. The terms fall away fast: at a rate of three, the sixth is
-# under a thousandth of a point.
+# under a thousandth of a point. Checked against both divisors in use --
+# conceding's two and saves' three -- so a third caller should re-check
+# rather than assume.
 DEDUCTION_TERMS = 5
+
+#: How many goals conceded cost a point.
+CONCEDING_DIVISOR = 2
+
+#: How many saves earn a point.
+SAVES_DIVISOR = 3
 
 
 class Component(StrEnum):
@@ -114,6 +122,8 @@ class Component(StrEnum):
     CONCEDING = "conceding"
     #: Points lost to bookings. Yellows only -- see YellowCardsComponent.
     YELLOW_CARDS = "yellow_cards"
+    #: Points for shot-stopping, at one per three saves.
+    SAVES = "saves"
 
 
 # Which components each position's prediction is summed from. Read as
@@ -383,36 +393,42 @@ class DefconComponent:
         )
 
 
-def expected_deduction(
-    rate: NDArray[np.float64], distribution: CountDistribution
+def expected_floor(
+    rate: NDArray[np.float64],
+    divisor: int,
+    distribution: CountDistribution,
 ) -> NDArray[np.float64]:
-    """Return E[floor(N / 2)] for each expected count.
+    """Return E[floor(N / divisor)] for each expected count.
 
-    What FPL docks: a point per two goals conceded, so a team expected
-    to ship three loses more than one and ``P(N >= 2)`` is not the
-    quantity. Summed as P(N >= 2) + P(N >= 4) + ..., the same
-    expectation written so that only the survival function is needed.
+    Two FPL rules have this shape: a point docked per two goals conceded,
+    and a point paid per three saves. Neither is a survival probability
+    -- a team expected to ship three loses more than one point, so
+    ``P(N >= 2)`` is the wrong quantity -- but both are the sum
+    P(N >= d) + P(N >= 2d) + ..., which is the same expectation written
+    so that only the survival function is needed.
 
-    Shared with the conceding head's metrics, which score this leg
+    Shared with the conceding head's metrics, which score that leg
     separately from the clean-sheet one. Two spellings of it would let
-    the number the model is judged on drift from the number it is paid.
+    the number a model is judged on drift from the number it is paid.
 
     Parameters
     ----------
     rate : NDArray[np.float64]
-        Expected goals conceded over the exposure being priced.
+        Expected count over the exposure being priced.
+    divisor : int
+        How many events one point is worth.
     distribution : CountDistribution
         The count distribution the rate is read through.
 
     Returns
     -------
     NDArray[np.float64]
-        One expected deduction per element of ``rate``.
+        One expected floored count per element of ``rate``.
     """
-    docked = np.zeros_like(np.asarray(rate, dtype=float))
+    floored = np.zeros_like(np.asarray(rate, dtype=float))
     for term in range(1, DEDUCTION_TERMS + 1):
-        docked += distribution.p_at_least(rate, 2 * term)
-    return docked
+        floored += distribution.p_at_least(rate, divisor * term)
+    return floored
 
 
 @dataclass(frozen=True)
@@ -468,7 +484,9 @@ class ConcedingComponent:
         rate = np.clip(joined[PREDICTED_VALUE].to_numpy(), 0.0, None)
         exposed = rate * joined["expected_minutes"].to_numpy() / 90.0
         clean = 1.0 - self.distribution.p_at_least(rate, 1)
-        deduction = expected_deduction(exposed, self.distribution)
+        deduction = expected_floor(
+            exposed, CONCEDING_DIVISOR, self.distribution
+        )
         price = pl.col("position").replace_strict(
             CLEAN_SHEET_POINTS_BY_POSITION, return_dtype=pl.Float64
         )
@@ -492,6 +510,62 @@ class ConcedingComponent:
                 pl.col(PREDICTED_VALUE).alias("rate"),
                 pl.col("_p_clean").alias("p_clean_sheet"),
                 pl.col("_deduction").alias("expected_deduction"),
+            ).struct.json_encode(),
+        )
+
+
+@dataclass(frozen=True)
+class SavesComponent:
+    """Points for shot-stopping, at one point per three saves.
+
+    Not a :class:`RateComponent` despite starting from a per-90 rate:
+    FPL pays the floor of the count over three, and a linear
+    ``rate / 3`` overpays at every rate because it pays for the two
+    saves that earn nothing. The floor is taken through the same
+    survival-function sum the conceding deduction uses.
+
+    The exposure is the minutes forecast, which is close to a formality
+    for a keeper -- they are substituted far less often than outfielders
+    -- but it is what stops a benched second choice being paid for the
+    saves his club's starter will make.
+    """
+
+    distribution: CountDistribution = field(default_factory=PoissonCounts)
+
+    @property
+    def component(self) -> Component:
+        """Return :attr:`Component.SAVES`."""
+        return Component.SAVES
+
+    @property
+    def model_features(self) -> tuple[str, ...]:
+        """Return no minutes features, by construction."""
+        return ()
+
+    def points(
+        self, rows: pl.DataFrame, minutes: pl.DataFrame, kind: str
+    ) -> pl.DataFrame:
+        """Return ``E[floor(saves / 3)]`` over the minutes expected."""
+        joined = _with_minutes(rows, minutes).with_columns(
+            _expected=(
+                pl.col(PREDICTED_VALUE).clip(lower_bound=0.0)
+                * pl.col("expected_minutes")
+                / 90.0
+            )
+        )
+        paid = expected_floor(
+            joined["_expected"].to_numpy(), SAVES_DIVISOR, self.distribution
+        )
+        joined = joined.with_columns(_points=pl.Series(paid).cast(pl.Float64))
+        return _component_rows(
+            joined,
+            self.component,
+            kind,
+            pl.col("_points"),
+            pl.struct(
+                pl.col(PREDICTED_VALUE).alias("per_90"),
+                pl.col("expected_minutes"),
+                pl.col("_expected").alias("expected_count"),
             ).struct.json_encode(),
         )
 

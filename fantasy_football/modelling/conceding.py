@@ -51,11 +51,12 @@ from fantasy_football.features.views import register_feature_views
 from fantasy_football.modelling.components import (
     CLEAN_SHEET_POINTS_BY_POSITION,
     CONCEDING_DEDUCTION_POSITIONS,
+    CONCEDING_DIVISOR,
     KEY_COLUMNS,
     PREDICTED_VALUE,
     Component,
     ConcedingComponent,
-    expected_deduction,
+    expected_floor,
 )
 from fantasy_football.modelling.defcon import (
     MINUTES_FLOOR as DEFCON_MINUTES_FLOOR,
@@ -469,8 +470,8 @@ WHERE m.minutes IS NOT NULL
             deduction_mae=float(
                 np.mean(
                     np.abs(
-                        expected_deduction(rate, distribution)
-                        - np.floor(actual / 2.0)
+                        expected_floor(rate, CONCEDING_DIVISOR, distribution)
+                        - np.floor(actual / CONCEDING_DIVISOR)
                     )
                 )
             ),
