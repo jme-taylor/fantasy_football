@@ -1,18 +1,20 @@
-"""The defensive-contribution rate model.
+"""The defensive-contribution rate models.
 
-FPL pays a defender two points for reaching 10 CBIT -- clearances,
-blocks, interceptions and tackles -- in a match. That is a threshold on a
-count, not a smooth quantity, and it is the one part of a defender's
-score that a points regressor has no way to represent.
+FPL pays two points for reaching a threshold on a count of defensive
+actions. That is a threshold on a count, not a smooth quantity, and it is
+the one part of a score that a points regressor has no way to represent.
 
-What this model predicts is the *rate*: CBIT per 90, with no minutes
-feature anywhere in it. Minutes turn that rate into an expected count and
-the count distribution turns the expected count into the probability of
+The rule runs off two different counts. A defender needs 10 CBIT --
+clearances, blocks, interceptions and tackles. A midfielder or forward
+needs 12 CBIRT, the same four plus recoveries. Two counts and two
+thresholds mean two heads: one regressor predicts one quantity, and a
+single rate cannot be both.
+
+What each model predicts is the *rate* per 90, with no minutes feature
+anywhere in it. Minutes turn that rate into an expected count and the
+count distribution turns the expected count into the probability of
 clearing the threshold, both at composition time. Splitting it that way
 is what lets minutes be applied exactly once across every component.
-
-Recoveries are deliberately absent from the count: they belong to the
-midfield and forward threshold of 12, not the defender threshold of 10.
 """
 
 import logging
@@ -25,13 +27,20 @@ import polars as pl
 from sklearn.metrics import brier_score_loss, log_loss
 
 from fantasy_football.constants import DEFCON_THRESHOLD_BY_POSITION
-from fantasy_football.features.match_form import DEFCON_COMPONENT_STATS
+from fantasy_football.features.match_form import (
+    DEFCON_COMPONENT_STATS,
+    DEFCON_MID_FWD_COMPONENT_STATS,
+    NO_FORM_COLUMN,
+)
 from fantasy_football.modelling.components import (
     Component,
     DefconComponent,
 )
 from fantasy_football.modelling.distributions import PoissonCounts
-from fantasy_football.modelling.points import PositionPointsPredictor
+from fantasy_football.modelling.points import (
+    PositionPointsPredictor,
+    position_dummy_names,
+)
 from fantasy_football.modelling.predictor import ModelSpec
 from fantasy_football.storage.coverage import FCI_SEASONS
 from fantasy_football.storage.tables import (
@@ -58,19 +67,20 @@ TRAINING_SEASONS = FCI_SEASONS
 MINUTES_FLOOR = 15
 
 
-def _opta_cbit(alias: str = "oc") -> str:
-    """Return the SQL summing FCI's four defender counters.
+def _opta_count(stats: tuple[str, ...], alias: str = "oc") -> str:
+    """Return the SQL summing FCI's counters into one count.
 
-    Null when FCI published none of them, rather than zero: a defender
+    Null when FCI published none of them, rather than zero: a player
     with no data did not make no clearances.
     """
-    absent = " AND ".join(
-        f"{alias}.{stat} IS NULL" for stat in DEFCON_COMPONENT_STATS
-    )
-    totalled = " + ".join(
-        f"coalesce({alias}.{stat}, 0)" for stat in DEFCON_COMPONENT_STATS
-    )
+    absent = " AND ".join(f"{alias}.{stat} IS NULL" for stat in stats)
+    totalled = " + ".join(f"coalesce({alias}.{stat}, 0)" for stat in stats)
     return f"CASE WHEN {absent} THEN NULL ELSE {totalled} END"
+
+
+def _opta_cbit(alias: str = "oc") -> str:
+    """Return the SQL summing FCI's four defender counters."""
+    return _opta_count(DEFCON_COMPONENT_STATS, alias)
 
 
 # FPL's own count where it is published, and FCI's reconstruction only
@@ -129,10 +139,14 @@ class DefconRatePredictor(PositionPointsPredictor):
     """Predicts CBIT per 90 for defenders, with no minutes features."""
 
     POSITION = POSITION
+    #: The scored column holding the match's actual count. Named rather
+    #: than assumed, so the metrics below serve either count.
+    COUNT_COLUMN: ClassVar[str] = "cbit_count"
     TARGET = "cbit_per_90"
     COMPONENT = Component.DEFCON
     COMPONENT_IMPL = DefconComponent(
-        threshold=DEFCON_THRESHOLD_BY_POSITION["DEF"], distribution=PoissonCounts()
+        threshold=DEFCON_THRESHOLD_BY_POSITION["DEF"],
+        distribution=PoissonCounts(),
     )
     TRAINING_SEASONS = TRAINING_SEASONS
     WEIGHT_COLUMN = "minutes"
@@ -205,15 +219,14 @@ class DefconRatePredictor(PositionPointsPredictor):
         model's forecast, which isolates this head's error from the
         minutes model's.
         """
+        threshold = self.COMPONENT_IMPL.threshold
         minutes = test_df["minutes"].cast(pl.Float64).to_numpy()
         rate = np.clip(np.asarray(predicted, dtype=float), 0.0, None)
         probability = self.COMPONENT_IMPL.distribution.p_at_least(
-            rate * minutes / 90.0, DEFCON_THRESHOLD_BY_POSITION["DEF"]
+            rate * minutes / 90.0, threshold
         )
         actual = (
-            (test_df["cbit_count"] >= DEFCON_THRESHOLD_BY_POSITION["DEF"])
-            .cast(pl.Int64)
-            .to_list()
+            (test_df[self.COUNT_COLUMN] >= threshold).cast(pl.Int64).to_list()
         )
         base_rate = float(np.mean(actual))
         baseline = np.full_like(probability, base_rate)
@@ -250,5 +263,119 @@ DEFCON_SPEC = ModelSpec(
     table=POINTS_COMPONENT,
     evaluation_table=TEST_POINTS_PREDICTION,
     position=POSITION,
+    component=Component.DEFCON,
+)
+
+
+MID_FWD_POSITION = "MID"
+
+CBIRT_REGISTERED_MODEL = "cbirt_rate_regressor"
+
+#: The positions paid on CBIRT. Pooled into one head: the rule, the
+#: count and the threshold are identical for both, so the target is the
+#: same quantity and only the level differs -- which the position dummy
+#: carries. Forwards clear twelve in under 1% of their appearances, far
+#: too rare to fit on their own.
+CBIRT_POSITIONS: tuple[str, ...] = ("MID", "FWD")
+
+# FPL's own count first, FCI's published count second, FCI's
+# reconstruction from the five counters last. Reconciled on 2025-26,
+# where all three exist: FCI's published count agrees with FPL exactly on
+# every row it covers, and the reconstruction agrees on 93.0% of
+# midfielder and 97.0% of forward gameweeks, differing by one on most of
+# the rest. Only 15 rows in 5,585 fall on opposite sides of the
+# threshold, which is the only disagreement that reaches a prediction.
+#
+# The reconstruction is not a fallback for tidiness: FCI publishes its
+# own count from 2025-26 and Vaastav's ends there, so 2024-25 has
+# nothing else, and the live season has no Vaastav column at all.
+CBIRT_COUNT_SQL = (
+    "coalesce(pmf.defensive_contribution, oc.defensive_contributions, "
+    f"{_opta_count(DEFCON_MID_FWD_COMPONENT_STATS)})"
+)
+
+
+class CbirtRatePredictor(DefconRatePredictor):
+    """Predicts CBIRT per 90 for midfielders and forwards.
+
+    Everything but the count, the threshold and the feature list is the
+    defender head's: the same joins, the same minutes floor, the same
+    match-scale metrics.
+    """
+
+    POSITION = MID_FWD_POSITION
+    TRAINING_POSITIONS = CBIRT_POSITIONS
+    COUNT_COLUMN = "cbirt_count"
+    TARGET = "cbirt_per_90"
+    COMPONENT_IMPL = DefconComponent(
+        threshold=DEFCON_THRESHOLD_BY_POSITION[MID_FWD_POSITION],
+        distribution=PoissonCounts(),
+    )
+    EXTRA_COLUMNS = (
+        f"{CBIRT_COUNT_SQL} AS cbirt_count",
+        "m.minutes AS minutes",
+    )
+    FEATURE_FILLS: ClassVar[dict[str, float]] = {NO_FORM_COLUMN: 1.0}
+
+    # The defender head's list, on the CBIRT trio rather than the CBIT
+    # one and with recoveries added -- the counter that separates the two
+    # counts. The team columns run the same way for the same reason: a
+    # midfielder defends more when his club is under pressure.
+    FEATURES = [
+        "is_home",
+        *position_dummy_names(CBIRT_POSITIONS),
+        "cbirt_per90_rolling_5",
+        "cbirt_twelve_plus_rate_rolling_5",
+        "cbirt_std_rolling_5",
+        "tackles_per90_rolling_5",
+        "interceptions_per90_rolling_5",
+        "clearances_per90_rolling_5",
+        "blocks_per90_rolling_5",
+        "recoveries_per90_rolling_5",
+        "xg_against_rolling_5",
+        "goals_against_rolling_5",
+        "xg_for_rolling_5",
+        "goals_for_rolling_5",
+    ]
+
+    PLAYER_FORM_COLUMNS = [
+        "cbirt_per90_rolling_5",
+        "cbirt_twelve_plus_rate_rolling_5",
+        "cbirt_std_rolling_5",
+        "tackles_per90_rolling_5",
+        "interceptions_per90_rolling_5",
+        "clearances_per90_rolling_5",
+        "blocks_per90_rolling_5",
+        "recoveries_per90_rolling_5",
+    ]
+    OWN_TEAM_COLUMNS = ["xg_against_rolling_5", "goals_against_rolling_5"]
+    OPPOSITION_COLUMNS = ["xg_for_rolling_5", "goals_for_rolling_5"]
+    MINUTES_COLUMNS: ClassVar[list[str]] = []
+
+    @property
+    @override
+    def target_sql(self) -> str:
+        """Return CBIRT per 90 from whichever source published it."""
+        return (
+            f"{CBIRT_COUNT_SQL} * 90.0 "
+            "/ nullif(m.minutes, 0) AS cbirt_per_90"
+        )
+
+    @property
+    @override
+    def row_filter(self) -> str:
+        """Drop rows with no count, or too few minutes to rate one."""
+        return (
+            f"\n  AND m.minutes >= {MINUTES_FLOOR}"
+            f"\n  AND {CBIRT_COUNT_SQL} IS NOT NULL"
+        )
+
+
+CBIRT_SPEC = ModelSpec(
+    registered_model_name=CBIRT_REGISTERED_MODEL,
+    production_alias=PRODUCTION_ALIAS,
+    table=POINTS_COMPONENT,
+    evaluation_table=TEST_POINTS_PREDICTION,
+    position=MID_FWD_POSITION,
     component=Component.DEFCON,
 )
