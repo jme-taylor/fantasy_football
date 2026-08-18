@@ -440,8 +440,13 @@ def test_an_assist_pays_the_same_whatever_the_shirt() -> None:
 # --- Training scope is not scoring scope ------------------------------
 
 
-def test_only_the_served_position_is_scored(connection) -> None:
-    """Written rows are stamped POSITION whatever they were fitted on."""
+def test_every_served_position_is_scored(connection) -> None:
+    """One artefact writes rows for all three outfield positions.
+
+    The rows must carry the position they came from, not the model's
+    primary one -- nothing downstream can tell the difference, since the
+    component name is legitimate either way.
+    """
     _seed_fixtures(connection)
     for element, position in ((1, "DEF"), (2, "MID"), (3, "FWD")):
         _seed_player(connection, element=element, position=position)
@@ -449,7 +454,14 @@ def test_only_the_served_position_is_scored(connection) -> None:
 
     assert predictor.build_training_data().height == 3
     scored = predictor.scoring_frame()
-    assert scored["element"].unique().to_list() == [1]
+    assert sorted(scored["element"].unique().to_list()) == [1, 2, 3]
+
+    stamped = (
+        scored.with_columns(position=predictor._served_position())
+        .unique(subset=["element"])
+        .sort("element")
+    )
+    assert stamped["position"].to_list() == ["DEF", "MID", "FWD"]
 
 
 def test_short_appearances_are_still_scored(connection) -> None:

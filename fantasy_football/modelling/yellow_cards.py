@@ -95,11 +95,13 @@ from fantasy_football.storage.tables import (
 
 logger = logging.getLogger(__name__)
 
-#: The position this instance scores and writes. The model behind it
-#: knows about all three in :data:`TRAINING_POSITIONS`.
+#: The model's primary position, which keys its registered name and
+#: its evaluation. It scores and writes every position in
+#: :data:`TRAINING_POSITIONS` -- see ``SERVING_POSITIONS``.
 POSITION = "DEF"
 
-#: The outfield positions the one artefact is fitted on.
+#: The outfield positions the one artefact is fitted on, and
+#: writes component rows for.
 TRAINING_POSITIONS: tuple[str, ...] = ("DEF", "MID", "FWD")
 
 REGISTERED_MODEL = "yellow_cards_rate_regressor"
@@ -181,6 +183,7 @@ class YellowCardsRatePredictor(PositionPointsPredictor):
 
     POSITION = POSITION
     TRAINING_POSITIONS = TRAINING_POSITIONS
+    SERVING_POSITIONS = TRAINING_POSITIONS
     TARGET = "yellow_cards_per_90"
     COMPONENT = Component.YELLOW_CARDS
     COMPONENT_IMPL = YellowCardsComponent()

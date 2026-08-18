@@ -558,8 +558,13 @@ def prediction_versions(
         clauses.append(f"season IN ({placeholders})")
         params.extend(seasons)
     for name, value in (equals or {}).items():
-        clauses.append(f"{name} = ?")
-        params.append(value)
+        if isinstance(value, (tuple, list)):
+            names = ", ".join("?" for _ in value)
+            clauses.append(f"{name} IN ({names})")
+            params.extend(value)
+        else:
+            clauses.append(f"{name} = ?")
+            params.append(value)
     query = f"SELECT DISTINCT model_version FROM {table_name}"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)

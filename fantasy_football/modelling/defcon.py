@@ -305,6 +305,7 @@ class CbirtRatePredictor(DefconRatePredictor):
 
     POSITION = MID_FWD_POSITION
     TRAINING_POSITIONS = CBIRT_POSITIONS
+    SERVING_POSITIONS = CBIRT_POSITIONS
     COUNT_COLUMN = "cbirt_count"
     TARGET = "cbirt_per_90"
     COMPONENT_IMPL = DefconComponent(

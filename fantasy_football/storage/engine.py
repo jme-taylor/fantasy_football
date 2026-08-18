@@ -114,12 +114,23 @@ def delete_where(
     table_name : str
         The table to delete from.
     equals : dict[str, object]
-        Column-to-value equality predicates, combined with AND.
+        Column-to-value equality predicates, combined with AND. A tuple
+        or list value matches any of its members instead -- what a model
+        serving several positions needs, since deleting one position's
+        rows and inserting all of them would double the rest.
     gw_from : int | None, optional
         When given, also require ``gw >= gw_from``. Defaults to None.
     """
-    clauses = [f"{column} = ?" for column in equals]
-    params: list[object] = list(equals.values())
+    clauses: list[str] = []
+    params: list[object] = []
+    for column, value in equals.items():
+        if isinstance(value, (tuple, list)):
+            placeholders = ", ".join("?" for _ in value)
+            clauses.append(f"{column} IN ({placeholders})")
+            params.extend(value)
+        else:
+            clauses.append(f"{column} = ?")
+            params.append(value)
     if gw_from is not None:
         clauses.append("gw >= ?")
         params.append(gw_from)
@@ -179,8 +190,8 @@ def distinct(
         The column whose distinct values are returned.
     equals : dict[str, object] | None, optional
         Column-to-value equality predicates restricting which rows are
-        considered, combined with AND. Defaults to None, meaning every
-        row.
+        considered, combined with AND. A tuple or list value matches any
+        of its members. Defaults to None, meaning every row.
 
     Returns
     -------
@@ -190,7 +201,15 @@ def distinct(
     query = f"SELECT DISTINCT {column} FROM {table_name}"
     params: list[object] = []
     if equals:
-        query += " WHERE " + " AND ".join(f"{name} = ?" for name in equals)
-        params = list(equals.values())
+        clauses: list[str] = []
+        for name, value in equals.items():
+            if isinstance(value, (tuple, list)):
+                placeholders = ", ".join("?" for _ in value)
+                clauses.append(f"{name} IN ({placeholders})")
+                params.extend(value)
+            else:
+                clauses.append(f"{name} = ?")
+                params.append(value)
+        query += " WHERE " + " AND ".join(clauses)
     rows = connection.execute(query, params).fetchall()
     return {row[0] for row in rows}
