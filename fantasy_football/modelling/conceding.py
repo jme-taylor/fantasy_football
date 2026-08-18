@@ -545,11 +545,38 @@ WHERE m.minutes IS NOT NULL
         )
 
 
+MID_POSITION = "MID"
+
+
+class MidfielderConcedingPredictor(ConcedingPredictor):
+    """The same team-grain model, fanned out to midfielders.
+
+    A separate instance rather than a serving list: the model predicts
+    goals conceded by a *team* and carries no position anywhere in its
+    features or its target, so there is nothing here for a position
+    dummy to tell apart. It reads the same registered model and the same
+    alias -- only the rows it writes differ, which the spec's position
+    keeps apart.
+    """
+
+    POSITION = MID_POSITION
+
+
 CONCEDING_SPEC = ModelSpec(
     registered_model_name=REGISTERED_MODEL,
     production_alias=PRODUCTION_ALIAS,
     table=POINTS_COMPONENT,
     evaluation_table=TEST_CONCEDING_PREDICTION,
     position=POSITION,
+    component=Component.CONCEDING,
+)
+
+
+MIDFIELDER_CONCEDING_SPEC = ModelSpec(
+    registered_model_name=REGISTERED_MODEL,
+    production_alias=PRODUCTION_ALIAS,
+    table=POINTS_COMPONENT,
+    evaluation_table=TEST_CONCEDING_PREDICTION,
+    position=MID_POSITION,
     component=Component.CONCEDING,
 )

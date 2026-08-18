@@ -21,25 +21,17 @@ from fantasy_football.modelling.components import (
     Component,
     compose,
 )
-from fantasy_football.modelling.defender import (
-    DEFENDER_SPEC,
-    DefenderPointsPredictor,
-)
 from fantasy_football.modelling.folds import (
     ExpandingGameweekFoldStrategy,
     TrainTestSplitStrategy,
-)
-from fantasy_football.modelling.forwards import (
-    FORWARD_SPEC,
-    ForwardPointsPredictor,
 )
 from fantasy_football.modelling.goalkeeper import (
     GOALKEEPER_SPEC,
     GoalkeeperPointsPredictor,
 )
-from fantasy_football.modelling.midfielder import (
-    MIDFIELDER_SPEC,
-    MidfielderPointsPredictor,
+from fantasy_football.modelling.goals import (
+    GOALS_SPEC,
+    GoalsRatePredictor,
 )
 from fantasy_football.modelling.points import (
     KEY_COLUMNS,
@@ -74,11 +66,13 @@ from tests.unit.modelling.conftest import (
 
 PRIOR_SEASON = "2024-25"
 
+# The framework tests below seed a generic frame and expect one
+# position's rows out of it. GK is the only position still served by a
+# single undecomposed model, so it is the one that fits that shape --
+# the component heads restrict their own rows and serve several
+# positions at once, and each has its own test module for that.
 SPECS = {
-    DefenderPointsPredictor: DEFENDER_SPEC,
     GoalkeeperPointsPredictor: GOALKEEPER_SPEC,
-    ForwardPointsPredictor: FORWARD_SPEC,
-    MidfielderPointsPredictor: MIDFIELDER_SPEC,
 }
 
 
@@ -234,93 +228,6 @@ def _seed_prior_season_match(connection, position: str) -> None:
             }
         ],
     )
-
-
-@pytest.mark.parametrize(
-    "cls",
-    [cls for cls in SPECS if cls.TRAINING_SEASONS is None],
-    ids=lambda cls: cls.POSITION,
-)
-def test_training_data_spans_every_season_by_default(
-    cls, connection, seed_model_frame
-) -> None:
-    """An unrestricted position trains on every season it has rows for.
-
-    The three outfield models rely on this: their features go back as far
-    as the data does, and narrowing them would invalidate models already
-    registered against the wider frame. Parametrised over the positions
-    that leave the restriction unset rather than skipping the one that
-    does, so the goalkeeper never appears here as a passing case; what it
-    does instead is in ``test_goalkeeper.py``.
-    """
-    predictor = cls(
-        experiment_name=f"test-{cls.POSITION}",
-        params={},
-        model_spec=SPECS[cls],
-        connection=connection,
-        fold_strategy=ExpandingGameweekFoldStrategy(),
-    )
-    seed_model_frame(connection, cls.POSITION)
-    _seed_prior_season_match(connection, cls.POSITION)
-
-    seasons = set(predictor.build_training_data()["season"].to_list())
-
-    assert seasons == {PRIOR_SEASON, SEASON}
-
-
-def test_training_seasons_drops_rows_outside_the_window(
-    connection, seed_model_frame
-) -> None:
-    """A position that sets TRAINING_SEASONS sees only those seasons.
-
-    Without this the restriction can silently do nothing: the frame would
-    look right, and the only symptom would be a model quietly fitted on
-    median-imputed values for features that did not exist yet.
-    """
-
-    class Restricted(DefenderPointsPredictor):
-        TRAINING_SEASONS = (SEASON,)
-
-    predictor = Restricted(
-        experiment_name="test-restricted",
-        params={},
-        model_spec=DEFENDER_SPEC,
-        connection=connection,
-        fold_strategy=ExpandingGameweekFoldStrategy(),
-    )
-    seed_model_frame(connection, Restricted.POSITION)
-    _seed_prior_season_match(connection, Restricted.POSITION)
-
-    seasons = set(predictor.build_training_data()["season"].to_list())
-
-    assert seasons == {SEASON}
-
-
-def test_empty_training_seasons_names_the_cause(connection) -> None:
-    """A collapsed window fails with a message, not a parser error.
-
-    The window is derived by intersecting coverage maps, so a stat whose
-    seasons do not overlap the rest empties it. Emitting ``IN ()`` would
-    surface as a DuckDB parser error naming neither the position nor the
-    stat lists behind it.
-    """
-
-    class Collapsed(DefenderPointsPredictor):
-        TRAINING_SEASONS = ()
-
-    predictor = Collapsed(
-        experiment_name="test-collapsed",
-        params={},
-        model_spec=DEFENDER_SPEC,
-        connection=connection,
-        fold_strategy=ExpandingGameweekFoldStrategy(),
-    )
-
-    with pytest.raises(ValueError, match="empty tuple"):
-        predictor.model_frame_sql()
-
-
-# --- Pipeline and metrics --------------------------------------------
 
 
 def test_pipeline_imputes_and_has_no_scaler(predictor) -> None:
@@ -1467,7 +1374,7 @@ def test_positions_do_not_overwrite_each_others_predictions(
                 "position": position,
                 "chance_of_playing_this_round": 100,
             }
-            for element, position in [(1, "DEF"), (2, "FWD")]
+            for element, position in [(1, "DEF"), (2, "FWD"), (3, "GK")]
         ],
     )
     mocker.patch(
@@ -1477,7 +1384,13 @@ def test_positions_do_not_overwrite_each_others_predictions(
     mocker.patch("fantasy_football.modelling.predictor.CURRENT_SEASON", SEASON)
     _mock_fpl_teams(mocker)
 
-    for cls, spec in SPECS.items():
+    # The keeper's undecomposed model and one pooled head, which serves
+    # the two outfield positions seeded here. Both write into
+    # points_component, and neither may clear the other's rows.
+    for cls, spec in (
+        (GoalkeeperPointsPredictor, GOALKEEPER_SPEC),
+        (GoalsRatePredictor, GOALS_SPEC),
+    ):
         cls(
             experiment_name=f"test-{cls.POSITION}",
             params={},
@@ -1487,7 +1400,11 @@ def test_positions_do_not_overwrite_each_others_predictions(
         ).predict_forward()
 
     stored = POINTS_COMPONENT.load(connection).filter(pl.col("gw") == 3)
-    assert sorted(stored["position"].unique().to_list()) == ["DEF", "FWD"]
+    assert sorted(stored["position"].unique().to_list()) == [
+        "DEF",
+        "FWD",
+        "GK",
+    ]
 
 
 # --- Registry drift --------------------------------------------------

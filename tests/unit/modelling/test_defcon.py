@@ -9,16 +9,11 @@ target deducts, since a mistake in either is invisible downstream.
 import polars as pl
 import pytest
 
-from fantasy_football.constants import CURRENT_SEASON
 from fantasy_football.modelling.components import Component
 from fantasy_football.modelling.defcon import (
     DEFCON_SPEC,
     MINUTES_FLOOR,
     DefconRatePredictor,
-)
-from fantasy_football.modelling.defender import (
-    DEFENDER_RESIDUAL_SPEC,
-    DefenderResidualPointsPredictor,
 )
 from fantasy_football.modelling.folds import ExpandingGameweekFoldStrategy
 from fantasy_football.storage.tables import (
@@ -309,101 +304,7 @@ def test_a_useless_head_scores_no_skill(connection, synthetic_frame) -> None:
 # --- The residual target ---------------------------------------------
 
 
-def test_residual_deducts_appearance_and_awarded_defcon(connection) -> None:
-    """Both carved-out components come out of the residual target."""
-    _seed_one_match(
-        connection,
-        total_points=9,
-        opta_counters={"tackles": 12},
-        fpl_defcon=12,
-    )
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data()
-
-    # 9 total, less 2 for the hour, less 2 for clearing the threshold.
-    assert frame["residual_points_per_90"].item() == pytest.approx(5.0)
-
-
-def test_residual_deducts_nothing_for_defcon_before_the_rule_existed(
-    connection,
-) -> None:
-    """A 2024-25 defender hitting twelve CBIT was paid nothing for it.
-
-    Deducting a reconstructed two points here would manufacture a
-    negative residual for exactly the defensive workhorses the model
-    should rate, and teach it they are worth less.
-    """
-    _seed_one_match(
-        connection,
-        season=PRIOR_SEASON,
-        total_points=9,
-        opta_counters={"tackles": 12},
-        fpl_defcon=None,
-    )
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data()
-
-    # 9 total, less 2 for the hour, and nothing for defcon.
-    assert frame["residual_points_per_90"].item() == pytest.approx(7.0)
-
-
-def test_residual_pays_one_appearance_point_for_a_cameo(connection) -> None:
-    """Under an hour is one appearance point, not two."""
-    _seed_one_match(
-        connection, minutes=45, total_points=3, opta_counters={"tackles": 1}
-    )
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data()
-
-    # (3 - 1) over 45 minutes is 4 per 90.
-    assert frame["residual_points_per_90"].item() == pytest.approx(4.0)
-
-
 # --- Weighting -------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("cls", "spec"),
-    [
-        (DefconRatePredictor, DEFCON_SPEC),
-        (DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC),
-    ],
-    ids=["defcon", "residual"],
-)
-def test_training_rows_are_weighted_by_minutes(
-    cls, spec, connection, synthetic_frame
-) -> None:
-    """A full ninety counts for more than a cameo when fitting."""
-    predictor = _predictor(cls, spec, connection)
-    frame = synthetic_frame(predictor, n_gws=1, n_players=3).with_columns(
-        minutes=pl.Series([90.0, 45.0, 9.0])
-    )
-
-    assert predictor.sample_weight(frame) == pytest.approx([90.0, 45.0, 9.0])
-
-
-def test_the_monolith_still_weights_every_row_equally(
-    connection, synthetic_frame
-) -> None:
-    """Weighting is opt-in, so undecomposed positions are untouched."""
-    from fantasy_football.modelling.defender import (
-        DEFENDER_SPEC,
-        DefenderPointsPredictor,
-    )
-
-    predictor = _predictor(DefenderPointsPredictor, DEFENDER_SPEC, connection)
-    frame = synthetic_frame(predictor, n_gws=1, n_players=3)
-
-    assert predictor.sample_weight(frame) is None
 
 
 # --- Components produced ---------------------------------------------
@@ -442,34 +343,6 @@ def test_defcon_rows_are_stored_as_defcon_components(
     assert rows["points"].max() <= 2.0
     assert rows["points"].min() >= 0.0
     assert rows["diagnostics"].null_count() == 0
-
-
-def test_residual_still_deducts_defcon_when_fpl_stops_publishing(
-    connection,
-) -> None:
-    """The deduction follows the rule, not one provider's column.
-
-    Vaastav's ``defensive_contribution`` ends at 2025-26, so keying the
-    deduction on it would silently stop deducting in the live season.
-    The residual would re-absorb points the defcon component is also
-    predicting, and the composed total would double-count them.
-    """
-    _seed_one_match(
-        connection,
-        season=CURRENT_SEASON,
-        total_points=9,
-        opta_counters={"tackles": 12},
-        fpl_defcon=None,
-    )
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data()
-
-    # 9 total, less 2 for the hour, less 2 for the threshold FPL still
-    # pays for even though this source no longer publishes the count.
-    assert frame["residual_points_per_90"].item() == pytest.approx(5.0)
 
 
 def test_fold_metrics_survive_a_fold_where_nobody_clears_the_threshold(

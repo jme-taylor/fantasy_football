@@ -8,17 +8,11 @@ rather than ``TRAINING_POSITIONS`` quietly turns the pooled model back
 into a defenders-only one with almost no goals in it.
 """
 
-import polars as pl
 import pytest
 
 from fantasy_football.modelling.components import (
     GOALS_POINTS_BY_POSITION,
     Component,
-)
-from fantasy_football.modelling.defcon import DefconRatePredictor
-from fantasy_football.modelling.defender import (
-    DEFENDER_RESIDUAL_SPEC,
-    DefenderResidualPointsPredictor,
 )
 from fantasy_football.modelling.folds import ExpandingGameweekFoldStrategy
 from fantasy_football.modelling.goals import (
@@ -26,7 +20,6 @@ from fantasy_football.modelling.goals import (
     MINUTES_FLOOR,
     SCORING_MINUTES_FLOOR,
     GoalsRatePredictor,
-    goals_count_sql,
 )
 from fantasy_football.modelling.points import position_dummy_names
 from fantasy_football.storage.tables import (
@@ -298,53 +291,6 @@ def test_rows_with_no_form_behind_them_are_dropped_from_the_fit(
 
 
 # --- The decomposition holds ------------------------------------------
-
-
-def test_the_residual_deducts_the_goals_the_head_predicts(
-    connection,
-) -> None:
-    """Otherwise the components sum to more than the total."""
-    _seed_fixtures(connection)
-    _seed_player(connection, goals=(0, 1), total_points=12)
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data().filter(pl.col("gw") == 2)
-
-    # 12 points, less 2 for the hour and 6 for the goal.
-    assert frame["residual_points_per_90"].item() == pytest.approx(4.0)
-
-
-def test_the_residual_deducts_the_expression_the_head_targets(
-    connection,
-) -> None:
-    """One definition, two aliasings.
-
-    ``goals_count_sql`` is a function precisely so the target and the
-    deduction cannot be spelled two ways. Until now that was defended by
-    a comment, and a second spelling would leave the components summing
-    to something other than the total with nothing failing.
-    """
-    from fantasy_football.modelling.defender import RESIDUAL_TARGET_SQL
-
-    predictor = _predictor(GoalsRatePredictor, GOALS_SPEC, connection)
-
-    assert goals_count_sql("pmf", "oc") in RESIDUAL_TARGET_SQL
-    assert goals_count_sql() in predictor.target_sql
-
-
-def test_no_decomposed_def_model_takes_a_minutes_feature() -> None:
-    """Minutes are applied once, at composition, and never as a feature."""
-    from fantasy_football.modelling.components import MINUTES_OUTPUTS
-
-    for predictor in (
-        GoalsRatePredictor,
-        DefconRatePredictor,
-        DefenderResidualPointsPredictor,
-    ):
-        assert not set(predictor.FEATURES) & set(MINUTES_OUTPUTS)
-        assert not set(predictor.MINUTES_COLUMNS)
 
 
 def test_a_goal_is_worth_what_the_position_pays() -> None:

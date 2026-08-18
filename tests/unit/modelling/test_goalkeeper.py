@@ -18,18 +18,12 @@ from fantasy_football.features.match_form import (
     goalkeeper_covered_seasons,
     per90_column_name,
 )
-from fantasy_football.modelling.defender import (
-    DEFENDER_SPEC,
-    DefenderPointsPredictor,
-)
 from fantasy_football.modelling.folds import ExpandingGameweekFoldStrategy
-from fantasy_football.modelling.forwards import FORWARD_SPEC
 from fantasy_football.modelling.goalkeeper import (
     GOALKEEPER_SPEC,
     POSITION,
     GoalkeeperPointsPredictor,
 )
-from fantasy_football.modelling.midfielder import MIDFIELDER_SPEC
 from fantasy_football.storage.tables import PLAYER_MATCH, PLAYER_SEASON
 from tests.unit.modelling.conftest import (
     ARSENAL,
@@ -74,22 +68,6 @@ def test_position_uses_the_normalised_label() -> None:
     declaring ``GKP`` would join to nothing and train on an empty frame.
     """
     assert POSITION == "GK"
-
-
-def test_registered_model_is_its_own() -> None:
-    """Every position registers under a distinct name.
-
-    They share ``production`` as an alias, so a shared registered name
-    would have one position's promotion silently serve another.
-    """
-    assert (
-        GOALKEEPER_SPEC.registered_model_name == "goalkeeper_points_regressor"
-    )
-    assert GOALKEEPER_SPEC.registered_model_name not in {
-        DEFENDER_SPEC.registered_model_name,
-        FORWARD_SPEC.registered_model_name,
-        MIDFIELDER_SPEC.registered_model_name,
-    }
 
 
 def test_every_keeper_stat_reaches_the_feature_list() -> None:
@@ -142,8 +120,8 @@ def test_opposition_columns_are_prefixed_despite_being_disjoint(
 ) -> None:
     """The prefix is set for legibility, not because a clash forces it.
 
-    The defender takes the same two lists and needs no prefix; this model
-    has no registered version to rename, so it can afford one.
+    Every other head takes these two lists unprefixed; this model has no
+    registered version to rename, so it can afford one.
     """
     assert predictor.opposition_feature_names == [
         "opposition_xg_for_rolling_5",
@@ -152,7 +130,6 @@ def test_opposition_columns_are_prefixed_despite_being_disjoint(
     assert not set(predictor.opposition_feature_names) & set(
         GoalkeeperPointsPredictor.OWN_TEAM_COLUMNS
     )
-    assert DefenderPointsPredictor.OPPOSITION_PREFIX == ""
 
 
 def test_features_include_the_minutes_bucket_probabilities() -> None:
@@ -193,12 +170,6 @@ def test_training_window_is_the_keeper_stat_coverage() -> None:
     )
     assert "2024-25" in GoalkeeperPointsPredictor.TRAINING_SEASONS
     assert "2023-24" not in GoalkeeperPointsPredictor.TRAINING_SEASONS
-
-
-def test_only_the_goalkeeper_restricts_its_training_seasons() -> None:
-    """The three registered models must keep the frame they were fit on."""
-    assert DefenderPointsPredictor.TRAINING_SEASONS is None
-    assert GoalkeeperPointsPredictor.TRAINING_SEASONS is not None
 
 
 def test_training_frame_drops_seasons_before_the_keeper_stats_exist(

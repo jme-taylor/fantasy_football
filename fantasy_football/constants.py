@@ -46,10 +46,6 @@ DEFCON_THRESHOLD_BY_POSITION: dict[str, int] = {
     "FWD": 12,
 }
 
-# The first season defensive-contribution points were awarded. Before it
-# a defender clearing the threshold was paid nothing, so the residual
-# target must deduct nothing there.
-DEFCON_FIRST_SEASON: str = "2025-26"
 # A player counts as "fit" for positional-availability features when their
 # chance_of_playing_this_round is at or above this percentage. FPL reports
 # chance on a 0/25/50/75/100 scale, so 75 means "likely to play".

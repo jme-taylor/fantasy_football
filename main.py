@@ -26,7 +26,6 @@ from fantasy_football.extraction.seasons import (
 )
 from fantasy_football.extraction.snapshot import load_player_snapshot
 from fantasy_football.features.match_form import (
-    covered_seasons,
     goalkeeper_covered_seasons,
 )
 from fantasy_football.logging_config import configure_logging
@@ -46,7 +45,9 @@ from fantasy_football.modelling.components import (
 )
 from fantasy_football.modelling.conceding import (
     CONCEDING_SPEC,
+    MIDFIELDER_CONCEDING_SPEC,
     ConcedingPredictor,
+    MidfielderConcedingPredictor,
 )
 from fantasy_football.modelling.conceding import (
     EXPERIMENT_NAME as CONCEDING_EXPERIMENT_NAME,
@@ -55,22 +56,16 @@ from fantasy_football.modelling.conceding import (
     TRAINING_SEASONS as CONCEDING_TRAINING_SEASONS,
 )
 from fantasy_football.modelling.defcon import (
+    CBIRT_SPEC,
     DEFCON_SPEC,
+    CbirtRatePredictor,
     DefconRatePredictor,
 )
 from fantasy_football.modelling.defcon import (
     TRAINING_SEASONS as DEFCON_TRAINING_SEASONS,
 )
-from fantasy_football.modelling.defender import (
-    DEFENDER_RESIDUAL_SPEC,
-    DefenderResidualPointsPredictor,
-)
 from fantasy_football.modelling.folds import (
     TrainTestSplitStrategy,
-)
-from fantasy_football.modelling.forwards import (
-    FORWARD_SPEC,
-    ForwardPointsPredictor,
 )
 from fantasy_football.modelling.goalkeeper import (
     GOALKEEPER_SPEC,
@@ -85,10 +80,6 @@ from fantasy_football.modelling.goals import (
 )
 from fantasy_football.modelling.goals import (
     TRAINING_SEASONS as GOALS_TRAINING_SEASONS,
-)
-from fantasy_football.modelling.midfielder import (
-    MIDFIELDER_SPEC,
-    MidfielderPointsPredictor,
 )
 from fantasy_football.modelling.minutes import (
     MINUTES_SPEC,
@@ -306,11 +297,10 @@ def main(
         minutes_predictor.backfill_model_predictions()
         minutes_predictor.predict_forward()
 
-        # DEF is decomposed: appearance comes free from the minutes
-        # model, and the other two components are their own models with
-        # their own aliases. The monolithic DefenderPointsPredictor is
-        # still importable and still trainable -- putting DEF back to one
-        # model is an edit to POSITION_COMPONENTS, not a revert.
+        # Every outfield position is decomposed: appearance comes
+        # free from the minutes model and the rest are their own heads
+        # with their own aliases. There is no residual, so bonus and red
+        # cards are in none of these predictions.
         defcon_predictor = DefconRatePredictor(
             experiment_name="def-defcon-rate-model",
             params={},
@@ -324,10 +314,8 @@ def main(
         defcon_predictor.backfill_model_predictions()
         defcon_predictor.predict_forward()
 
-        # Pooled over DEF, MID and FWD but scored only for DEF, since
-        # the other two are still one undecomposed model each. Wiring
-        # them up later is a subclass with a different POSITION reading
-        # this same artefact, not a retrain.
+        # One artefact fitted on DEF, MID and FWD, writing component
+        # rows for all three.
         goals_predictor = GoalsRatePredictor(
             experiment_name=GOALS_EXPERIMENT_NAME,
             params={},
@@ -341,10 +329,10 @@ def main(
         goals_predictor.backfill_model_predictions()
         goals_predictor.predict_forward()
 
-        # Pooled the same way and scored for DEF alone, for the same
-        # reason. An assist pays three points to every position, so this
-        # head needs no per-position conversion -- only the shared
-        # process behind the final pass justifies the pooling.
+        # Pooled the same way. An assist pays three points to every
+        # position, so this head needs no per-position conversion --
+        # only the shared process behind the final pass justifies the
+        # pooling.
         assists_predictor = AssistsRatePredictor(
             experiment_name=ASSISTS_EXPERIMENT_NAME,
             params={},
@@ -359,8 +347,8 @@ def main(
         assists_predictor.predict_forward()
 
         # Team grain: one prediction per fixture, fanned out to that
-        # club's defenders at scoring time. Wired into DEF alone, though
-        # the payoff table prices a keeper and a midfielder too.
+        # club's players at scoring time. A forward is paid nothing
+        # either way, so only DEF and MID read it.
         conceding_predictor = ConcedingPredictor(
             experiment_name=CONCEDING_EXPERIMENT_NAME,
             params={},
@@ -373,6 +361,22 @@ def main(
         conceding_predictor.train_and_register_model()
         conceding_predictor.backfill_model_predictions()
         conceding_predictor.predict_forward()
+
+        # The same artefact and the same alias, fanned out to
+        # midfielders instead. It does not train: a second registration
+        # of one registered model would bump the version for a fit
+        # identical to the one above.
+        midfielder_conceding_predictor = MidfielderConcedingPredictor(
+            experiment_name=CONCEDING_EXPERIMENT_NAME,
+            params={},
+            model_spec=MIDFIELDER_CONCEDING_SPEC,
+            connection=connection,
+            fold_strategy=TrainTestSplitStrategy(
+                test_seasons=CONCEDING_TRAINING_SEASONS
+            ),
+        )
+        midfielder_conceding_predictor.backfill_model_predictions()
+        midfielder_conceding_predictor.predict_forward()
 
         # Pooled like goals and assists, and priced flat at minus one.
         # Trains far wider than its siblings -- cards go back to 2016-17
@@ -391,47 +395,25 @@ def main(
         yellow_cards_predictor.backfill_model_predictions()
         yellow_cards_predictor.predict_forward()
 
-        residual_predictor = DefenderResidualPointsPredictor(
-            experiment_name="def-residual-points-model",
+        # The midfield and forward threshold is 12 off a count that
+        # includes recoveries, which makes it a different quantity from
+        # the defender head's -- hence a second head rather than a wider
+        # serving list on the first.
+        cbirt_predictor = CbirtRatePredictor(
+            experiment_name="mid-fwd-cbirt-rate-model",
             params={},
-            model_spec=DEFENDER_RESIDUAL_SPEC,
+            model_spec=CBIRT_SPEC,
             connection=connection,
             fold_strategy=TrainTestSplitStrategy(
-                test_seasons=covered_seasons()
+                test_seasons=DEFCON_TRAINING_SEASONS
             ),
         )
-        residual_predictor.train_and_register_model()
-        residual_predictor.backfill_model_predictions()
-        residual_predictor.predict_forward()
+        cbirt_predictor.train_and_register_model()
+        cbirt_predictor.backfill_model_predictions()
+        cbirt_predictor.predict_forward()
 
         for kind in (BACKFILL_KIND, FORWARD_KIND):
             write_appearance_components(connection, kind)
-
-        forward_predictor = ForwardPointsPredictor(
-            experiment_name="fwd-points-model",
-            params={},
-            model_spec=FORWARD_SPEC,
-            connection=connection,
-            fold_strategy=TrainTestSplitStrategy(
-                test_seasons=covered_seasons()
-            ),
-        )
-        forward_predictor.train_and_register_model()
-        forward_predictor.backfill_model_predictions()
-        forward_predictor.predict_forward()
-
-        midfielder_predictor = MidfielderPointsPredictor(
-            experiment_name="mid-points-model",
-            params={},
-            model_spec=MIDFIELDER_SPEC,
-            connection=connection,
-            fold_strategy=TrainTestSplitStrategy(
-                test_seasons=covered_seasons()
-            ),
-        )
-        midfielder_predictor.train_and_register_model()
-        midfielder_predictor.backfill_model_predictions()
-        midfielder_predictor.predict_forward()
 
         # The keeper features open at 2024-25, so this position holds out
         # of its own window rather than the shared covered_seasons.

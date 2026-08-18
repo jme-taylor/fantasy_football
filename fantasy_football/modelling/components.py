@@ -107,13 +107,22 @@ class Component(StrEnum):
     CONCEDING = "conceding"
     #: Points lost to bookings. Yellows only -- see YellowCardsComponent.
     YELLOW_CARDS = "yellow_cards"
-    #: Everything not carved out into a component of its own.
-    RESIDUAL = "residual"
 
 
 # Which components each position's prediction is summed from. Read as
 # configuration rather than branched on in code, so putting a position
 # back to a single model is an edit here and not a revert.
+#
+# There is no residual. Bonus points and red cards are therefore in no
+# outfield prediction at all, and every outfield score is low by roughly
+# a player's bonus expectation -- concentrated in the high-BPS players,
+# so it is a ranking distortion rather than a constant offset. GK is
+# still one model and still carries its bonus, which makes a GK total
+# and an outfield total not directly comparable.
+#
+# TODO (JT): nothing scores the composed total. Every head reports fold
+# metrics for its own component, but no measure exists of whether the
+# sum is any good, so the cost of dropping the residual is unmeasured.
 POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
     "GK": (Component.TOTAL,),
     "DEF": (
@@ -123,10 +132,25 @@ POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
         Component.ASSISTS,
         Component.CONCEDING,
         Component.YELLOW_CARDS,
-        Component.RESIDUAL,
     ),
-    "MID": (Component.TOTAL,),
-    "FWD": (Component.TOTAL,),
+    "MID": (
+        Component.APPEARANCE,
+        Component.DEFCON,
+        Component.GOALS,
+        Component.ASSISTS,
+        Component.CONCEDING,
+        Component.YELLOW_CARDS,
+    ),
+    # No conceding: a forward is paid nothing for a clean sheet and
+    # docked nothing for conceding, so the component would be a column
+    # of zeros.
+    "FWD": (
+        Component.APPEARANCE,
+        Component.DEFCON,
+        Component.GOALS,
+        Component.ASSISTS,
+        Component.YELLOW_CARDS,
+    ),
 }
 
 # What identifies one fixture leg of one position's prediction.
@@ -484,16 +508,16 @@ class RateComponent:
     have been carved out.
 
     ``points_per_event`` is what separates a rate of *points* from a
-    rate of *events*. The residual model already predicts points, so it
-    leaves this None and the scaled rate is the answer. A goals model
-    predicts goals, which are worth six to a defender and four to a
-    forward, so the conversion happens here -- which is what lets one
-    model serve every position it was trained on. An assist pays the
-    same everywhere, so that model passes a scalar: the mapping form
-    exists to express variation by position, and there is none.
+    rate of *events*. A model already predicting points leaves this None
+    and the scaled rate is the answer. A goals model predicts goals,
+    which are worth six to a defender and four to a forward, so the
+    conversion happens here -- which is what lets one model serve every
+    position it was trained on. An assist pays the same everywhere, so
+    that model passes a scalar: the mapping form exists to express
+    variation by position, and there is none.
     """
 
-    component_name: Component = Component.RESIDUAL
+    component_name: Component = Component.GOALS
     points_per_event: Mapping[str, float] | float | None = None
     distribution: CountDistribution = field(default_factory=PoissonCounts)
 
