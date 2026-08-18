@@ -104,7 +104,7 @@ CONCEDING_DEDUCTION_POSITIONS: frozenset[str] = frozenset({"GK", "DEF"})
 # under a thousandth of a point. Checked against both divisors in use --
 # conceding's two and saves' three -- so a third caller should re-check
 # rather than assume.
-DEDUCTION_TERMS = 5
+FLOOR_TERMS = 5
 
 #: How many goals conceded cost a point.
 CONCEDING_DIVISOR = 2
@@ -399,7 +399,7 @@ def expected_floor(
         One expected floored count per element of ``rate``.
     """
     floored = np.zeros_like(np.asarray(rate, dtype=float))
-    for term in range(1, DEDUCTION_TERMS + 1):
+    for term in range(1, FLOOR_TERMS + 1):
         floored += distribution.p_at_least(rate, divisor * term)
     return floored
 

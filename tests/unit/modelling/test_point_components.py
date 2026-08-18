@@ -529,7 +529,7 @@ def test_expected_floor_matches_the_mass_function(
 
 
 def test_five_terms_is_enough_for_both_divisors() -> None:
-    """Pin what truncating at ``DEDUCTION_TERMS`` actually costs.
+    """Pin what truncating at ``FLOOR_TERMS`` actually costs.
 
     The sum is cut off at five terms, so it always under-states the
     expectation, and by more as the rate climbs towards the fifth
