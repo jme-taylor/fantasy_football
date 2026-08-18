@@ -8,6 +8,7 @@ import pytest
 
 from fantasy_football.optimisation.inputs import (
     MissingPositionPredictionsError,
+    load_component_breakdown,
     load_optimiser_inputs,
 )
 from fantasy_football.storage import database
@@ -17,6 +18,7 @@ from fantasy_football.storage.tables import (
     FORWARD_KIND,
     PLAYER_SEASON,
     PLAYER_SNAPSHOT,
+    POINTS_COMPONENT,
     POINTS_PREDICTION,
 )
 
@@ -289,3 +291,141 @@ def test_empty_roster_raises(
 
     with pytest.raises(ValueError, match="no roster"):
         load_optimiser_inputs(SEASON, [5])
+
+
+def _component(
+    element: int,
+    gw: int,
+    component: str,
+    points: float,
+    *,
+    opponent: int = 10,
+    position: str = "MID",
+    kind: str = FORWARD_KIND,
+    season: str = SEASON,
+) -> dict:
+    """Build one points_component row."""
+    return {
+        "season": season,
+        "gw": gw,
+        "element": element,
+        "opponent": opponent,
+        "position": position,
+        "prediction_kind": kind,
+        "component": component,
+        "points": points,
+        "model_version": "1",
+        "diagnostics": None,
+    }
+
+
+def _seed_components(tmp_path, monkeypatch, components: list[dict]) -> None:
+    """Seed points_component rows into a tmp database."""
+    db_path = tmp_path / "components.duckdb"
+    monkeypatch.setattr(database, "DATABASE_PATH", db_path)
+    connection = get_connection(db_path)
+    try:
+        POINTS_COMPONENT.upsert_current(
+            connection, pl.DataFrame(components), SEASON
+        )
+    finally:
+        connection.close()
+
+
+def test_breakdown_keys_components_by_player_and_gameweek(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each player-gameweek carries a points value per component."""
+    _seed_components(
+        tmp_path,
+        monkeypatch,
+        [
+            _component(3, 5, "goals", 1.2),
+            _component(3, 5, "assists", 0.8),
+            _component(3, 6, "goals", 1.5),
+        ],
+    )
+
+    breakdown = load_component_breakdown(SEASON, [5, 6])
+
+    assert breakdown[(3, 5)].components == {"goals": 1.2, "assists": 0.8}
+    assert breakdown[(3, 6)].components == {"goals": 1.5}
+
+
+def test_breakdown_sums_double_gameweek_legs_and_counts_fixtures(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two fixtures add up, and the fixture count says the sum is a double."""
+    _seed_components(
+        tmp_path,
+        monkeypatch,
+        [
+            _component(3, 5, "goals", 1.2, opponent=10),
+            _component(3, 5, "goals", 0.9, opponent=11),
+            _component(4, 5, "goals", 1.0, opponent=10),
+        ],
+    )
+
+    breakdown = load_component_breakdown(SEASON, [5])
+
+    assert breakdown[(3, 5)].components["goals"] == pytest.approx(2.1)
+    assert breakdown[(3, 5)].fixtures == 2
+    assert breakdown[(4, 5)].fixtures == 1
+
+
+def test_breakdown_ignores_backfill_rows(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backfill components describe played weeks and never enter the report."""
+    _seed_components(
+        tmp_path,
+        monkeypatch,
+        [
+            _component(3, 5, "goals", 1.2),
+            _component(3, 5, "goals", 9.0, opponent=11, kind=BACKFILL_KIND),
+        ],
+    )
+
+    breakdown = load_component_breakdown(SEASON, [5])
+
+    assert breakdown[(3, 5)].components["goals"] == pytest.approx(1.2)
+    assert breakdown[(3, 5)].fixtures == 1
+
+
+def test_breakdown_ignores_other_seasons_and_gameweeks(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the requested season and horizon reach the report."""
+    _seed_components(
+        tmp_path,
+        monkeypatch,
+        [
+            _component(3, 5, "goals", 1.2),
+            _component(3, 7, "goals", 4.0),
+        ],
+    )
+    connection = get_connection(tmp_path / "components.duckdb")
+    try:
+        POINTS_COMPONENT.upsert_current(
+            connection,
+            pl.DataFrame([_component(3, 5, "goals", 9.0, season="2025-26")]),
+            "2025-26",
+        )
+    finally:
+        connection.close()
+
+    breakdown = load_component_breakdown(SEASON, [5])
+
+    assert set(breakdown) == {(3, 5)}
+    assert breakdown[(3, 5)].components["goals"] == pytest.approx(1.2)
+
+
+def test_breakdown_omits_players_with_no_component_rows(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unpredicted player is absent rather than present with zeroes."""
+    _seed_components(tmp_path, monkeypatch, [_component(3, 5, "goals", 1.2)])
+
+    breakdown = load_component_breakdown(SEASON, [5])
+
+    assert (4, 5) not in breakdown

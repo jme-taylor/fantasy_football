@@ -13,7 +13,12 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from fantasy_football.features.roster import current_roster
-from fantasy_football.storage.tables import FORWARD_KIND, POINTS_PREDICTION
+from fantasy_football.fpl_types import PlayerBreakdown
+from fantasy_football.storage.tables import (
+    FORWARD_KIND,
+    POINTS_COMPONENT,
+    POINTS_PREDICTION,
+)
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -186,6 +191,60 @@ def load_optimiser_inputs(
 
     _check_coverage(joined, weeks)
     return joined.select(INPUT_COLUMNS).sort("gw", "element")
+
+
+def load_component_breakdown(
+    season: str,
+    weeks: list[int],
+    connection: "DuckDBPyConnection | None" = None,
+) -> dict[tuple[int, int], PlayerBreakdown]:
+    """Return each player-gameweek's predicted points split by component.
+
+    Components are stored per fixture leg and summed to gameweek grain, to
+    match the ``predicted_points`` the optimiser scored the player on. The
+    leg count comes back alongside so a double gameweek can be marked as
+    one -- otherwise its numbers read as a single match's.
+
+    Parameters
+    ----------
+    season : str
+        The season to read.
+    weeks : list[int]
+        The gameweeks in the horizon.
+    connection : duckdb.DuckDBPyConnection | None, optional
+        An open connection. When None, one is opened per table read.
+
+    Returns
+    -------
+    dict[tuple[int, int], PlayerBreakdown]
+        Keyed by (element, gameweek). A player with no component rows is
+        absent rather than present with zeroes.
+    """
+    stored = POINTS_COMPONENT.load(connection).filter(
+        (pl.col("season") == season)
+        & (pl.col("prediction_kind") == FORWARD_KIND)
+        & pl.col("gw").is_in(weeks)
+    )
+    summed = stored.group_by("element", "gw", "component").agg(
+        pl.col("points").sum()
+    )
+    fixtures = stored.group_by("element", "gw").agg(
+        pl.col("opponent").n_unique().alias("fixtures")
+    )
+
+    counts = {
+        (row["element"], row["gw"]): row["fixtures"]
+        for row in fixtures.iter_rows(named=True)
+    }
+    components: dict[tuple[int, int], dict[str, float]] = {}
+    for row in summed.iter_rows(named=True):
+        key = (row["element"], row["gw"])
+        components.setdefault(key, {})[row["component"]] = row["points"]
+
+    return {
+        key: PlayerBreakdown(components=points, fixtures=counts[key])
+        for key, points in components.items()
+    }
 
 
 def forward_gameweeks(

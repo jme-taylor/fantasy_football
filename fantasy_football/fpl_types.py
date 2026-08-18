@@ -320,6 +320,24 @@ class PlayerGameweekExpectedPoints:
 
 
 @dataclass(config=config, frozen=True)
+class PlayerBreakdown:
+    """A player's predicted points for a gameweek, split by component.
+
+    Attributes
+    ----------
+    components: dict[str, float]
+        Points per component name, summed across the gameweek's fixtures.
+        A component absent from the mapping was never predicted, which is
+        not the same as a prediction of zero.
+    fixtures: int
+        How many fixtures the component points were summed over.
+    """
+
+    components: dict[str, float]
+    fixtures: int
+
+
+@dataclass(config=config, frozen=True)
 class GameWeekPlan:
     """Class for the output of a gameweek plan.
 
