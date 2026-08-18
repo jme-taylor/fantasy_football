@@ -9,17 +9,8 @@ would leave the stored components summing to something other than the
 stored total depending on which ran last, so the pipeline in ``main.py``
 stays the only thing that writes them.
 
-Promotion is by hand, and the order matters more here than anywhere
-else so far. This head and the defender residual head are a matched pair
--- the residual's target deducts the clean sheet this one predicts -- so
-promote the retrained residual *first*. Between the two moves every
-defender prediction is low by roughly a clean sheet, which is
-recoverable. The other order double-counts it, silently.
-
-That window is costlier than it was for goals. A goal is six points on a
-small share of defender legs; a clean sheet is four points on a large
-one, so a mis-ordered promotion moves nearly every defender rather than
-a handful.
+Promotion is by hand: move the ``production`` alias in the MLflow
+UI once a run looks better than the live one.
 """
 
 import logging
@@ -54,8 +45,8 @@ def main() -> None:
         )
         predictor.train_and_register_model()
         logger.info(
-            "Registered a new %s version. Promote the retrained defender "
-            "residual before this one; nothing has been written to "
+            "Registered a new %s version. Promote it in the MLflow UI to "
+            "put it live; nothing has been written to "
             "points_component.",
             CONCEDING_SPEC.registered_model_name,
         )

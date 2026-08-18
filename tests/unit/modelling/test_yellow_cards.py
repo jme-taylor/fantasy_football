@@ -22,12 +22,6 @@ from fantasy_football.modelling.components import (
     YELLOW_CARD_POINTS,
     Component,
 )
-from fantasy_football.modelling.defcon import DefconRatePredictor
-from fantasy_football.modelling.defender import (
-    DEFENDER_RESIDUAL_SPEC,
-    RESIDUAL_TARGET_SQL,
-    DefenderResidualPointsPredictor,
-)
 from fantasy_football.modelling.folds import ExpandingGameweekFoldStrategy
 from fantasy_football.modelling.points import position_dummy_names
 from fantasy_football.modelling.yellow_cards import (
@@ -37,7 +31,6 @@ from fantasy_football.modelling.yellow_cards import (
     TRAINING_SEASONS,
     YELLOW_CARDS_SPEC,
     YellowCardsRatePredictor,
-    yellow_card_points_sql,
 )
 from fantasy_football.storage.tables import (
     PLAYER_MATCH,
@@ -329,19 +322,6 @@ def test_a_booking_costs_the_same_whatever_the_shirt() -> None:
     )
 
 
-def test_no_decomposed_def_model_takes_a_minutes_feature() -> None:
-    """Minutes are applied once, at composition, and never as a feature."""
-    from fantasy_football.modelling.components import MINUTES_OUTPUTS
-
-    for predictor in (
-        YellowCardsRatePredictor,
-        DefconRatePredictor,
-        DefenderResidualPointsPredictor,
-    ):
-        assert not set(predictor.FEATURES) & set(MINUTES_OUTPUTS)
-        assert not set(predictor.MINUTES_COLUMNS)
-
-
 # --- What the fold reports --------------------------------------------
 
 
@@ -398,65 +378,3 @@ def test_player_rate_skill_falls_back_when_there_is_no_history(
 
 
 # --- The decomposition invariant --------------------------------------
-
-
-def test_the_residual_adds_back_the_booking_it_no_longer_explains(
-    connection,
-) -> None:
-    """Otherwise the components sum to less than the total."""
-    _seed_fixtures(connection)
-    _seed_player(connection, yellow_cards=(0, 1), total_points=5)
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data().filter(pl.col("gw") == 2)
-
-    # 5 points net of a booking, plus the 1 back, less 2 for the hour.
-    assert frame["residual_points_per_90"].item() == pytest.approx(4.0)
-
-
-def test_the_residual_keeps_the_red_card_it_still_explains(
-    connection,
-) -> None:
-    """Reds have no component, so the residual must go on paying for them.
-
-    This is the asymmetry most likely to be broken by someone later
-    adding reds to the deduction without giving them a component of
-    their own. That would charge every sending-off twice, and nothing
-    downstream would complain.
-    """
-    _seed_fixtures(connection)
-    _seed_player(connection, red_cards=(0, 1), total_points=3)
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data().filter(pl.col("gw") == 2)
-
-    # 3 points with the red already in them, less 2 for the hour. The
-    # minus three is still the residual's to explain.
-    assert frame["residual_points_per_90"].item() == pytest.approx(1.0)
-
-
-def test_the_residual_deducts_the_expression_the_head_targets() -> None:
-    """One definition, two aliasings, or the components stop summing."""
-    assert yellow_card_points_sql() in RESIDUAL_TARGET_SQL
-
-
-def test_a_leg_with_no_card_count_leaves_the_residuals_fit(
-    connection,
-) -> None:
-    """A missed count is a deduction that did not happen.
-
-    Left in, the residual would learn to explain a booking the cards
-    component is separately paying for.
-    """
-    _seed_fixtures(connection)
-    _seed_player(connection, yellow_cards=(0, 1), total_points=5)
-    connection.execute("UPDATE player_match SET yellow_cards = NULL")
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    assert predictor.build_training_data().is_empty()

@@ -25,15 +25,16 @@ from fantasy_football.modelling.conceding import (
     FORM_MATCHES_FLOOR,
     POSITION,
     ConcedingPredictor,
-    conceding_points_sql,
 )
-from fantasy_football.modelling.defcon import DEFCON_SPEC, DefconRatePredictor
-from fantasy_football.modelling.defender import (
-    DEFENDER_RESIDUAL_SPEC,
-    DefenderResidualPointsPredictor,
+from fantasy_football.modelling.defcon import (
+    DEFCON_SPEC,
+    DefconRatePredictor,
 )
 from fantasy_football.modelling.folds import TrainTestSplitStrategy
-from fantasy_football.modelling.goals import GOALS_SPEC, GoalsRatePredictor
+from fantasy_football.modelling.goals import (
+    GOALS_SPEC,
+    GoalsRatePredictor,
+)
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
     PLAYER_MATCH,
@@ -351,10 +352,10 @@ def test_the_fan_out_matches_the_sibling_components_row_for_row(
 
     ``compose`` drops a fixture leg missing any one of its position's
     components, so a fan-out narrower than its siblings deletes whole
-    defender predictions without failing. The converse is harmless -- a
-    leg the others cannot score was already being dropped -- which is why
-    this is a subset check and not an equality: the defcon head really
-    does cover fewer legs, having no count to rate on some of them.
+    predictions without failing. The converse is harmless -- a leg the
+    others cannot score was already being dropped -- which is why this
+    is a subset check and not an equality: the defcon head really does
+    cover fewer legs, having no count to rate on some of them.
     """
     seed_league(connection)
     keys = ["season", "gw", "element", "opponent"]
@@ -362,7 +363,6 @@ def test_the_fan_out_matches_the_sibling_components_row_for_row(
         (DefconRatePredictor, DEFCON_SPEC),
         (GoalsRatePredictor, GOALS_SPEC),
         (AssistsRatePredictor, ASSISTS_SPEC),
-        (DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC),
     ]
     conceding = _predictor(ConcedingPredictor, CONCEDING_SPEC, connection)
 
@@ -472,60 +472,6 @@ def test_a_defender_is_fanned_out_once_in_a_double_gameweek(
         (pl.col("element") == 1) & (pl.col("gw") == LAST_GW)
     )
     assert subject_leg.height == 1
-
-
-def test_the_residual_deducts_the_clean_sheet_it_no_longer_predicts(
-    connection,
-) -> None:
-    """Otherwise the components sum to more than the total."""
-    seed_league(connection, total_points=8, clean_sheets=1, player_conceded=0)
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data().filter(pl.col("element") == 1)
-
-    # 8 points, less 2 for the hour and 4 for the clean sheet.
-    assert frame["residual_points_per_90"].unique().to_list() == [
-        pytest.approx(2.0)
-    ]
-
-
-def test_the_residual_adds_back_the_goals_conceded_deduction(
-    connection,
-) -> None:
-    """A docked defender scored more than his total says.
-
-    The deduction is negative points, so carving it out has to *raise*
-    the residual. Getting the sign wrong here is invisible: the number
-    stays plausible and only the decomposition stops adding up.
-    """
-    seed_league(connection, total_points=1, clean_sheets=0, player_conceded=3)
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data().filter(pl.col("element") == 1)
-
-    # 1 point, less 2 for the hour, less the -1 he was docked for three.
-    assert frame["residual_points_per_90"].unique().to_list() == [
-        pytest.approx(0.0)
-    ]
-
-
-def test_the_residual_deducts_the_expression_the_component_pays(
-    connection,
-) -> None:
-    """The rule is shared even though the quantity cannot be.
-
-    This head targets a team's goals while FPL pays a player for his own
-    on-pitch clean sheet, so the target and the deduction are genuinely
-    different quantities -- the first carve-out where that is true. What
-    must not drift is the rule, which lives in one function.
-    """
-    from fantasy_football.modelling.defender import RESIDUAL_TARGET_SQL
-
-    assert conceding_points_sql("DEF") in RESIDUAL_TARGET_SQL
 
 
 # --- Scoring forward --------------------------------------------------
@@ -682,27 +628,6 @@ def test_both_payoffs_are_scored_separately(connection) -> None:
     assert metrics.calibration == pytest.approx(2.0)
     assert metrics.deduction_mae > 0.0
     assert set(metrics.as_dict()) >= {"deduction_mae", "clean_sheet_brier"}
-
-
-def test_a_leg_with_no_published_clean_sheet_leaves_the_residual_fit(
-    connection,
-) -> None:
-    """An unpublished clean sheet is a deduction that did not happen.
-
-    The deduction coalesces an unknown to nothing, so such a leg would
-    carry four points of clean sheet inside the residual target while the
-    conceding component paid for it separately. Stated in its own right
-    rather than left to the assist filter beside it, which happens to
-    read the same relation.
-    """
-    seed_league(connection)
-    connection.execute("UPDATE player_match_fpl SET clean_sheets = NULL")
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    assert predictor.build_training_data().is_empty()
-    assert not predictor.scoring_frame().is_empty()
 
 
 def test_the_forward_path_registers_the_views_it_reads(

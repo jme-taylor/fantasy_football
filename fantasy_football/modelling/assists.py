@@ -28,9 +28,8 @@ The cost of that, accepted deliberately: ``player_match_fpl`` is
 scraped from Vaastav, whose per-fixture files stop at 2025-26, while
 ``player_match`` and ``player_match_opta`` both fill for the live season
 from sources of their own -- the FPL API and FCI. So if Vaastav does not
-publish 2026-27, this head has no target for it, the residual's filter
-drops the same legs, and DEF loses every composed prediction until it
-does. That is the failure the goals head's coalesce exists to prevent,
+publish 2026-27, this head has no target for it and DEF loses every
+composed prediction until it does. That is the failure the goals head's coalesce exists to prevent,
 and it is not prevented here.
 
 It fails loudly rather than quietly: ``compose`` names the missing
@@ -50,21 +49,12 @@ predicts a rate and minutes turn that rate into an expected count at
 composition, so the minutes forecast is applied exactly once across
 every component.
 
-The residual model deducts the same expression through
-:func:`assists_count_sql`, and the two must not diverge: if the target
-and the deduction disagree about what an assist is, the components stop
-summing to the total and nothing fails loudly.
-
 Known gap: there is no set-piece feature. Corners and free kicks are a
 large share of a defender's assists, and the taker is exactly the sort
 of thing the goals head captures with penalty exposure -- but FCI
 publishes ``corners`` only from 2026-27, so there is nothing to build it
 from over the training seasons. Revisit once that season accumulates.
 
-Promotion order: promote the *residual* alias before this one. The two
-carry separately promoted aliases and between the two promotions the
-composed total is wrong either way, but under-paying assists briefly is
-a smaller error than paying for them twice.
 """
 
 import logging
@@ -103,11 +93,13 @@ from fantasy_football.storage.tables import (
 
 logger = logging.getLogger(__name__)
 
-#: The position this instance scores and writes. The model behind it
-#: knows about all three in :data:`TRAINING_POSITIONS`.
+#: The model's primary position, which keys its registered name and
+#: its evaluation. It scores and writes every position in
+#: :data:`TRAINING_POSITIONS` -- see ``SERVING_POSITIONS``.
 POSITION = "DEF"
 
-#: The outfield positions the one artefact is fitted on.
+#: The outfield positions the one artefact is fitted on, and
+#: writes component rows for.
 TRAINING_POSITIONS: tuple[str, ...] = ("DEF", "MID", "FWD")
 
 REGISTERED_MODEL = "assists_rate_regressor"
@@ -130,7 +122,7 @@ SCORING_MINUTES_FLOOR = DEFCON_MINUTES_FLOOR
 def assists_count_sql(fpl: str = "af") -> str:
     """Return FPL's assist count.
 
-    Aliased rather than fixed so the residual model can deduct the very
+    Aliased rather than fixed so a caller can point it at whichever
     same expression off its own joins. One definition, two aliasings --
     a second spelling of this is how the components quietly stop summing
     to the total.
@@ -149,7 +141,7 @@ def assists_count_sql(fpl: str = "af") -> str:
 
 
 # The assist source at match grain. The assists head reads it to build
-# its target; the defender residual reads it to know what to deduct.
+# its target.
 ASSISTS_JOINS = """
 LEFT JOIN player_match_fpl AS af
     ON  af.season        = m.season
@@ -190,6 +182,7 @@ class AssistsRatePredictor(PositionPointsPredictor):
 
     POSITION = POSITION
     TRAINING_POSITIONS = TRAINING_POSITIONS
+    SERVING_POSITIONS = TRAINING_POSITIONS
     TARGET = "assists_per_90"
     COMPONENT = Component.ASSISTS
     COMPONENT_IMPL = RateComponent(

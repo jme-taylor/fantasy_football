@@ -8,7 +8,6 @@ residual deducting something else, and a training filter reading
 model back into a defenders-only one with almost no assists in it.
 """
 
-import polars as pl
 import pytest
 
 from fantasy_football.modelling.assists import (
@@ -16,23 +15,14 @@ from fantasy_football.modelling.assists import (
     MINUTES_FLOOR,
     SCORING_MINUTES_FLOOR,
     AssistsRatePredictor,
-    assists_count_sql,
 )
 from fantasy_football.modelling.components import (
     ASSIST_POINTS,
     Component,
 )
-from fantasy_football.modelling.defcon import DefconRatePredictor
-from fantasy_football.modelling.defender import (
-    DEFENDER_RESIDUAL_SPEC,
-    RESIDUAL_TARGET_SQL,
-    DefenderResidualPointsPredictor,
-)
 from fantasy_football.modelling.folds import ExpandingGameweekFoldStrategy
 from fantasy_football.modelling.goals import (
-    GOALS_SPEC,
     GoalsRatePredictor,
-    goals_count_sql,
 )
 from fantasy_football.storage.tables import (
     PLAYER_MATCH,
@@ -348,88 +338,6 @@ def test_penalty_exposure_is_not_an_assists_feature() -> None:
 # --- The decomposition holds ------------------------------------------
 
 
-def test_the_residual_deducts_the_assists_the_head_predicts(
-    connection,
-) -> None:
-    """Otherwise the components sum to more than the total."""
-    _seed_fixtures(connection)
-    _seed_player(connection, assists=(0, 1), total_points=9)
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data().filter(pl.col("gw") == 2)
-
-    # 9 points, less 2 for the hour and 3 for the assist.
-    assert frame["residual_points_per_90"].item() == pytest.approx(4.0)
-
-
-def test_the_residual_deducts_both_returns_at_once(connection) -> None:
-    """A goal and an assist in one match come off independently."""
-    _seed_fixtures(connection)
-    _seed_player(connection, assists=(0, 1), goals=(0, 1), total_points=15)
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    frame = predictor.build_training_data().filter(pl.col("gw") == 2)
-
-    # 15 points, less 2 for the hour, 6 for the goal and 3 for the assist.
-    assert frame["residual_points_per_90"].item() == pytest.approx(4.0)
-
-
-def test_the_residual_deducts_the_expression_the_heads_target(
-    connection,
-) -> None:
-    """One definition, two aliasings, or the components stop summing.
-
-    A second spelling of either count is the failure this guards: the
-    target and the deduction would disagree about what a goal or an
-    assist is, and nothing downstream would complain.
-    """
-    assists = _predictor(AssistsRatePredictor, ASSISTS_SPEC, connection)
-    goals = _predictor(GoalsRatePredictor, GOALS_SPEC, connection)
-
-    assert assists_count_sql("pmf") in RESIDUAL_TARGET_SQL
-    assert goals_count_sql("pmf", "oc") in RESIDUAL_TARGET_SQL
-    assert assists_count_sql() in assists.target_sql
-    assert goals_count_sql() in goals.target_sql
-
-
-def test_a_leg_with_no_assist_count_is_kept_out_of_the_residual_fit(
-    connection,
-) -> None:
-    """A missed join is a deduction that did not happen.
-
-    The count is coalesced to zero so the target stays defined, which
-    means the assist points are still inside it. Fitting on such a leg
-    would teach the residual to pay for assists the assists component is
-    separately paying for.
-    """
-    _seed_fixtures(connection)
-    _seed_player(connection, assists=(0, 1), total_points=9)
-    connection.execute("DELETE FROM player_match_fpl")
-    predictor = _predictor(
-        DefenderResidualPointsPredictor, DEFENDER_RESIDUAL_SPEC, connection
-    )
-
-    assert predictor.build_training_data().is_empty()
-
-
-def test_no_decomposed_def_model_takes_a_minutes_feature() -> None:
-    """Minutes are applied once, at composition, and never as a feature."""
-    from fantasy_football.modelling.components import MINUTES_OUTPUTS
-
-    for predictor in (
-        AssistsRatePredictor,
-        GoalsRatePredictor,
-        DefconRatePredictor,
-        DefenderResidualPointsPredictor,
-    ):
-        assert not set(predictor.FEATURES) & set(MINUTES_OUTPUTS)
-        assert not set(predictor.MINUTES_COLUMNS)
-
-
 def test_an_assist_pays_the_same_whatever_the_shirt() -> None:
     """Flat across every position, which is why it is not a table."""
     assert ASSIST_POINTS == 3.0
@@ -440,8 +348,13 @@ def test_an_assist_pays_the_same_whatever_the_shirt() -> None:
 # --- Training scope is not scoring scope ------------------------------
 
 
-def test_only_the_served_position_is_scored(connection) -> None:
-    """Written rows are stamped POSITION whatever they were fitted on."""
+def test_every_served_position_is_scored(connection) -> None:
+    """One artefact writes rows for all three outfield positions.
+
+    The rows must carry the position they came from, not the model's
+    primary one -- nothing downstream can tell the difference, since the
+    component name is legitimate either way.
+    """
     _seed_fixtures(connection)
     for element, position in ((1, "DEF"), (2, "MID"), (3, "FWD")):
         _seed_player(connection, element=element, position=position)
@@ -449,7 +362,14 @@ def test_only_the_served_position_is_scored(connection) -> None:
 
     assert predictor.build_training_data().height == 3
     scored = predictor.scoring_frame()
-    assert scored["element"].unique().to_list() == [1]
+    assert sorted(scored["element"].unique().to_list()) == [1, 2, 3]
+
+    stamped = (
+        scored.with_columns(position=predictor._served_position())
+        .unique(subset=["element"])
+        .sort("element")
+    )
+    assert stamped["position"].to_list() == ["DEF", "MID", "FWD"]
 
 
 def test_short_appearances_are_still_scored(connection) -> None:

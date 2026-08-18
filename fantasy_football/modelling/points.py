@@ -241,6 +241,13 @@ class PositionPointsPredictor(Predictor):
     #: prediction for -- goals are the same event whoever scores them,
     #: and a defender's are far too rare to estimate on their own.
     TRAINING_POSITIONS: ClassVar[tuple[str, ...]] = ()
+    #: The positions this model writes predictions for, or empty for
+    #: ``POSITION`` alone. Must be a subset of ``TRAINING_POSITIONS``: a
+    #: model cannot serve a position it never saw, and the dummy telling
+    #: the positions apart only exists when it trained on more than one.
+    #: ``POSITION`` stays the model's primary one, which is what keys its
+    #: registered name and its evaluation.
+    SERVING_POSITIONS: ClassVar[tuple[str, ...]] = ()
     #: The column this model predicts.
     TARGET: ClassVar[str] = TARGET
     #: The scoring component this model's predictions are stored as.
@@ -278,6 +285,48 @@ class PositionPointsPredictor(Predictor):
     def training_positions(self) -> tuple[str, ...]:
         """Return the positions this model's training frame spans."""
         return self.TRAINING_POSITIONS or (self.POSITION,)
+
+    @property
+    @override
+    def serving_positions(self) -> tuple[str, ...]:
+        """Return the positions this model writes predictions for.
+
+        Raises
+        ------
+        ValueError
+            If a served position was never trained on. The dummies that
+            tell positions apart are built from the training list, so
+            serving outside it would stamp every row with whichever
+            position matched nothing.
+        """
+        served = self.SERVING_POSITIONS or (self.POSITION,)
+        unseen = sorted(set(served) - set(self.training_positions))
+        if unseen:
+            raise ValueError(
+                f"{type(self).__name__} serves {unseen} without training "
+                f"on them; TRAINING_POSITIONS is {self.training_positions}."
+            )
+        return served
+
+    def _served_position(self) -> pl.Expr:
+        """Return each row's own position, read off its dummies.
+
+        A model serving one position stamps a literal, as it always did.
+        One serving several must stamp what the row actually is, or the
+        rows land under the wrong position and ``compose`` cannot tell:
+        every component name involved is legitimate.
+        """
+        served = self.serving_positions
+        if len(served) < 2:
+            return pl.lit(self.POSITION)
+        expression = pl.lit(None, dtype=pl.Utf8)
+        for position in served:
+            expression = (
+                pl.when(pl.col(POSITION_DUMMIES[position]) == 1.0)
+                .then(pl.lit(position))
+                .otherwise(expression)
+            )
+        return expression
 
     def fill_features(self, frame: pl.DataFrame) -> pl.DataFrame:
         """Apply ``FEATURE_FILLS`` to whichever columns are present."""
@@ -591,9 +640,9 @@ WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}{fit_only}
         )
 
     def _own_position_rows(self, frame: pl.DataFrame) -> pl.DataFrame:
-        """Keep only the rows belonging to the position this serves.
+        """Keep only the rows belonging to the positions this serves.
 
-        Read off the position indicator rather than a position column,
+        Read off the position indicators rather than a position column,
         which the frame does not carry. A model spanning one position
         has no indicator and needs no filter -- every row is already
         its own.
@@ -601,8 +650,14 @@ WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}{fit_only}
         names = position_dummy_names(self.training_positions)
         if not names:
             return frame
-        own = POSITION_DUMMIES[self.POSITION]
-        return frame.filter(pl.col(own) == 1.0)
+        return frame.filter(
+            pl.any_horizontal(
+                [
+                    pl.col(POSITION_DUMMIES[position]) == 1.0
+                    for position in self.serving_positions
+                ]
+            )
+        )
 
     def make_pipeline(self) -> Pipeline:
         """Build the median-imputing random-forest pipeline.
@@ -696,7 +751,7 @@ WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}{fit_only}
         # scored and stamped POSITION, and the other positions' models
         # collide with these rows in points_prediction.
         forward_fixtures = forward_fixtures.filter(
-            pl.col("position") == self.POSITION
+            pl.col("position").is_in(self.serving_positions)
         )
         player_form = self.connection.sql(
             "SELECT * FROM player_match_form_inclusive"
@@ -779,12 +834,12 @@ WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}{fit_only}
             frame, opposition, ["opponent_name"], self.opposition_feature_names
         )
         frame = frame.with_columns(pl.col("is_home").cast(pl.Float64))
-        # Constant on this path, unlike in training: the forward frame
-        # was filtered to POSITION a few lines up, so every row is this
-        # model's own position whatever else it was trained on.
+        # Read off the row's own position rather than stamped from
+        # POSITION: the forward frame was filtered to the served
+        # positions a few lines up, which may be more than one.
         frame = frame.with_columns(
             [
-                pl.lit(float(position == self.POSITION)).alias(name)
+                (pl.col("position") == position).cast(pl.Float64).alias(name)
                 for position, name in zip(
                     self.training_positions,
                     position_dummy_names(self.training_positions),
@@ -829,7 +884,7 @@ WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}{fit_only}
             Keys, position, prediction, actual and the model's inputs.
         """
         return test_df.with_columns(
-            position=pl.lit(self.POSITION),
+            position=self._served_position(),
             predicted_points=pl.Series(predicted).cast(pl.Float64),
             actual_points=pl.col(self.TARGET).cast(pl.Float64),
             features=feature_json(test_df, self.FEATURES),
@@ -884,10 +939,13 @@ WHERE m.minutes IS NOT NULL{seasons}{self.row_filter}{fit_only}
         predicted = model.predict(
             feature_frame.select(self.FEATURES).to_pandas()
         )
-        scored = feature_frame.select(KEY_COLUMNS).with_columns(
-            position=pl.lit(self.POSITION),
+        # Positioned before the select, not after: the dummies the
+        # served position is read off are model features, and selecting
+        # the keys first would drop them.
+        scored = feature_frame.with_columns(
+            position=self._served_position(),
             **{PREDICTED_VALUE: pl.Series(predicted).cast(pl.Float64)},
-        )
+        ).select([*KEY_COLUMNS, "position", PREDICTED_VALUE])
         rows = self.COMPONENT_IMPL.points(
             scored, self.minutes_predictions(kind), kind
         )

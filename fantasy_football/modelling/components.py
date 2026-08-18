@@ -9,6 +9,13 @@ so nothing downstream needs to ask whether a position has been split up.
 Components live as rows in ``points_component`` rather than as a table
 each, so adding one is a new :class:`Component` value and an entry in
 :data:`POSITION_COMPONENTS`.
+
+There is no residual component. Bonus points and red cards are therefore
+in no outfield prediction at all, so every outfield score is low by
+roughly a player's bonus expectation -- concentrated in the high-BPS
+players, which makes it a ranking distortion rather than a constant
+offset. GK is still one model and still carries its bonus, so a GK total
+and an outfield total are not directly comparable.
 """
 
 import logging
@@ -21,7 +28,7 @@ import numpy as np
 import polars as pl
 from numpy.typing import NDArray
 
-from fantasy_football.constants import DEFCON_THRESHOLD_DEF
+from fantasy_football.constants import DEFCON_THRESHOLD_BY_POSITION
 from fantasy_football.modelling.distributions import (
     CountDistribution,
     PoissonCounts,
@@ -107,13 +114,14 @@ class Component(StrEnum):
     CONCEDING = "conceding"
     #: Points lost to bookings. Yellows only -- see YellowCardsComponent.
     YELLOW_CARDS = "yellow_cards"
-    #: Everything not carved out into a component of its own.
-    RESIDUAL = "residual"
 
 
 # Which components each position's prediction is summed from. Read as
 # configuration rather than branched on in code, so putting a position
 # back to a single model is an edit here and not a revert.
+#
+# TODO (JT): nothing scores the composed total, so the cost of dropping
+# the residual is unmeasured.
 POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
     "GK": (Component.TOTAL,),
     "DEF": (
@@ -123,10 +131,23 @@ POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
         Component.ASSISTS,
         Component.CONCEDING,
         Component.YELLOW_CARDS,
-        Component.RESIDUAL,
     ),
-    "MID": (Component.TOTAL,),
-    "FWD": (Component.TOTAL,),
+    "MID": (
+        Component.APPEARANCE,
+        Component.DEFCON,
+        Component.GOALS,
+        Component.ASSISTS,
+        Component.CONCEDING,
+        Component.YELLOW_CARDS,
+    ),
+    # No conceding: a forward is paid nothing either way.
+    "FWD": (
+        Component.APPEARANCE,
+        Component.DEFCON,
+        Component.GOALS,
+        Component.ASSISTS,
+        Component.YELLOW_CARDS,
+    ),
 }
 
 # What identifies one fixture leg of one position's prediction.
@@ -321,7 +342,7 @@ class DefconComponent:
     defenders sitting closest to it.
     """
 
-    threshold: int = DEFCON_THRESHOLD_DEF
+    threshold: int = DEFCON_THRESHOLD_BY_POSITION["DEF"]
     distribution: CountDistribution = field(default_factory=PoissonCounts)
 
     @property
@@ -484,16 +505,16 @@ class RateComponent:
     have been carved out.
 
     ``points_per_event`` is what separates a rate of *points* from a
-    rate of *events*. The residual model already predicts points, so it
-    leaves this None and the scaled rate is the answer. A goals model
-    predicts goals, which are worth six to a defender and four to a
-    forward, so the conversion happens here -- which is what lets one
-    model serve every position it was trained on. An assist pays the
-    same everywhere, so that model passes a scalar: the mapping form
-    exists to express variation by position, and there is none.
+    rate of *events*. A model already predicting points leaves this None
+    and the scaled rate is the answer. A goals model predicts goals,
+    which are worth six to a defender and four to a forward, so the
+    conversion happens here -- which is what lets one model serve every
+    position it was trained on. An assist pays the same everywhere, so
+    that model passes a scalar: the mapping form exists to express
+    variation by position, and there is none.
     """
 
-    component_name: Component = Component.RESIDUAL
+    component_name: Component
     points_per_event: Mapping[str, float] | float | None = None
     distribution: CountDistribution = field(default_factory=PoissonCounts)
 
@@ -576,10 +597,9 @@ class YellowCardsComponent:
     Reds are deliberately not here. They pay minus three against a
     yellow's minus one and arrive roughly forty times less often -- 44
     across the league in 2025-26 against 1422 yellows -- which is too
-    few to estimate a player rate from. They stay inside the residual
-    until they earn a component of their own, and naming this one for
-    yellows is what keeps that a separate component rather than a
-    nullable field in here.
+    few to estimate a player rate from, so they are in no component at
+    all. Naming this one for yellows is what keeps reds a separate
+    component when they earn one, rather than a nullable field in here.
 
     The conversion is a scaled rate at minus one a card, which is
     :class:`RateComponent`'s job, so that is what does the arithmetic.

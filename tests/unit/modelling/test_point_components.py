@@ -12,10 +12,10 @@ import polars as pl
 import pytest
 from scipy.stats import poisson
 
+from fantasy_football.modelling.assists import AssistsRatePredictor
 from fantasy_football.modelling.components import (
     ASSIST_POINTS,
     MINUTES_OUTPUTS,
-    POSITION_COMPONENTS,
     PREDICTED_VALUE,
     AppearanceComponent,
     Component,
@@ -25,12 +25,13 @@ from fantasy_football.modelling.components import (
     RateComponent,
     TotalComponent,
 )
-from fantasy_football.modelling.defcon import DefconRatePredictor
-from fantasy_football.modelling.defender import (
-    DefenderPointsPredictor,
-    DefenderResidualPointsPredictor,
+from fantasy_football.modelling.defcon import (
+    CbirtRatePredictor,
+    DefconRatePredictor,
 )
 from fantasy_football.modelling.distributions import PoissonCounts
+from fantasy_football.modelling.goals import GoalsRatePredictor
+from fantasy_football.modelling.yellow_cards import YellowCardsRatePredictor
 from fantasy_football.storage.tables import BACKFILL_KIND
 
 SEASON = "2025-26"
@@ -89,7 +90,7 @@ def defcon() -> DefconComponent:
         AppearanceComponent(),
         defcon(),
         ConcedingComponent(),
-        RateComponent(Component.RESIDUAL),
+        RateComponent(Component.GOALS),
     ],
     ids=lambda c: str(c.component),
 )
@@ -104,7 +105,7 @@ def test_every_component_satisfies_the_protocol(component) -> None:
         AppearanceComponent(),
         defcon(),
         ConcedingComponent(),
-        RateComponent(Component.RESIDUAL),
+        RateComponent(Component.GOALS),
     ],
     ids=lambda c: str(c.component),
 )
@@ -133,7 +134,7 @@ def test_every_component_returns_keyed_component_rows(component) -> None:
         AppearanceComponent(),
         defcon(),
         ConcedingComponent(),
-        RateComponent(Component.RESIDUAL),
+        RateComponent(Component.GOALS),
     ],
     ids=lambda c: str(c.component),
 )
@@ -253,24 +254,6 @@ def test_defcon_survives_a_negative_predicted_rate() -> None:
 # --- Rate components (the residual) ----------------------------------
 
 
-def test_rate_component_scales_a_per_90_rate_by_minutes() -> None:
-    """Per-90 output becomes per-match by the minutes played."""
-    rows = RateComponent(Component.RESIDUAL).points(
-        scored_rows(4.0), minutes_rows(expected_minutes=45.0), BACKFILL_KIND
-    )
-
-    assert rows["points"].item() == pytest.approx(2.0)
-
-
-def test_rate_component_passes_negative_points_through() -> None:
-    """A card-heavy defender's residual is allowed to be negative."""
-    rows = RateComponent(Component.RESIDUAL).points(
-        scored_rows(-1.0), minutes_rows(expected_minutes=90.0), BACKFILL_KIND
-    )
-
-    assert rows["points"].item() == pytest.approx(-1.0)
-
-
 # --- Missing minutes -------------------------------------------------
 
 
@@ -280,7 +263,7 @@ def test_rate_component_passes_negative_points_through() -> None:
         AppearanceComponent(),
         defcon(),
         ConcedingComponent(),
-        RateComponent(Component.RESIDUAL),
+        RateComponent(Component.GOALS),
     ],
     ids=lambda c: str(c.component),
 )
@@ -302,7 +285,13 @@ def test_a_row_with_no_minutes_forecast_scores_zero(component) -> None:
 
 @pytest.mark.parametrize(
     "predictor",
-    [DefconRatePredictor, DefenderResidualPointsPredictor],
+    [
+        DefconRatePredictor,
+        CbirtRatePredictor,
+        GoalsRatePredictor,
+        AssistsRatePredictor,
+        YellowCardsRatePredictor,
+    ],
     ids=lambda cls: cls.__name__,
 )
 def test_no_decomposed_model_takes_a_minutes_feature(predictor) -> None:
@@ -317,19 +306,6 @@ def test_no_decomposed_model_takes_a_minutes_feature(predictor) -> None:
     """
     assert not set(predictor.FEATURES) & set(MINUTES_OUTPUTS)
     assert not set(predictor.MINUTES_COLUMNS)
-
-
-def test_every_decomposed_def_component_is_declared() -> None:
-    """DEF's declared components are exactly the ones with a writer."""
-    assert set(POSITION_COMPONENTS["DEF"]) == {
-        Component.APPEARANCE,
-        Component.DEFCON,
-        Component.GOALS,
-        Component.ASSISTS,
-        Component.CONCEDING,
-        Component.YELLOW_CARDS,
-        Component.RESIDUAL,
-    }
 
 
 def test_a_flat_price_pays_every_position_the_same() -> None:
@@ -364,17 +340,6 @@ def test_a_position_with_no_price_in_a_mapping_is_an_error() -> None:
         component.points(
             scored_rows(0.5, position="MID"), minutes_rows(), BACKFILL_KIND
         )
-
-
-def test_the_residual_model_is_the_monolith_minus_minutes() -> None:
-    """Nothing replaces the dropped minutes features.
-
-    A stand-in for expected_minutes would put the double-count back in
-    through the side door, so the residual list must be a strict subset.
-    """
-    assert set(DefenderResidualPointsPredictor.FEATURES) == (
-        set(DefenderPointsPredictor.FEATURES) - set(MINUTES_OUTPUTS)
-    )
 
 
 # --- Conceding -------------------------------------------------------

@@ -432,6 +432,16 @@ class Predictor(ABC):
         return version, model
 
     @property
+    def serving_positions(self) -> tuple[str, ...]:
+        """Return the positions this model writes rows for.
+
+        The spec's single position by default. Subclasses serving
+        several override it; the storage layer reads the tuple as an
+        ``IN`` predicate.
+        """
+        return (self.model_spec.position,) if self.model_spec.position else ()
+
+    @property
     def _own_rows(self) -> dict[str, object]:
         """Predicates isolating this model's rows in a shared table.
 
@@ -441,7 +451,10 @@ class Predictor(ABC):
         """
         own: dict[str, object] = {}
         if self.model_spec.position is not None:
-            own["position"] = self.model_spec.position
+            # Every position this model writes, not just its primary
+            # one. Deleting one position's rows and then inserting all
+            # of them would leave the rest stored twice.
+            own["position"] = self.serving_positions
         if self.model_spec.component is not None:
             own["component"] = self.model_spec.component
         return own

@@ -33,10 +33,6 @@ FCI's raw table spans every competition, but ``opta_match`` -- the
 bridge this reads, not the table -- is already filtered to the league,
 so the fallback cannot carry a cup goal into a league gameweek.
 
-The residual model deducts the same expression through
-:func:`goals_count_sql`, and the two must not diverge: if the target and
-the deduction disagree about what a goal is, the components stop summing
-to the total and nothing fails loudly.
 """
 
 import logging
@@ -78,11 +74,13 @@ from fantasy_football.storage.tables import (
 
 logger = logging.getLogger(__name__)
 
-#: The position this instance scores and writes. The model behind it
-#: knows about all three in :data:`TRAINING_POSITIONS`.
+#: The model's primary position, which keys its registered name and
+#: its evaluation. It scores and writes every position in
+#: :data:`TRAINING_POSITIONS` -- see ``SERVING_POSITIONS``.
 POSITION = "DEF"
 
-#: The outfield positions the one artefact is fitted on.
+#: The outfield positions the one artefact is fitted on, and
+#: writes component rows for.
 TRAINING_POSITIONS: tuple[str, ...] = ("DEF", "MID", "FWD")
 
 REGISTERED_MODEL = "goals_rate_regressor"
@@ -108,7 +106,7 @@ SCORING_MINUTES_FLOOR = DEFCON_MINUTES_FLOOR
 def goals_count_sql(fpl: str = "gf", opta: str = "go") -> str:
     """Return the goal count, preferring FPL's own published figure.
 
-    Aliased rather than fixed so the residual model can deduct the very
+    Aliased rather than fixed so a caller can point it at whichever
     same expression off its own joins. One definition, two aliasings --
     a second spelling of this is how the components quietly stop summing
     to the total.
@@ -129,7 +127,7 @@ def goals_count_sql(fpl: str = "gf", opta: str = "go") -> str:
 
 
 # Both goal sources at match grain. The goals head reads them to build
-# its target; the defender residual reads them to know what to deduct.
+# its target.
 GOALS_JOINS = """
 LEFT JOIN player_match_fpl AS gf
     ON  gf.season        = m.season
@@ -177,6 +175,7 @@ class GoalsRatePredictor(PositionPointsPredictor):
 
     POSITION = POSITION
     TRAINING_POSITIONS = TRAINING_POSITIONS
+    SERVING_POSITIONS = TRAINING_POSITIONS
     TARGET = "goals_per_90"
     COMPONENT = Component.GOALS
     COMPONENT_IMPL = RateComponent(
@@ -240,7 +239,7 @@ class GoalsRatePredictor(PositionPointsPredictor):
 
         Every restriction here removes a leg from the composed
         prediction, not just from the fit: a defender with an
-        ``appearance``, a ``defcon`` and a ``residual`` but no ``goals``
+        ``appearance``, a ``defcon`` and an ``assists`` but no ``goals``
         is incomplete, and ``compose`` drops him entirely. So this is
         the floor the sibling components use and no more; what this head
         may not *learn* from is in :attr:`training_row_filter`.

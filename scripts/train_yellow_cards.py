@@ -9,12 +9,8 @@ would leave the stored components summing to something other than the
 stored total depending on which ran last, so the pipeline in ``main.py``
 stays the only thing that writes them.
 
-Promotion is by hand, and the order matters. This head and the defender
-residual head are a matched pair -- the residual's target deducts the
-bookings this one predicts -- so promote the retrained residual *first*.
-Between the two moves defenders are charged slightly too little for
-their cards, which is recoverable. The other order charges every booking
-twice, which is silent.
+Promotion is by hand: move the ``production`` alias in the MLflow
+UI once a run looks better than the live one.
 
 The window is narrower than it was for conceding: a yellow is one point
 against a clean sheet's four, and it lands on a minority of legs.
@@ -56,8 +52,8 @@ def main() -> None:
         )
         predictor.train_and_register_model()
         logger.info(
-            "Registered a new %s version. Promote the retrained defender "
-            "residual before this one; nothing has been written to "
+            "Registered a new %s version. Promote it in the MLflow UI to "
+            "put it live; nothing has been written to "
             "points_component.",
             YELLOW_CARDS_SPEC.registered_model_name,
         )

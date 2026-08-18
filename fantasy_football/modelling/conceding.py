@@ -25,7 +25,7 @@ and no coalesce -- its absence here is deliberate, not an oversight.
 produces no training row at all. The guard is the derivation, not a
 filter.
 
-What the residual deducts is *not* what this head targets, and that is
+What the component pays is *not* what this head targets, and that is
 the first time a carve-out has broken the "one definition, two
 aliasings" rule. It has to: this head predicts a team's goals, while
 FPL pays a player for his own on-pitch clean sheet. The invariant that
@@ -140,7 +140,7 @@ FEATURES = ["is_home", *_own_feature_names(), *_opposition_feature_names()]
 def conceding_points_sql(position: str, fpl: str = "pmf") -> str:
     """Return the conceding points FPL paid a player, as SQL.
 
-    What the residual deducts. Reads the player's own settled figures
+    What the component pays. Reads the player's own settled figures
     rather than the team's, because the payment is a player's: FPL's
     ``clean_sheets`` already carries the hour requirement, and
     ``goals_conceded`` counts only what was shipped while he was on.
@@ -545,11 +545,38 @@ WHERE m.minutes IS NOT NULL
         )
 
 
+MID_POSITION = "MID"
+
+
+class MidfielderConcedingPredictor(ConcedingPredictor):
+    """The same team-grain model, fanned out to midfielders.
+
+    A separate instance rather than a serving list: the model predicts
+    goals conceded by a *team* and carries no position anywhere in its
+    features or its target, so there is nothing here for a position
+    dummy to tell apart. It reads the same registered model and the same
+    alias -- only the rows it writes differ, which the spec's position
+    keeps apart.
+    """
+
+    POSITION = MID_POSITION
+
+
 CONCEDING_SPEC = ModelSpec(
     registered_model_name=REGISTERED_MODEL,
     production_alias=PRODUCTION_ALIAS,
     table=POINTS_COMPONENT,
     evaluation_table=TEST_CONCEDING_PREDICTION,
     position=POSITION,
+    component=Component.CONCEDING,
+)
+
+
+MIDFIELDER_CONCEDING_SPEC = ModelSpec(
+    registered_model_name=REGISTERED_MODEL,
+    production_alias=PRODUCTION_ALIAS,
+    table=POINTS_COMPONENT,
+    evaluation_table=TEST_CONCEDING_PREDICTION,
+    position=MID_POSITION,
     component=Component.CONCEDING,
 )

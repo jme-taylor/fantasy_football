@@ -53,12 +53,13 @@ See ``team_form.window_frame`` and :func:`register_match_form`.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import polars as pl
 
 from fantasy_football.constants import (
-    DEFCON_THRESHOLD_DEF,
+    DEFCON_THRESHOLD_BY_POSITION,
     ROLLING_WINDOW,
 )
 from fantasy_football.features.naming import (
@@ -151,12 +152,18 @@ GK_FPL_PER90_STATS: tuple[str, ...] = (
 
 # The counters FPL adds up for a defender's defensive contribution.
 # Recoveries are deliberately absent: they count towards the midfield and
-# forward threshold of 12, not the defender threshold of 10.
+# forward threshold, not the defender one.
 DEFCON_COMPONENT_STATS: tuple[str, ...] = (
     "clearances",
     "blocks",
     "interceptions",
     "tackles",
+)
+
+# The midfield and forward counters: the defender four, plus recoveries.
+DEFCON_MID_FWD_COMPONENT_STATS: tuple[str, ...] = (
+    *DEFCON_COMPONENT_STATS,
+    "recoveries",
 )
 
 # Stats also accumulated across the season to date. Cards are the case
@@ -189,15 +196,67 @@ RATE_STATS: tuple[str, ...] = (
     *MATCH_RATE_STATS,
 )
 
-# The defcon features. A rate alone cannot describe a threshold: two
-# defenders averaging 9.5 CBIT per 90 with different spreads have very
-# different chances of clearing 10, so the hit rate and the spread go
-# alongside the rate.
-DEFCON_FORM_STATS: tuple[str, ...] = (
-    "cbit_per90",
-    "cbit_ten_plus_rate",
-    "cbit_std",
+
+@dataclass(frozen=True, slots=True)
+class DefconVariant:
+    """One position group's defensive-contribution count and threshold.
+
+    FPL pays the same rule off two counts: defenders on CBIT at 10,
+    midfielders and forwards on CBIRT at 12. Each gets a rate, a hit
+    rate and a spread -- a rate alone cannot describe a threshold, since
+    two players on the same mean clear it at different frequencies
+    depending on their spread.
+    """
+
+    #: Prefix of the emitted columns, and the count's own alias.
+    count: str
+    #: The ``player_match_opta`` counters summed into the count.
+    stats: tuple[str, ...]
+    #: What the count must reach to be paid.
+    threshold: int
+    #: How the threshold is spelled in the hit-rate column name.
+    threshold_label: str
+
+    @property
+    def form_stats(self) -> tuple[str, ...]:
+        """Return the three windowed stat names, before the suffix."""
+        return (
+            f"{self.count}_per90",
+            f"{self.count}_{self.threshold_label}_rate",
+            f"{self.count}_std",
+        )
+
+    def form_columns(
+        self, rolling_window: int = ROLLING_WINDOW
+    ) -> tuple[str, ...]:
+        """Return the emitted column names for a window.
+
+        Named from the window they are computed over, like every other
+        rate, so changing ``ROLLING_WINDOW`` cannot leave a column
+        claiming five appearances while covering another number.
+        """
+        return tuple(
+            rolling_column_name(stat, rolling_window)
+            for stat in self.form_stats
+        )
+
+
+CBIT_VARIANT = DefconVariant(
+    count="cbit",
+    stats=DEFCON_COMPONENT_STATS,
+    threshold=DEFCON_THRESHOLD_BY_POSITION["DEF"],
+    threshold_label="ten_plus",
 )
+
+CBIRT_VARIANT = DefconVariant(
+    count="cbirt",
+    stats=DEFCON_MID_FWD_COMPONENT_STATS,
+    threshold=DEFCON_THRESHOLD_BY_POSITION["MID"],
+    threshold_label="twelve_plus",
+)
+
+#: Every variant the view emits a trio for.
+DEFCON_VARIANTS: tuple[DefconVariant, ...] = (CBIT_VARIANT, CBIRT_VARIANT)
 
 
 # The player's own penalty counters, summed into one attempt count.
@@ -221,20 +280,6 @@ NO_FORM_COLUMN = "has_no_form"
 # early in 2024-25 trips it despite a full window of appearances, which
 # is honest about the feature set even though it is not a debut.
 ANCHOR_STAT = "xg"
-
-
-def defcon_form_columns(
-    rolling_window: int = ROLLING_WINDOW,
-) -> tuple[str, ...]:
-    """Return the defcon form column names for a window.
-
-    Named from the window they are computed over, like every other rate,
-    so changing ``ROLLING_WINDOW`` cannot leave a column claiming five
-    appearances while covering another number.
-    """
-    return tuple(
-        rolling_column_name(stat, rolling_window) for stat in DEFCON_FORM_STATS
-    )
 
 
 # Columns the view adds beyond the per-90 rates.
@@ -456,7 +501,11 @@ def feature_columns(rolling_window: int = ROLLING_WINDOW) -> list[str]:
     return (
         [per90_column_name(stat, rolling_window) for stat in RATE_STATS]
         + [cumulative_column_name(stat) for stat in CUMULATIVE_STATS]
-        + list(defcon_form_columns(rolling_window))
+        + [
+            name
+            for variant in DEFCON_VARIANTS
+            for name in variant.form_columns(rolling_window)
+        ]
         + [PENALTY_EXPOSURE_COLUMN, NO_FORM_COLUMN]
         + list(FORM_CONTEXT_COLUMNS)
     )
@@ -499,6 +548,35 @@ def rolling_identity_sql(identity: str = "s", row: str = "m") -> str:
     )
 
 
+def opta_count_sql(stats: tuple[str, ...], alias: str) -> str:
+    """Return the SQL summing FCI counters into one count.
+
+    Null when FCI published none of them, rather than zero: a player
+    with no data did not make no clearances, we simply do not know. Zero
+    here would drag the rolling rate down and read as a quiet player.
+
+    ``alias`` is required: the feature view and the modelling frames
+    join the same table under different names, and a default would bind
+    silently to whichever module declared it.
+    """
+    absent = " AND ".join(f"{alias}.{stat} IS NULL" for stat in stats)
+    totalled = " + ".join(f"coalesce({alias}.{stat}, 0)" for stat in stats)
+    return f"CASE WHEN {absent} THEN NULL ELSE {totalled} END"
+
+
+def _defcon_windowed_sql(variant: DefconVariant, rolling_window: int) -> str:
+    """Return one variant's three windowed columns, as SELECT items."""
+    rate, hit_rate, spread = variant.form_columns(rolling_window)
+    count = variant.count
+    return f"""90.0 * sum(a.{count}) OVER form
+        / nullif(sum(CASE WHEN a.{count} IS NOT NULL THEN a.minutes END)
+                 OVER form, 0) AS {rate},
+    avg(CASE WHEN a.{count} IS NULL THEN NULL
+             WHEN a.{count} >= {variant.threshold} THEN 1.0
+             ELSE 0.0 END) OVER form AS {hit_rate},
+    stddev_samp(a.{count}) OVER form AS {spread}"""
+
+
 def form_sql(
     rolling_window: int = ROLLING_WINDOW, inclusive: bool = False
 ) -> str:
@@ -523,18 +601,12 @@ def form_sql(
     validate_stats(FPL_RATE_STATS, source="fpl")
     validate_stats(MATCH_RATE_STATS, source="player_match")
     validate_stats(CUMULATIVE_STATS, source="player_match")
-    validate_stats(DEFCON_COMPONENT_STATS)
-    # Null when FCI published no defensive counters for the appearance at
-    # all, rather than zero: a defender with no data did not make no
-    # clearances, we simply do not know. Zero here would drag the rolling
-    # rate down and read as a quiet defender.
-    absent = " AND ".join(
-        f"o.{stat} IS NULL" for stat in DEFCON_COMPONENT_STATS
+    for variant in DEFCON_VARIANTS:
+        validate_stats(variant.stats)
+    defcon_counts = ",\n        ".join(
+        f'{opta_count_sql(variant.stats, "o")} AS {variant.count}'
+        for variant in DEFCON_VARIANTS
     )
-    totalled = " + ".join(
-        f"coalesce(o.{stat}, 0)" for stat in DEFCON_COMPONENT_STATS
-    )
-    cbit = f"CASE WHEN {absent} THEN NULL ELSE {totalled} END AS cbit"
     validate_stats(PENALTY_COMPONENT_STATS)
     pen_attempts = " + ".join(
         f"coalesce(o.{stat}, 0)" for stat in PENALTY_COMPONENT_STATS
@@ -547,8 +619,9 @@ def form_sql(
         "a.team_matches_season_to_date",
     )
     anchor = per90_column_name(ANCHOR_STAT, rolling_window)
-    defcon_rate, defcon_hit_rate, defcon_spread = defcon_form_columns(
-        rolling_window
+    defcon_windowed = ",\n    ".join(
+        _defcon_windowed_sql(variant, rolling_window)
+        for variant in DEFCON_VARIANTS
     )
     rates = ",\n        ".join(
         f"90.0 * sum(a.{stat}) OVER form "
@@ -595,7 +668,7 @@ appearances AS (
         m.minutes,
         m.total_points,
         {rolling_identity_sql()} AS rolling_identity,
-        {cbit},
+        {defcon_counts},
         {pen},
         tp.team_pen_attempts_season_to_date,
         tp.team_matches_season_to_date,
@@ -653,13 +726,7 @@ SELECT
     a.total_points,
     {rates},
     {totals},
-    90.0 * sum(a.cbit) OVER form
-        / nullif(sum(CASE WHEN a.cbit IS NOT NULL THEN a.minutes END)
-                 OVER form, 0) AS {defcon_rate},
-    avg(CASE WHEN a.cbit IS NULL THEN NULL
-             WHEN a.cbit >= {DEFCON_THRESHOLD_DEF} THEN 1.0
-             ELSE 0.0 END) OVER form AS {defcon_hit_rate},
-    stddev_samp(a.cbit) OVER form AS {defcon_spread},
+    {defcon_windowed},
     {penalty_exposure} AS {PENALTY_EXPOSURE_COLUMN},
     CASE WHEN {anchor} IS NULL THEN 1.0 ELSE 0.0 END AS {NO_FORM_COLUMN},
     count(*) OVER form AS form_matches,
@@ -683,16 +750,13 @@ WINDOW
     # they are computed in the same CTE and carried by the same as-of
     # join. Emitting them on the inclusive view alone would leave the
     # forward path working and training unable to bind at all.
-    defcon_windowed = f"""90.0 * sum(a.cbit) OVER form
-            / nullif(sum(CASE WHEN a.cbit IS NOT NULL THEN a.minutes END)
-                     OVER form, 0) AS {defcon_rate},
-        avg(CASE WHEN a.cbit IS NULL THEN NULL
-                 WHEN a.cbit >= {DEFCON_THRESHOLD_DEF} THEN 1.0
-                 ELSE 0.0 END) OVER form AS {defcon_hit_rate},
-        stddev_samp(a.cbit) OVER form AS {defcon_spread}"""
     rate_names = [
         per90_column_name(stat, rolling_window) for stat in RATE_STATS
-    ] + [defcon_rate, defcon_hit_rate, defcon_spread]
+    ] + [
+        name
+        for variant in DEFCON_VARIANTS
+        for name in variant.form_columns(rolling_window)
+    ]
     carried_rates = ",\n    ".join(f"p.{name}" for name in rate_names)
     # Season-scoped: a player whose last appearance was last season
     # starts this one on nil rather than inheriting its closing tally,
