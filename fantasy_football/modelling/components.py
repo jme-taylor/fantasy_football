@@ -15,9 +15,15 @@ There is no residual component. Bonus points and red cards are in no
 prediction at all, so every score is low by roughly a player's bonus
 expectation -- concentrated in the high-BPS players, which makes it a
 ranking distortion rather than a constant offset. It applies to all four
-positions equally now, so totals remain comparable across them; a
-keeper's is additionally missing yellow cards, which is worth about a
-tenth of a point a match.
+positions equally, so totals stay comparable across them.
+
+A keeper is paid fewer components than anyone. FPL pays him no defensive
+contribution, and his goals and assists are rare enough to be a mass of
+exact zeros, which is why the pooled heads train on the outfield alone.
+His yellow cards are modelled by nobody: the pooled head leans on fouls
+committed, near-constant zero for a keeper, so it would hand back its
+intercept for about a tenth of a point a match. That last one is a real
+if small optimism in a keeper's score, unlike the other two.
 """
 
 import logging
@@ -133,13 +139,7 @@ class Component(StrEnum):
 # TODO (JT): nothing scores the composed total, so the cost of dropping
 # the residual is unmeasured.
 POSITION_COMPONENTS: dict[str, tuple[Component, ...]] = {
-    # No defcon: FPL does not pay keepers defensive contributions, so
-    # there is no threshold for them in DEFCON_THRESHOLD_BY_POSITION.
-    # No goals or assists either -- both are rare enough in a keeper to
-    # be a mass of exact zeros, which is why the pooled heads train on
-    # the outfield only. No yellow cards: the pooled head leans on
-    # fouls committed, which is near-constant zero for a keeper, so it
-    # would return the intercept for about a tenth of a point a match.
+    # See the module docstring for what a keeper is not paid.
     "GK": (
         Component.APPEARANCE,
         Component.SAVES,

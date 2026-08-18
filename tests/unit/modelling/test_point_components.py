@@ -505,11 +505,8 @@ def mass_sum_floor(rate: float, divisor: int) -> float:
     return sum((n // divisor) * poisson.pmf(n, rate) for n in range(0, 200))
 
 
-# The rates each divisor is actually asked about. Both models predict a
-# conditional mean rather than an outcome, so the ceilings are what a
-# expectation reaches, not what a scoreline does: a team expected to
-# concede four is being written off, and a keeper expected to make five
-# saves is facing a siege.
+# Ceilings are what an expectation reaches, not what a scoreline does:
+# both models predict a conditional mean.
 @pytest.mark.parametrize(
     ("divisor", "rate"),
     [(2, rate) for rate in (0.0, 0.5, 1.4, 2.5, 4.0)]

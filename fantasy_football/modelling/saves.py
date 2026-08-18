@@ -252,13 +252,12 @@ class SavesRatePredictor(PositionPointsPredictor):
         # "Predict the average keeper's workload every time", carried
         # through the same floor, so the skill score compares two
         # numbers of points rather than a rate against a count.
-        base_rate = float(np.mean(saves))
+        mean_actual = float(np.mean(saves))
         base_points = expected_floor(
-            np.full_like(expected, base_rate), SAVES_DIVISOR, distribution
+            np.full_like(expected, mean_actual), SAVES_DIVISOR, distribution
         )
         points_mae = float(np.mean(np.abs(predicted_points - paid)))
         base_points_mae = float(np.mean(np.abs(base_points - paid)))
-        mean_actual = float(np.mean(saves))
         return SavesMetrics(
             poisson_deviance=count_poisson_deviance(saves, expected),
             mae=float(np.mean(np.abs(expected - saves))),

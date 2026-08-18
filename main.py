@@ -493,4 +493,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main(rebuild=False)
+    main(rebuild=True)
