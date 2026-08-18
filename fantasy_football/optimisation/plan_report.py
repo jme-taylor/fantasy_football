@@ -7,10 +7,32 @@ from pydantic import BaseModel, ConfigDict
 
 from fantasy_football.fpl_types import (
     GameWeekPlan,
+    PlayerBreakdown,
     PlayerGameweekExpectedPoints,
+)
+from fantasy_football.modelling.components import (
+    POSITION_COMPONENTS,
+    Component,
 )
 
 _POSITION_ORDER = {"GK": 0, "DEF": 1, "MID": 2, "FWD": 3, "?": 4}
+
+# Short column labels for the breakdown table.
+_COMPONENT_HEADERS: dict[Component, str] = {
+    Component.TOTAL: "Total",
+    Component.APPEARANCE: "App",
+    Component.DEFCON: "DefCon",
+    Component.GOALS: "Goals",
+    Component.ASSISTS: "Ast",
+    Component.CONCEDING: "Conc",
+    Component.YELLOW_CARDS: "YC",
+}
+
+_BONUS_FOOTNOTE = (
+    "Outfield components carry no bonus and no red cards; the GK total "
+    "does. Outfield numbers run low by roughly a bonus expectation and "
+    "are not comparable with a GK's."
+)
 
 
 class PlayerPrices(BaseModel):
@@ -118,10 +140,70 @@ def _value_line(plan: GameWeekPlan, prices: Mapping[int, PlayerPrices]) -> str:
     )
 
 
+def _breakdown_table(
+    position: str,
+    players: Sequence[tuple[str, PlayerGameweekExpectedPoints]],
+    xi_ids: set[int],
+    breakdowns: Mapping[int, PlayerBreakdown],
+) -> list[str]:
+    """Render one position's component table.
+
+    A component with no row renders as a dash rather than a zero: nothing
+    was predicted, which is a different statement from a prediction that
+    the player scores nothing there.
+    """
+    components = POSITION_COMPONENTS[position]
+    headers = [_COMPONENT_HEADERS[component] for component in components]
+    lines = [
+        "",
+        f"#### {position}",
+        "",
+        f"| Player | {' | '.join(headers)} | |",
+        f"|--------|{'|'.join(['-----:'] * len(headers))}|--|",
+    ]
+    for _, player in players:
+        breakdown = breakdowns.get(player.player_id)
+        points = breakdown.components if breakdown else {}
+        cells = [
+            "—" if component not in points else f"{points[component]:.2f}"
+            for component in components
+        ]
+        marks = []
+        if player.player_id in xi_ids:
+            marks.append("XI")
+        if breakdown is not None and breakdown.fixtures > 1:
+            marks.append(f"×{breakdown.fixtures}")
+        lines.append(
+            f"| {player.player_name} | {' | '.join(cells)} "
+            f"| {' '.join(marks)} |"
+        )
+    return lines
+
+
+def _render_breakdown(
+    plan: GameWeekPlan,
+    positions: Mapping[int, str],
+    breakdowns: Mapping[int, PlayerBreakdown],
+) -> list[str]:
+    """Render the squad's component tables, one per position."""
+    rows = _ordered_rows(plan.squad, positions)
+    xi_ids = {p.player_id for p in plan.starting_xi}
+    lines = ["", "### Breakdown"]
+    ordered_positions = sorted(
+        POSITION_COMPONENTS, key=lambda p: _POSITION_ORDER.get(p, 4)
+    )
+    for position in ordered_positions:
+        players = [row for row in rows if row[0] == position]
+        if players:
+            lines += _breakdown_table(position, players, xi_ids, breakdowns)
+    return lines
+
+
 def _render_gameweek(
     plan: GameWeekPlan,
     positions: Mapping[int, str],
     prices: Mapping[int, PlayerPrices],
+    breakdowns: Mapping[int, PlayerBreakdown],
 ) -> str:
     """Render a single gameweek plan as a markdown section.
 
@@ -133,13 +215,16 @@ def _render_gameweek(
         Mapping of element id to position string (GK/DEF/MID/FWD).
     prices : Mapping[int, PlayerPrices]
         Mapping of element id to purchase, current and selling price.
+    breakdowns : Mapping[int, PlayerBreakdown]
+        Mapping of element id to this gameweek's component points.
 
     Returns
     -------
     str
         The markdown for this gameweek: a summary header, the XI table with a
         bench divider and bench rows, (when any transfers happened) a
-        ``Transfers —`` line, and a trailing ``Value —`` line.
+        ``Transfers —`` line, a ``Value —`` line, and the per-position
+        component breakdown.
     """
     captain_id = plan.captain.player_id
     header = (
@@ -180,6 +265,7 @@ def _render_gameweek(
         lines += ["", f"Transfers — IN: {ins} · OUT: {outs}"]
 
     lines += ["", _value_line(plan, prices)]
+    lines += _render_breakdown(plan, positions, breakdowns)
 
     return "\n".join(lines)
 
@@ -188,6 +274,7 @@ def render_plan_markdown(
     plans: Sequence[GameWeekPlan],
     positions: Mapping[int, str],
     prices: Mapping[int, PlayerPrices],
+    breakdowns: Mapping[tuple[int, int], PlayerBreakdown],
 ) -> str:
     """Render a multi-gameweek plan as a markdown report.
 
@@ -199,6 +286,9 @@ def render_plan_markdown(
         Mapping of element id to position string (GK/DEF/MID/FWD).
     prices : Mapping[int, PlayerPrices]
         Mapping of element id to purchase, current and selling price.
+    breakdowns : Mapping[tuple[int, int], PlayerBreakdown]
+        Mapping of (element id, gameweek) to that gameweek's component
+        points.
 
     Returns
     -------
@@ -207,14 +297,28 @@ def render_plan_markdown(
         gameweek in ascending gameweek order.
     """
     ordered = sorted(plans, key=lambda p: p.gameweek)
-    sections = [_render_gameweek(p, positions, prices) for p in ordered]
-    return "# Optimisation plan\n\n" + "\n\n".join(sections) + "\n"
+    sections = [
+        _render_gameweek(
+            plan,
+            positions,
+            prices,
+            {
+                element: breakdown
+                for (element, gw), breakdown in breakdowns.items()
+                if gw == plan.gameweek
+            },
+        )
+        for plan in ordered
+    ]
+    body = "\n\n".join(sections)
+    return f"# Optimisation plan\n\n{body}\n\n{_BONUS_FOOTNOTE}\n"
 
 
 def write_plan_report(
     plans: Sequence[GameWeekPlan],
     positions: Mapping[int, str],
     prices: Mapping[int, PlayerPrices],
+    breakdowns: Mapping[tuple[int, int], PlayerBreakdown],
     path: Path,
 ) -> None:
     """Render the plan and write it to ``path``.
@@ -227,9 +331,13 @@ def write_plan_report(
         Mapping of element id to position string (GK/DEF/MID/FWD).
     prices : Mapping[int, PlayerPrices]
         Mapping of element id to purchase, current and selling price.
+    breakdowns : Mapping[tuple[int, int], PlayerBreakdown]
+        Mapping of (element id, gameweek) to that gameweek's component
+        points.
     path : Path
         Destination markdown file; its parent must already exist.
     """
     path.write_text(
-        render_plan_markdown(plans, positions, prices), encoding="utf-8"
+        render_plan_markdown(plans, positions, prices, breakdowns),
+        encoding="utf-8",
     )

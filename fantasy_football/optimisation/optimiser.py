@@ -14,6 +14,7 @@ from fantasy_football.fpl_types import (
 )
 from fantasy_football.optimisation.inputs import (
     forward_gameweeks,
+    load_component_breakdown,
     load_optimiser_inputs,
 )
 from fantasy_football.optimisation.plan_report import (
@@ -879,6 +880,7 @@ def optimise_plan(
         gameweek_plans,
         positions,
         _report_prices(current_prices, initial_squad),
+        load_component_breakdown(season, weeks, connection),
         TRANSFORMED_DATA_FOLDER.joinpath("optimisation_plan.md"),
     )
     logger.info(
