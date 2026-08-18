@@ -28,6 +28,7 @@ from fantasy_football.modelling.points import (
 )
 from fantasy_football.storage.tables import (
     PLAYER_MATCH,
+    PLAYER_MATCH_FPL,
     PLAYER_MATCH_OPTA,
     PLAYER_SEASON,
     PLAYER_WEEK,
@@ -199,6 +200,35 @@ def seed_model_frame() -> Callable[..., None]:
                     (1, CHELSEA, False, ARSENAL, GW1_KICKOFF),
                     (2, UNITED, True, ARSENAL, GW2_KICKOFF),
                     (2, ARSENAL, False, UNITED, GW2_KICKOFF),
+                ]
+            ],
+        )
+        # The FPL match rows the counted targets are read off. Seeded
+        # for every leg so a head whose target is an FPL count -- saves,
+        # assists, goals -- has one here rather than being filtered out
+        # of the frame entirely.
+        append_rows(
+            PLAYER_MATCH_FPL,
+            connection,
+            [
+                {
+                    "season": SEASON,
+                    "gw": gw,
+                    "element": element,
+                    "fixture": gw,
+                    "opponent_team": opponent,
+                    "minutes": 90,
+                    "saves": 3,
+                    "assists": 0,
+                    "goals_scored": 0,
+                    "goals_conceded": 1,
+                    "clean_sheets": 0,
+                }
+                for gw, element, opponent in [
+                    (1, 1, TEAM_IDS[SPURS]),
+                    (2, 1, TEAM_IDS[ARSENAL]),
+                    (1, 2, TEAM_IDS[UNITED]),
+                    (1, 3, TEAM_IDS[CHELSEA]),
                 ]
             ],
         )

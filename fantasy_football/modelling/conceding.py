@@ -51,11 +51,12 @@ from fantasy_football.features.views import register_feature_views
 from fantasy_football.modelling.components import (
     CLEAN_SHEET_POINTS_BY_POSITION,
     CONCEDING_DEDUCTION_POSITIONS,
+    CONCEDING_DIVISOR,
     KEY_COLUMNS,
     PREDICTED_VALUE,
     Component,
     ConcedingComponent,
-    expected_deduction,
+    expected_floor,
 )
 from fantasy_football.modelling.defcon import (
     MINUTES_FLOOR as DEFCON_MINUTES_FLOOR,
@@ -469,8 +470,8 @@ WHERE m.minutes IS NOT NULL
             deduction_mae=float(
                 np.mean(
                     np.abs(
-                        expected_deduction(rate, distribution)
-                        - np.floor(actual / 2.0)
+                        expected_floor(rate, CONCEDING_DIVISOR, distribution)
+                        - np.floor(actual / CONCEDING_DIVISOR)
                     )
                 )
             ),
@@ -562,6 +563,28 @@ class MidfielderConcedingPredictor(ConcedingPredictor):
     POSITION = MID_POSITION
 
 
+GK_POSITION = "GK"
+
+
+class GoalkeeperConcedingPredictor(ConcedingPredictor):
+    """The same team-grain model, fanned out to goalkeepers.
+
+    A separate instance for the reason the midfielder one is: the model
+    predicts goals conceded by a *team* and carries no position in its
+    features or its target, so there is nothing for a position dummy to
+    tell apart. It reads the same registered model and the same alias --
+    only the rows it writes differ.
+
+    A keeper is paid the defender's four points for the sheet and docked
+    on the same schedule, so the prices in ``components.py`` already fit
+    him. The clean-sheet leg reading the full-match rate rather than the
+    minutes-scaled one is if anything safer here than at DEF: a keeper
+    who starts almost always finishes.
+    """
+
+    POSITION = GK_POSITION
+
+
 CONCEDING_SPEC = ModelSpec(
     registered_model_name=REGISTERED_MODEL,
     production_alias=PRODUCTION_ALIAS,
@@ -578,5 +601,15 @@ MIDFIELDER_CONCEDING_SPEC = ModelSpec(
     table=POINTS_COMPONENT,
     evaluation_table=TEST_CONCEDING_PREDICTION,
     position=MID_POSITION,
+    component=Component.CONCEDING,
+)
+
+
+GOALKEEPER_CONCEDING_SPEC = ModelSpec(
+    registered_model_name=REGISTERED_MODEL,
+    production_alias=PRODUCTION_ALIAS,
+    table=POINTS_COMPONENT,
+    evaluation_table=TEST_CONCEDING_PREDICTION,
+    position=GK_POSITION,
     component=Component.CONCEDING,
 )

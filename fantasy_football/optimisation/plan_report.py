@@ -19,19 +19,19 @@ _POSITION_ORDER = {"GK": 0, "DEF": 1, "MID": 2, "FWD": 3, "?": 4}
 
 # Short column labels for the breakdown table.
 _COMPONENT_HEADERS: dict[Component, str] = {
-    Component.TOTAL: "Total",
     Component.APPEARANCE: "App",
     Component.DEFCON: "DefCon",
     Component.GOALS: "Goals",
     Component.ASSISTS: "Ast",
     Component.CONCEDING: "Conc",
     Component.YELLOW_CARDS: "YC",
+    Component.SAVES: "Saves",
 }
 
 _BONUS_FOOTNOTE = (
-    "Outfield components carry no bonus and no red cards; the GK total "
-    "does. Outfield numbers run low by roughly a bonus expectation and "
-    "are not comparable with a GK's."
+    "No component carries bonus or red cards, so every number runs low "
+    "by roughly a bonus expectation. A GK additionally carries no "
+    "yellow cards, worth about 0.1 a match."
 )
 
 

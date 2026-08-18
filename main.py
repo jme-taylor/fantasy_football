@@ -25,9 +25,6 @@ from fantasy_football.extraction.seasons import (
     source_for_season,
 )
 from fantasy_football.extraction.snapshot import load_player_snapshot
-from fantasy_football.features.match_form import (
-    goalkeeper_covered_seasons,
-)
 from fantasy_football.logging_config import configure_logging
 from fantasy_football.modelling.assists import (
     ASSISTS_SPEC,
@@ -45,8 +42,10 @@ from fantasy_football.modelling.components import (
 )
 from fantasy_football.modelling.conceding import (
     CONCEDING_SPEC,
+    GOALKEEPER_CONCEDING_SPEC,
     MIDFIELDER_CONCEDING_SPEC,
     ConcedingPredictor,
+    GoalkeeperConcedingPredictor,
     MidfielderConcedingPredictor,
 )
 from fantasy_football.modelling.conceding import (
@@ -67,10 +66,6 @@ from fantasy_football.modelling.defcon import (
 from fantasy_football.modelling.folds import (
     TrainTestSplitStrategy,
 )
-from fantasy_football.modelling.goalkeeper import (
-    GOALKEEPER_SPEC,
-    GoalkeeperPointsPredictor,
-)
 from fantasy_football.modelling.goals import (
     EXPERIMENT_NAME as GOALS_EXPERIMENT_NAME,
 )
@@ -84,6 +79,16 @@ from fantasy_football.modelling.goals import (
 from fantasy_football.modelling.minutes import (
     MINUTES_SPEC,
     MinutesPredictor,
+)
+from fantasy_football.modelling.saves import (
+    EXPERIMENT_NAME as SAVES_EXPERIMENT_NAME,
+)
+from fantasy_football.modelling.saves import (
+    SAVES_SPEC,
+    SavesRatePredictor,
+)
+from fantasy_football.modelling.saves import (
+    TRAINING_SEASONS as SAVES_TRAINING_SEASONS,
 )
 from fantasy_football.modelling.yellow_cards import (
     EXPERIMENT_NAME as YELLOW_CARDS_EXPERIMENT_NAME,
@@ -378,6 +383,20 @@ def main(
         midfielder_conceding_predictor.backfill_model_predictions()
         midfielder_conceding_predictor.predict_forward()
 
+        # And again for keepers, who are paid the defender's four points
+        # for the sheet and docked on the same schedule.
+        goalkeeper_conceding_predictor = GoalkeeperConcedingPredictor(
+            experiment_name=CONCEDING_EXPERIMENT_NAME,
+            params={},
+            model_spec=GOALKEEPER_CONCEDING_SPEC,
+            connection=connection,
+            fold_strategy=TrainTestSplitStrategy(
+                test_seasons=CONCEDING_TRAINING_SEASONS
+            ),
+        )
+        goalkeeper_conceding_predictor.backfill_model_predictions()
+        goalkeeper_conceding_predictor.predict_forward()
+
         # Pooled like goals and assists, and priced flat at minus one.
         # Trains far wider than its siblings -- cards go back to 2016-17
         # -- but is tested only where the FCI features it also reads are
@@ -412,23 +431,24 @@ def main(
         cbirt_predictor.backfill_model_predictions()
         cbirt_predictor.predict_forward()
 
-        for kind in (BACKFILL_KIND, FORWARD_KIND):
-            write_appearance_components(connection, kind)
-
-        # The keeper features open at 2024-25, so this position holds out
-        # of its own window rather than the shared covered_seasons.
-        goalkeeper_predictor = GoalkeeperPointsPredictor(
-            experiment_name="gk-points-model",
+        saves_predictor = SavesRatePredictor(
+            experiment_name=SAVES_EXPERIMENT_NAME,
             params={},
-            model_spec=GOALKEEPER_SPEC,
+            model_spec=SAVES_SPEC,
             connection=connection,
             fold_strategy=TrainTestSplitStrategy(
-                test_seasons=goalkeeper_covered_seasons()
+                test_seasons=SAVES_TRAINING_SEASONS
             ),
         )
-        goalkeeper_predictor.train_and_register_model()
-        goalkeeper_predictor.backfill_model_predictions()
-        goalkeeper_predictor.predict_forward()
+        saves_predictor.train_and_register_model()
+        saves_predictor.backfill_model_predictions()
+        saves_predictor.predict_forward()
+
+        # Last, because it reads the rows every other component wrote:
+        # appearance points cover the legs a position's other components
+        # already cover, not every leg the minutes model scored.
+        for kind in (BACKFILL_KIND, FORWARD_KIND):
+            write_appearance_components(connection, kind)
 
         # Every position has written its components by now, so the
         # points table is rebuilt from them in one pass. This is the only

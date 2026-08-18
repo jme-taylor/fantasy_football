@@ -8,6 +8,7 @@ returns component rows whose points can be hand-computed.
 import json
 import math
 
+import numpy as np
 import polars as pl
 import pytest
 from scipy.stats import poisson
@@ -23,7 +24,8 @@ from fantasy_football.modelling.components import (
     DefconComponent,
     PointsComponent,
     RateComponent,
-    TotalComponent,
+    SavesComponent,
+    expected_floor,
 )
 from fantasy_football.modelling.defcon import (
     CbirtRatePredictor,
@@ -135,6 +137,7 @@ def test_every_component_returns_keyed_component_rows(component) -> None:
         defcon(),
         ConcedingComponent(),
         RateComponent(Component.GOALS),
+        SavesComponent(),
     ],
     ids=lambda c: str(c.component),
 )
@@ -145,20 +148,10 @@ def test_no_component_reads_a_minutes_feature(component) -> None:
     at composition. A component that took a minutes column as a model
     feature would double-count it the moment a second component was
     added, and the arithmetic would stop being a decomposition without
-    anything failing.
+    anything failing. There is no exception left: every position is
+    decomposed, so no component reads its own minutes.
     """
     assert not set(component.model_features) & set(MINUTES_OUTPUTS)
-
-
-def test_the_undecomposed_component_is_the_stated_exception() -> None:
-    """TOTAL declares the minutes it reads rather than hiding them.
-
-    An undecomposed model still takes expected_minutes as a feature, and
-    that is fine because nothing else scales its output. Declaring it
-    keeps the rule above meaningful: the exception is written down rather
-    than silently passing because the component happens to list nothing.
-    """
-    assert set(TotalComponent().model_features) == set(MINUTES_OUTPUTS)
 
 
 # --- Appearance ------------------------------------------------------
@@ -502,3 +495,162 @@ def test_conceding_survives_a_negative_predicted_rate() -> None:
     )
 
     assert rows["points"].item() == pytest.approx(1.0)
+
+
+# --- The shared floor expectation -------------------------------------
+
+
+def mass_sum_floor(rate: float, divisor: int) -> float:
+    """Return E[floor(N / d)] by summing against the Poisson mass."""
+    return sum((n // divisor) * poisson.pmf(n, rate) for n in range(0, 200))
+
+
+# Ceilings are what an expectation reaches, not what a scoreline does:
+# both models predict a conditional mean.
+@pytest.mark.parametrize(
+    ("divisor", "rate"),
+    [(2, rate) for rate in (0.0, 0.5, 1.4, 2.5, 4.0)]
+    + [(3, rate) for rate in (0.0, 0.5, 1.4, 2.8, 5.0)],
+)
+def test_expected_floor_matches_the_mass_function(
+    divisor: int, rate: float
+) -> None:
+    """E[floor(N / d)] summed over the survival function equals the mass sum.
+
+    The helper sums P(N >= d), P(N >= 2d), ... which is a different
+    expression from summing ``floor(n / d)`` against the Poisson mass.
+    Both divisors in use are checked: conceding's two and saves' three.
+    """
+    computed = expected_floor(np.array([rate]), divisor, PoissonCounts())
+
+    assert computed[0] == pytest.approx(
+        mass_sum_floor(rate, divisor), abs=1e-3
+    )
+
+
+def test_five_terms_is_enough_for_both_divisors() -> None:
+    """Pin what truncating at ``FLOOR_TERMS`` actually costs.
+
+    The sum is cut off at five terms, so it always under-states the
+    expectation, and by more as the rate climbs towards the fifth
+    multiple of the divisor. Conceding is the exposed one -- its
+    divisor is smaller, so its fifth term sits at ten rather than
+    fifteen -- and a thousandth of a point against a four-point clean
+    sheet is why the constant stands. A third caller with a smaller
+    divisor or a fatter rate should re-check this rather than assume it.
+    """
+    worst = {
+        divisor: max(
+            mass_sum_floor(rate, divisor)
+            - expected_floor(np.array([rate]), divisor, PoissonCounts())[0]
+            for rate in ceiling
+        )
+        for divisor, ceiling in ((2, (2.5, 4.0)), (3, (2.8, 5.0)))
+    }
+
+    assert 0.0 <= worst[2] < 1e-3
+    assert 0.0 <= worst[3] < 1e-3
+
+
+def test_expected_floor_is_zero_at_a_zero_rate() -> None:
+    """Nothing expected means nothing floored."""
+    assert expected_floor(np.array([0.0]), 3, PoissonCounts())[0] == 0.0
+
+
+def test_expected_floor_is_monotonic_in_the_rate() -> None:
+    """More expected events can never floor to fewer."""
+    floored = expected_floor(
+        np.array([0.5, 1.5, 3.0, 6.0]), 3, PoissonCounts()
+    )
+
+    assert list(floored) == sorted(floored)
+
+
+# --- Saves ------------------------------------------------------------
+
+
+def test_saves_pays_the_expected_floor_of_a_third_of_the_saves() -> None:
+    """A keeper is paid E[floor(N / 3)], not E[N] / 3.
+
+    The linear form is biased upward at every rate -- it pays for the
+    two saves that earn nothing -- so the mass-function sum is what the
+    points are checked against.
+    """
+    rate = 3.0
+    rows = SavesComponent().points(
+        scored_rows(rate, position="GK"),
+        minutes_rows(),
+        BACKFILL_KIND,
+    )
+
+    expected = sum((n // 3) * poisson.pmf(n, rate) for n in range(0, 60))
+    assert rows["points"].item() == pytest.approx(expected, abs=1e-6)
+
+
+def test_saves_pays_less_than_the_linear_third() -> None:
+    """The floor is strictly below the linear rate over three."""
+    rate = 4.0
+    rows = SavesComponent().points(
+        scored_rows(rate, position="GK"), minutes_rows(), BACKFILL_KIND
+    )
+
+    assert rows["points"].item() < rate / 3.0
+
+
+def test_saves_scales_the_rate_by_the_minutes_expected() -> None:
+    """A per-90 rate over half a match is half the exposure."""
+    rate = 6.0
+    rows = SavesComponent().points(
+        scored_rows(rate, position="GK"),
+        minutes_rows(expected_minutes=45.0),
+        BACKFILL_KIND,
+    )
+
+    exposed = rate * 45.0 / 90.0
+    expected = sum((n // 3) * poisson.pmf(n, exposed) for n in range(0, 60))
+    assert rows["points"].item() == pytest.approx(expected, abs=1e-6)
+
+
+def test_saves_pays_nothing_to_a_keeper_who_will_not_play() -> None:
+    """No minutes, no exposure, no save points."""
+    rows = SavesComponent().points(
+        scored_rows(5.0, position="GK"),
+        minutes_rows(expected_minutes=0.0),
+        BACKFILL_KIND,
+    )
+
+    assert rows["points"].item() == pytest.approx(0.0)
+
+
+def test_saves_survives_a_negative_predicted_rate() -> None:
+    """A regressor may predict below zero; the points floor at zero."""
+    rows = SavesComponent().points(
+        scored_rows(-2.0, position="GK"), minutes_rows(), BACKFILL_KIND
+    )
+
+    assert rows["points"].item() == pytest.approx(0.0)
+
+
+def test_saves_is_monotonic_in_the_rate() -> None:
+    """A busier keeper is never paid less."""
+    rows = SavesComponent().points(
+        scored_rows(1.0, 3.0, 6.0, position="GK"),
+        minutes_rows(n=3),
+        BACKFILL_KIND,
+    )
+
+    points = rows["points"].to_list()
+    assert points == sorted(points)
+
+
+def test_saves_records_its_intermediates() -> None:
+    """The rate and the exposed count are kept for a look at a pick."""
+    rows = SavesComponent().points(
+        scored_rows(3.0, position="GK"),
+        minutes_rows(expected_minutes=45.0),
+        BACKFILL_KIND,
+    )
+
+    diagnostics = json.loads(rows["diagnostics"].item())
+    assert diagnostics["per_90"] == pytest.approx(3.0)
+    assert diagnostics["expected_count"] == pytest.approx(1.5)

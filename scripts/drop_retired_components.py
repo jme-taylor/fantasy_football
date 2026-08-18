@@ -5,9 +5,9 @@
 A one-off migration, not a pipeline step. ``compose`` refuses to run
 while a position carries a component it no longer declares -- deliberately,
 since a stale row would otherwise be summed on top of the components that
-replaced it. Decomposing MID and FWD and retiring the residual leaves
-exactly those rows behind, so they have to go before the next pipeline
-run.
+replaced it. Decomposing a position leaves exactly those rows behind, so
+they have to go before the next pipeline run -- most recently GK, whose
+``total`` rows predate its split into appearance, saves and conceding.
 
 Safe to run more than once: it deletes what is stale now and reports the
 count, so a second run deletes nothing.

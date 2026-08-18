@@ -335,13 +335,17 @@ def test_breakdown_columns_follow_the_position_component_set() -> None:
     assert fwd_header == "| Player | App | DefCon | Goals | Ast | YC | |"
 
 
-def test_breakdown_keeps_the_goalkeeper_table_at_a_single_total() -> None:
-    """GK is undecomposed, so its table restates the total and says so."""
+def test_breakdown_gives_the_goalkeeper_his_own_component_columns() -> None:
+    """A keeper is paid for turning up, for saving, and for the sheet.
+
+    Not for goals, assists, defensive contributions or -- until there is
+    a head for it -- bookings, so none of those get a column.
+    """
     plan, positions = _gw_plan()
 
     md = _render_gameweek(plan, positions, {}, {})
 
-    assert _section(md, "#### GK")[1] == "| Player | Total | |"
+    assert _section(md, "#### GK")[1] == "| Player | App | Saves | Conc | |"
 
 
 def test_breakdown_shows_component_points_to_two_decimals() -> None:
@@ -415,7 +419,7 @@ def test_breakdown_excludes_transferred_out_players() -> None:
 
 
 def test_breakdown_footnotes_the_missing_bonus_points_once() -> None:
-    """Outfield components carry no bonus; GK's total does.
+    """No component carries bonus, so the report says so once.
 
     The caveat is a document footer rather than a per-gameweek line: a
     long horizon would otherwise repeat it in every section.
@@ -436,4 +440,4 @@ def test_breakdown_footnotes_the_missing_bonus_points_once() -> None:
 
     md = render_plan_markdown([plan_a, plan_b], positions, {}, {})
 
-    assert md.count("carry no bonus") == 1
+    assert md.count("bonus or red cards") == 1
