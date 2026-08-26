@@ -7,7 +7,7 @@ import polars as pl
 import pulp
 from pydantic import TypeAdapter
 
-from fantasy_football.constants import TRANSFORMED_DATA_FOLDER
+from fantasy_football.constants import BUDGET, TRANSFORMED_DATA_FOLDER
 from fantasy_football.fpl_types import (
     GameWeekPlan,
     PlayerGameweekExpectedPoints,
@@ -31,7 +31,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-BUDGET = 1000
 SQUAD_SIZE = 15
 XI_SIZE = 11
 MAX_PER_CLUB = 3

@@ -378,75 +378,85 @@ class GameWeekPlan:
     bank: int
 
 
-# The ``my-team`` payload is FPL's, not ours, and carries far more than
-# the optimiser reads. Extras are ignored rather than forbidden so a new
-# key on their side is not an outage on ours.
-my_team_config = ConfigDict(extra="ignore")
+# The entry payloads are FPL's, not ours, and carry far more than the
+# optimiser reads. Extras are ignored rather than forbidden so a new key
+# on their side is not an outage on ours.
+entry_config = ConfigDict(extra="ignore")
 
 
-@dataclass(config=my_team_config, frozen=True)
-class MyTeamPick:
-    """One player in the authenticated squad.
+@dataclass(config=entry_config, frozen=True)
+class Entry:
+    """A manager's headline state, from the public ``entry`` endpoint.
 
     Attributes
     ----------
-    element : int
-        The player's FPL element id.
-    position : int
-        Slot in the squad, 1-15; 1-11 start.
-    purchase_price : int
-        What the player cost when bought, in tenths of a million.
-    selling_price : int
-        What FPL says they would sell for now, in tenths of a million.
-    is_captain : bool
-        Whether the player is captain.
-    is_vice_captain : bool
-        Whether the player is vice captain.
+    started_event : int
+        The gameweek the manager entered the game. Their opening squad
+        was bought against that deadline, not necessarily GW1's.
+    current_event : int
+        The latest gameweek with a settled team, and so the newest one
+        ``picks`` can be read for.
     """
 
-    element: int
-    position: int
-    purchase_price: int
-    selling_price: int
-    is_captain: bool
-    is_vice_captain: bool
+    started_event: int
+    current_event: int | None
 
 
-@dataclass(config=my_team_config, frozen=True)
-class MyTeamTransfers:
-    """The transfer state attached to an authenticated squad.
+@dataclass(config=entry_config, frozen=True)
+class EntryPicks:
+    """One gameweek's settled squad, from the public ``picks`` endpoint.
+
+    Only available once the gameweek's deadline has passed, which is why
+    the squad carried into the next gameweek is read from the last
+    settled one rather than the upcoming one.
 
     Attributes
     ----------
-    limit : int or None
-        Free transfers available. None while a wildcard or free hit is
-        active, which is the only signal the response gives that a chip
-        is in play.
-    made : int
-        Transfers already made this gameweek.
+    elements : list[int]
+        The fifteen element ids picked, in squad order.
     bank : int
-        Money in the bank, in tenths of a million.
-    value : int
-        Squad value, in tenths of a million.
+        Money in the bank at that gameweek's deadline, in tenths of a
+        million.
+    active_chip : str or None
+        The chip played that gameweek, if any.
     """
 
-    limit: int | None
-    made: int
+    elements: list[int]
     bank: int
-    value: int
+    active_chip: str | None
+
+    @classmethod
+    def from_response(cls, response: dict) -> "EntryPicks":
+        """Build from the raw ``picks`` payload."""
+        return cls(
+            elements=[pick["element"] for pick in response["picks"]],
+            bank=response["entry_history"]["bank"],
+            active_chip=response.get("active_chip"),
+        )
 
 
-@dataclass(config=my_team_config, frozen=True)
-class MyTeam:
-    """The authenticated ``my-team`` response.
+@dataclass(config=entry_config, frozen=True)
+class EntryTransfer:
+    """One completed transfer, from the public ``transfers`` endpoint.
+
+    ``element_in_cost`` is the price actually paid, which is what makes
+    the purchase price of a transferred-in player exact rather than
+    reconstructed. Only transfers whose gameweek has kicked off appear
+    here; one made for an upcoming deadline is not public.
 
     Attributes
     ----------
-    picks : list[MyTeamPick]
-        The squad pending the next deadline.
-    transfers : MyTeamTransfers
-        Free transfers, bank and squad value.
+    element_in : int
+        The element bought.
+    element_in_cost : int
+        What it cost, in tenths of a million.
+    element_out : int
+        The element sold.
+    event : int
+        The gameweek the transfer was made for.
     """
 
-    picks: list[MyTeamPick]
-    transfers: MyTeamTransfers
+    element_in: int
+    element_in_cost: int
+    element_out: int
+    event: int

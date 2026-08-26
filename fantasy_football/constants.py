@@ -12,6 +12,11 @@ MLFLOW_DB_PATH = MODELS_FOLDER.joinpath("mlflow.db")
 DATABASE_PATH = DATA_FOLDER.joinpath("fantasy_football.duckdb")
 
 FPL_ID = "7515957"
+
+# What every manager starts the season with, in tenths of a million.
+# Their opening squad and bank total exactly this, which is what makes a
+# reconstructed set of purchase prices checkable.
+BUDGET = 1000
 CURRENT_SEASON = "2026-27"
 
 # Data ingestion stop date

@@ -12,9 +12,9 @@ This is an early-stage work in progress. `main.py` is the entry point that
 refreshes the current season's data into a DuckDB store, derives feature
 views, trains the minutes-played and per-position points models, writes their
 forward predictions to the database, and runs the optimiser on top of them.
-Mid-season the optimiser needs the squad being carried in, read from the
-authenticated FPL `my-team` endpoint or from a team file; with neither it logs
-and skips, leaving the rest of the run intact. The package is organised by domain:
+Mid-season the optimiser needs the squad being carried in, read from FPL's
+public entry endpoints or from a team file; with neither it logs and skips,
+leaving the rest of the run intact. The package is organised by domain:
 
 ```text
 fantasy_football/
@@ -429,13 +429,29 @@ A `GITHUB_API_KEY` (in a `.env` file) is required to download the Vaastav,
 FCI, and fplcache datasets via the GitHub API.
 
 To read your live squad rather than hand-maintaining a team file, set
-`FPL_MANAGER_ID` (your FPL entry id) and `FPL_COOKIE` in the same `.env`.
-`FPL_COOKIE` is the `Cookie` request header copied verbatim from a logged-in
-fantasy.premierleague.com session in browser devtools — the `my-team` endpoint
-is the only one carrying purchase prices and the free-transfer count, and it
-needs a session. The cookie expires periodically; when it does the run logs
-that optimisation was skipped and asks for a fresh one, and everything else
-the run produced is kept.
+`FPL_MANAGER_ID` (your FPL entry id — the number in the URL of your Points
+page) in the same `.env`. No credentials are needed: the squad, bank and
+transfer history all come from FPL's public `entry` endpoints.
+
+Purchase prices are reconstructed rather than read. Players still holding
+their opening place are priced at what they cost at your opening deadline
+(from `player_week`); anyone transferred in since is priced at
+`element_in_cost`, which is exactly what you paid. The reconstruction is
+checked against the budget every manager starts on — opening squad plus
+opening bank must equal 100.0m — and the run stops if it does not, because a
+wrong purchase price is a wrong selling price in every gameweek of the plan.
+
+Free transfers are the one number no public endpoint publishes, so set
+`FPL_FREE_TRANSFERS` to what the FPL site shows. Unset, it assumes 1 and warns.
+The authenticated `my-team` endpoint does carry it, but FPL no longer accepts a
+session cookie as an API credential — it returns "Authentication credentials
+were not provided" however logged-in the browser is — so that route is closed.
+
+Two limitations follow from using public data. Picks only become available once
+a gameweek has kicked off, so the squad read is your last settled one — correct
+as the squad you carry in, but it will not show a transfer you have already
+made for the upcoming deadline. And a free hit gameweek reports a squad that
+reverts, so the run stops rather than planning from it.
 
 ## Usage
 
@@ -455,7 +471,7 @@ uv run python main.py
   upcoming gameweek. Players are declared by `name` or by `element`, each with
   a `purchase_price`. Passing this overrides the live squad, which is what
   makes it useful for asking "what if I owned this instead". With it unset the
-  squad is read from `my-team` using `FPL_MANAGER_ID` and `FPL_COOKIE`. One or
+  squad is read from the public entry endpoints using `FPL_MANAGER_ID`. One or
   the other is required to optimise once the season is under way; with neither,
   mid-season runs log and skip optimisation, leaving the ingest, training and
   prediction work of that run intact. At GW1 the optimiser free-builds and

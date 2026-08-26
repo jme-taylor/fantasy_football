@@ -3,6 +3,9 @@ import requests
 from pydantic import BaseModel
 
 from fantasy_football.fpl_types import (
+    Entry,
+    EntryPicks,
+    EntryTransfer,
     FplFixture,
     FplFixtures,
     FplPlayer,
@@ -11,14 +14,16 @@ from fantasy_football.fpl_types import (
     FplSquadPlayer,
     FplTeam,
     FplTeamInfo,
-    MyTeam,
     TeamFixture,
     TeamFixtures,
 )
 
-# The optimiser's squad fetch is designed to fail soft, which a hung
+# The optimiser's squad read is designed to fail soft, which a hung
 # connection would defeat by never failing at all.
 REQUEST_TIMEOUT_SECONDS = 30
+
+# FPL serves a challenge page to obviously scripted clients.
+USER_AGENT = "Mozilla/5.0"
 
 PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
     "element",
@@ -203,38 +208,74 @@ class FplAPI:
                 return event["id"]
         return None
 
-    def get_my_team(self, manager_id: str, cookie: str) -> MyTeam:
-        """Get the authenticated squad pending the next deadline.
+    def _get(self, path: str):
+        """GET a public API path and return its decoded body."""
+        response = requests.get(
+            self.BASE_URL + path,
+            headers={"User-Agent": USER_AGENT},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.json()
 
-        This is the only endpoint carrying purchase prices and the free
-        transfer count, which is why it is worth the cookie. It takes no
-        gameweek: it is always the team as it currently stands.
+    def _get_object(self, path: str) -> dict:
+        """GET a public API path returning a JSON object."""
+        return dict(self._get(path))
+
+    def _get_array(self, path: str) -> list:
+        """GET a public API path returning a JSON array."""
+        return list(self._get(path))
+
+    def get_entry(self, manager_id: str) -> Entry:
+        """Get a manager's headline state.
 
         Parameters
         ----------
         manager_id : str
             The manager's FPL entry id.
-        cookie : str
-            The ``Cookie`` header from a logged-in browser session,
-            verbatim.
 
         Returns
         -------
-        MyTeam
-            The parsed squad, free transfers and bank.
-
-        Raises
-        ------
-        requests.HTTPError
-            If the cookie has expired or the id is not the cookie's
-            manager, both of which come back as a 403.
+        Entry
+            Their opening gameweek and latest settled one.
         """
-        url = f"{self.BASE_URL}my-team/{manager_id}/"
-        response = requests.get(
-            url, headers={"Cookie": cookie}, timeout=REQUEST_TIMEOUT_SECONDS
+        return Entry(**self._get_object(f"entry/{manager_id}/"))
+
+    def get_entry_picks(self, manager_id: str, event: int) -> EntryPicks:
+        """Get a manager's settled squad for one gameweek.
+
+        Parameters
+        ----------
+        manager_id : str
+            The manager's FPL entry id.
+        event : int
+            The gameweek to read. Must have kicked off.
+
+        Returns
+        -------
+        EntryPicks
+            The fifteen picks, the bank and any chip played.
+        """
+        return EntryPicks.from_response(
+            self._get_object(f"entry/{manager_id}/event/{event}/picks/")
         )
-        response.raise_for_status()
-        return MyTeam(**response.json())
+
+    def get_entry_transfers(self, manager_id: str) -> list[EntryTransfer]:
+        """Get every completed transfer a manager has made.
+
+        Parameters
+        ----------
+        manager_id : str
+            The manager's FPL entry id.
+
+        Returns
+        -------
+        list[EntryTransfer]
+            Oldest first. Empty before any transfer has settled.
+        """
+        raw = self._get_array(f"entry/{manager_id}/transfers/")
+        transfers = [EntryTransfer(**row) for row in raw]
+        return sorted(transfers, key=lambda t: t.event)
 
     def find_player_by_id(self, player_id: int) -> FplPlayer | None:
         """Find a player by their ID.

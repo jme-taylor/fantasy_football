@@ -1,15 +1,15 @@
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 import requests
 from pydantic import BaseModel, ConfigDict, TypeAdapter, model_validator
 
-from fantasy_football.constants import DATA_FOLDER
+from fantasy_football.constants import BUDGET, DATA_FOLDER
 from fantasy_football.features.roster import current_roster
-from fantasy_football.fpl_types import MyTeam
+from fantasy_football.fpl_types import Entry, EntryPicks, EntryTransfer
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -154,7 +154,21 @@ class Squad(BaseModel):
 
 
 class ChipActiveError(ValueError):
-    """Raised when a wildcard or free hit makes the squad unplannable."""
+    """Raised when a free hit makes the squad read back a temporary one."""
+
+
+#: The chip whose squad is temporary: a free hit team reverts at the
+#: next deadline, so it is never what is carried in.
+FREE_HIT = "freehit"
+
+
+class OpeningBudgetError(ValueError):
+    """Raised when reconstructed opening prices do not total the budget.
+
+    Every manager starts on exactly 100.0m, spent or banked, so this is a
+    hard check on the reconstruction rather than a judgement about the
+    squad. Failing it means every selling price would be wrong.
+    """
 
 
 class SquadUnavailableError(RuntimeError):
@@ -164,86 +178,6 @@ class SquadUnavailableError(RuntimeError):
     credential or the network is. Callers skip optimisation on this and
     keep everything the run has already produced.
     """
-
-
-def squad_from_my_team(my_team: MyTeam, gameweek: int) -> Squad:
-    """Adapt an authenticated ``my-team`` response into a Squad.
-
-    Parameters
-    ----------
-    my_team : MyTeam
-        The parsed endpoint response.
-    gameweek : int
-        The gameweek the response is for. The endpoint does not say, so
-        it is passed in.
-
-    Returns
-    -------
-    Squad
-        The carried-in squad. ``limit`` is the gameweek's allowance
-        rather than what is left of it, so what has already been made is
-        taken off. Transfers taken as hits can push that below zero,
-        which is floored: no fewer than none are free.
-
-    Raises
-    ------
-    ChipActiveError
-        If the transfer limit is null, which is how the response reports
-        an active wildcard or free hit.
-    """
-    if my_team.transfers.limit is None:
-        raise ChipActiveError(
-            f"GW{gameweek} has a wildcard or free hit active, so there is "
-            "no free transfer count and the squad may not survive the "
-            "gameweek; plan this one by hand."
-        )
-    return Squad(
-        gameweek=gameweek,
-        free_transfers=max(
-            my_team.transfers.limit - my_team.transfers.made, 0
-        ),
-        bank=my_team.transfers.bank,
-        players=[
-            OwnedPlayer(
-                element=pick.element, purchase_price=pick.purchase_price
-            )
-            for pick in my_team.picks
-        ],
-    )
-
-
-def check_selling_prices(my_team: MyTeam, prices: Mapping[int, int]) -> None:
-    """Warn where FPL's selling price disagrees with the one we derive.
-
-    A free oracle on a rounding rule implemented by hand. Prices come
-    from the latest stored snapshot, which can predate the 02:00 price
-    changes FPL has already applied, so a warning is as likely to be that
-    timing as a bug in the parse or in ``selling_price``. Either way it is
-    not something the manager can act on, which is why it never fails.
-
-    Parameters
-    ----------
-    my_team : MyTeam
-        The parsed endpoint response, carrying FPL's own selling prices.
-    prices : Mapping[int, int]
-        Current price by element, in tenths of a million. Elements absent
-        from the mapping are skipped.
-    """
-    for pick in my_team.picks:
-        current = prices.get(pick.element)
-        if current is None:
-            continue
-        derived = selling_price(pick.purchase_price, current)
-        if derived != pick.selling_price:
-            logger.warning(
-                "Element %d: FPL sells at %d but purchase %d against "
-                "current %d derives %d.",
-                pick.element,
-                pick.selling_price,
-                pick.purchase_price,
-                current,
-                derived,
-            )
 
 
 def squad_from_team_file(
@@ -413,8 +347,8 @@ def resolve_squad(
     return [_owned(player, name_to_ids) for player in players]
 
 
-class MyTeamSource(Protocol):
-    """What ``load_api_squad`` needs of an FPL client.
+class EntrySource(Protocol):
+    """What the public squad read needs of an FPL client.
 
     FplAPI satisfies this; so does a stub that never opens a socket,
     which is the point.
@@ -424,44 +358,121 @@ class MyTeamSource(Protocol):
         """Return the gameweek whose deadline is next, if there is one."""
         ...
 
-    def get_my_team(self, manager_id: str, cookie: str) -> MyTeam:
-        """Return the authenticated squad pending the next deadline."""
+    def get_entry(self, manager_id: str) -> Entry:
+        """Return the manager's opening and latest settled gameweeks."""
+        ...
+
+    def get_entry_picks(self, manager_id: str, event: int) -> EntryPicks:
+        """Return the settled squad for one gameweek."""
+        ...
+
+    def get_entry_transfers(self, manager_id: str) -> list[EntryTransfer]:
+        """Return every completed transfer, oldest first."""
         ...
 
 
-def load_api_squad(
+def purchase_prices(
+    opening: Mapping[int, int], transfers: Sequence[EntryTransfer]
+) -> dict[int, int]:
+    """Replay transfers over an opening squad to price what is owned now.
+
+    A player still holding their opening place is priced at the opening
+    deadline; anyone transferred in since is priced at what was actually
+    paid for them, which FPL publishes.
+
+    Parameters
+    ----------
+    opening : Mapping[int, int]
+        Element to price at the manager's opening deadline.
+    transfers : Sequence[EntryTransfer]
+        Completed transfers. Replayed in gameweek order.
+
+    Returns
+    -------
+    dict[int, int]
+        Element to purchase price for the squad as it now stands.
+
+    Raises
+    ------
+    ValueError
+        If a transfer sells a player the replay does not hold, which
+        means the reconstruction has drifted from reality.
+    """
+    prices = dict(opening)
+    for transfer in sorted(transfers, key=lambda t: t.event):
+        if transfer.element_out not in prices:
+            raise ValueError(
+                f"GW{transfer.event} sells element {transfer.element_out}, "
+                "which the reconstructed squad does not hold; the opening "
+                "squad or the transfer history is incomplete."
+            )
+        del prices[transfer.element_out]
+        prices[transfer.element_in] = transfer.element_in_cost
+    return prices
+
+
+def check_opening_budget(opening: Mapping[int, int], bank: int) -> None:
+    """Assert an opening squad and its bank total the starting budget.
+
+    Parameters
+    ----------
+    opening : Mapping[int, int]
+        Element to price at the manager's opening deadline.
+    bank : int
+        Money banked at that deadline, in tenths of a million.
+
+    Raises
+    ------
+    OpeningBudgetError
+        If the two do not total ``BUDGET``.
+    """
+    total = sum(opening.values()) + bank
+    if total != BUDGET:
+        raise OpeningBudgetError(
+            f"Opening squad of {sum(opening.values())} plus bank {bank} "
+            f"is {total}, not the {BUDGET} every manager starts with; the "
+            "stored opening-gameweek prices do not match what was paid."
+        )
+
+
+def load_public_squad(
     manager_id: str,
-    cookie: str,
     *,
     season: str,
     expected_gameweek: int,
-    connection: "DuckDBPyConnection | None" = None,
-    api: MyTeamSource | None = None,
-    prices: Mapping[int, int] | None = None,
+    free_transfers: int,
+    prices_at_gameweek: Callable[[int], Mapping[int, int]],
+    api: EntrySource | None = None,
     snapshot_folder: "Path | None" = None,
 ) -> Squad:
-    """Fetch the live squad, record it, and hand it to the optimiser.
+    """Rebuild the carried-in squad from FPL's public endpoints.
 
-    The gameweek is checked before the cookie is sent: if FPL and the
-    stored forward predictions disagree about which week is next there is
-    nothing worth planning, and asking anyway only spends a credential.
+    No credentials are involved. The squad and bank come from the last
+    settled gameweek, and purchase prices from the opening squad's prices
+    replayed through every completed transfer. The reconstruction is
+    checked against the starting budget before it is used, because a
+    wrong purchase price is a wrong selling price in every gameweek of
+    the plan.
+
+    Free transfers are the one thing no public endpoint exposes, so they
+    are passed in rather than derived.
 
     Parameters
     ----------
     manager_id : str
         The manager's FPL entry id.
-    cookie : str
-        The ``Cookie`` header from a logged-in browser session.
     season : str
         Season the squad belongs to, e.g. ``"2026-27"``.
     expected_gameweek : int
         The gameweek the forward predictions start at.
-    connection : duckdb.DuckDBPyConnection | None, optional
-        An open connection, used to price the selling-price check.
-    api : MyTeamSource | None, optional
-        The client to fetch through. Defaults to a fresh FplAPI.
-    prices : Mapping[int, int] | None, optional
-        Current price by element. Read from the roster when None.
+    free_transfers : int
+        Free transfers available at that gameweek.
+    prices_at_gameweek : Callable[[int], Mapping[int, int]]
+        Given a gameweek, the price of every player in it. Called for
+        the manager's opening gameweek, which the entry reports rather
+        than the caller knowing it up front.
+    api : EntrySource | None, optional
+        The client to read through. Defaults to a fresh FplAPI.
     snapshot_folder : pathlib.Path | None, optional
         Where the squad is recorded. Defaults to ``SNAPSHOT_FOLDER``.
 
@@ -473,20 +484,35 @@ def load_api_squad(
     Raises
     ------
     ValueError
-        If FPL's next gameweek is absent or is not ``expected_gameweek``.
+        If FPL's next gameweek is not ``expected_gameweek``.
     ChipActiveError
-        If a wildcard or free hit is active.
+        If the settled squad was a free hit, which reverts.
+    OpeningBudgetError
+        If the reconstructed opening squad does not total the budget.
     SquadUnavailableError
-        If the endpoint cannot be reached or rejects the cookie.
+        If FPL cannot be reached, or the manager has no settled gameweek.
     """
     from fantasy_football.extraction.fpl import FplAPI
 
     api = FplAPI() if api is None else api
     try:
         next_gameweek = api.next_gameweek()
+        entry = api.get_entry(manager_id)
+        if entry.current_event is None:
+            raise SquadUnavailableError(
+                f"Manager {manager_id} has no settled gameweek yet, so "
+                "there is no squad to carry in."
+            )
+        settled = api.get_entry_picks(manager_id, entry.current_event)
+        opening = (
+            settled
+            if entry.current_event == entry.started_event
+            else api.get_entry_picks(manager_id, entry.started_event)
+        )
+        transfers = api.get_entry_transfers(manager_id)
     except requests.RequestException as error:
         raise SquadUnavailableError(
-            f"Could not read the next gameweek from FPL "
+            f"Could not read manager {manager_id}'s team from FPL "
             f"({type(error).__name__})."
         ) from None
 
@@ -496,26 +522,43 @@ def load_api_squad(
             f"predictions start at {expected_gameweek}; the predictions "
             "are stale, so re-run before planning."
         )
-
-    try:
-        my_team = api.get_my_team(manager_id, cookie)
-    except requests.RequestException as error:
-        raise SquadUnavailableError(
-            f"Could not read manager {manager_id}'s team from FPL "
-            f"({type(error).__name__}). A 403 means the cookie has "
-            "expired -- paste a fresh one into FPL_COOKIE."
-        ) from None
-
-    squad = squad_from_my_team(my_team, next_gameweek)
-    save_squad_snapshot(squad, season, folder=snapshot_folder)
-    if prices is None:
-        roster = current_roster(season, connection)
-        prices = dict(
-            zip(
-                roster["element"].to_list(),
-                roster["value"].to_list(),
-                strict=True,
-            )
+    if settled.active_chip == FREE_HIT:
+        raise ChipActiveError(
+            f"GW{entry.current_event} was a free hit, so the squad it "
+            "reports reverts rather than carrying in; plan this one by "
+            "hand."
         )
-    check_selling_prices(my_team, prices)
+
+    opening_prices = prices_at_gameweek(entry.started_event)
+    opening_squad = {
+        element: opening_prices[element]
+        for element in opening.elements
+        if element in opening_prices
+    }
+    missing = sorted(set(opening.elements) - set(opening_squad))
+    if missing:
+        raise OpeningBudgetError(
+            f"No stored gameweek {entry.started_event} price for elements "
+            f"{missing}, so the opening squad cannot be priced."
+        )
+    check_opening_budget(opening_squad, opening.bank)
+
+    prices = purchase_prices(opening_squad, transfers)
+    unpriced = sorted(set(settled.elements) - set(prices))
+    if unpriced:
+        raise OpeningBudgetError(
+            f"Replaying transfers left elements {unpriced} unpriced; the "
+            "reconstructed squad has drifted from the settled one."
+        )
+
+    squad = Squad(
+        gameweek=expected_gameweek,
+        free_transfers=free_transfers,
+        bank=settled.bank,
+        players=[
+            OwnedPlayer(element=element, purchase_price=prices[element])
+            for element in settled.elements
+        ],
+    )
+    save_squad_snapshot(squad, season, folder=snapshot_folder)
     return squad
