@@ -11,9 +11,14 @@ from fantasy_football.fpl_types import (
     FplSquadPlayer,
     FplTeam,
     FplTeamInfo,
+    MyTeam,
     TeamFixture,
     TeamFixtures,
 )
+
+# The optimiser's squad fetch is designed to fail soft, which a hung
+# connection would defeat by never failing at all.
+REQUEST_TIMEOUT_SECONDS = 30
 
 PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
     "element",
@@ -182,6 +187,54 @@ class FplAPI:
         response = requests.get(url)
         response.raise_for_status()
         return response.json()
+
+    def next_gameweek(self) -> int | None:
+        """Get the gameweek whose deadline is next, if there is one.
+
+        Returns
+        -------
+        int | None
+            The gameweek number, or None once the season is over and no
+            event is flagged as next.
+        """
+        events = self.get_bootstrap_data().get("events", [])
+        for event in events:
+            if event.get("is_next"):
+                return event["id"]
+        return None
+
+    def get_my_team(self, manager_id: str, cookie: str) -> MyTeam:
+        """Get the authenticated squad pending the next deadline.
+
+        This is the only endpoint carrying purchase prices and the free
+        transfer count, which is why it is worth the cookie. It takes no
+        gameweek: it is always the team as it currently stands.
+
+        Parameters
+        ----------
+        manager_id : str
+            The manager's FPL entry id.
+        cookie : str
+            The ``Cookie`` header from a logged-in browser session,
+            verbatim.
+
+        Returns
+        -------
+        MyTeam
+            The parsed squad, free transfers and bank.
+
+        Raises
+        ------
+        requests.HTTPError
+            If the cookie has expired or the id is not the cookie's
+            manager, both of which come back as a 403.
+        """
+        url = f"{self.BASE_URL}my-team/{manager_id}/"
+        response = requests.get(
+            url, headers={"Cookie": cookie}, timeout=REQUEST_TIMEOUT_SECONDS
+        )
+        response.raise_for_status()
+        return MyTeam(**response.json())
 
     def find_player_by_id(self, player_id: int) -> FplPlayer | None:
         """Find a player by their ID.

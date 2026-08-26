@@ -795,7 +795,9 @@ def optimise_plan(
         Required when start_gw > 1: the players carried into that gameweek,
         each with the price they were bought at. Ignored at GW1 (free build).
     free_transfers: int
-        Free transfers available at start_gw (1..MAX_FREE_TRANSFERS).
+        Free transfers available at start_gw (0..MAX_FREE_TRANSFERS). Zero
+        is a real state -- the week's transfers have already been made, so
+        every further one costs a hit.
         Ignored at start_gw == 1 (a free build always opens with one free transfer).
     bank: int
         Money in the bank (tenths of a million) carried into start_gw.
@@ -810,9 +812,9 @@ def optimise_plan(
         One typed plan per gameweek. The same plans are written to
         ``optimisation_plan.jsonl`` (one GameWeekPlan per line).
     """
-    if not 1 <= free_transfers <= MAX_FREE_TRANSFERS:
+    if not 0 <= free_transfers <= MAX_FREE_TRANSFERS:
         raise ValueError(
-            f"free_transfers must be in 1..{MAX_FREE_TRANSFERS}, "
+            f"free_transfers must be in 0..{MAX_FREE_TRANSFERS}, "
             f"got {free_transfers}"
         )
     if start_gw == 1:

@@ -12,8 +12,9 @@ This is an early-stage work in progress. `main.py` is the entry point that
 refreshes the current season's data into a DuckDB store, derives feature
 views, trains the minutes-played and per-position points models, writes their
 forward predictions to the database, and runs the optimiser on top of them.
-Mid-season the optimiser needs a team file naming the squad being carried in;
-without one it logs and skips, leaving the rest of the run intact. The package is organised by domain:
+Mid-season the optimiser needs the squad being carried in, read from the
+authenticated FPL `my-team` endpoint or from a team file; with neither it logs
+and skips, leaving the rest of the run intact. The package is organised by domain:
 
 ```text
 fantasy_football/
@@ -427,6 +428,15 @@ This project uses Python 3.12 and [uv](https://docs.astral.sh/uv/) for dependenc
 A `GITHUB_API_KEY` (in a `.env` file) is required to download the Vaastav,
 FCI, and fplcache datasets via the GitHub API.
 
+To read your live squad rather than hand-maintaining a team file, set
+`FPL_MANAGER_ID` (your FPL entry id) and `FPL_COOKIE` in the same `.env`.
+`FPL_COOKIE` is the `Cookie` request header copied verbatim from a logged-in
+fantasy.premierleague.com session in browser devtools — the `my-team` endpoint
+is the only one carrying purchase prices and the free-transfer count, and it
+needs a session. The cookie expires periodically; when it does the run logs
+that optimisation was skipped and asks for a fresh one, and everything else
+the run produced is kept.
+
 ## Usage
 
 Run the full pipeline via `uv`:
@@ -441,11 +451,21 @@ uv run python main.py
 * `rebuild` (default `False`) — drop and reload every season from scratch
   (full refresh / recovery escape hatch). The default loads only missing
   immutable seasons and upserts the current season.
-* `team_file` — path to a name-authored team JSON naming the squad carried
-  into the upcoming gameweek. Required to optimise once the season is under
-  way; without one, mid-season runs log and skip optimisation, leaving the
-  ingest, training and prediction work of that run intact. At GW1 the
-  optimiser free-builds and needs no team file.
+* `team_file` — path to a team JSON naming the squad carried into the
+  upcoming gameweek. Players are declared by `name` or by `element`, each with
+  a `purchase_price`. Passing this overrides the live squad, which is what
+  makes it useful for asking "what if I owned this instead". With it unset the
+  squad is read from `my-team` using `FPL_MANAGER_ID` and `FPL_COOKIE`. One or
+  the other is required to optimise once the season is under way; with neither,
+  mid-season runs log and skip optimisation, leaving the ingest, training and
+  prediction work of that run intact. At GW1 the optimiser free-builds and
+  needs no squad at all.
+
+  Every squad read from the API is recorded to `data/teams/{season}_gw{n}.json`
+  in that same team-file format, so a run is always reproducible by handing the
+  snapshot back as `team_file`. Snapshots are a record, never an automatic
+  input: a stale one would silently plan transfers from a team you no longer
+  own.
 
 ### Evaluating the models with MLflow
 

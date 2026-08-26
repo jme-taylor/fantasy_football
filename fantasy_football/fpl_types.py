@@ -376,3 +376,77 @@ class GameWeekPlan:
     free_transfers: int
     expected_points: float
     bank: int
+
+
+# The ``my-team`` payload is FPL's, not ours, and carries far more than
+# the optimiser reads. Extras are ignored rather than forbidden so a new
+# key on their side is not an outage on ours.
+my_team_config = ConfigDict(extra="ignore")
+
+
+@dataclass(config=my_team_config, frozen=True)
+class MyTeamPick:
+    """One player in the authenticated squad.
+
+    Attributes
+    ----------
+    element : int
+        The player's FPL element id.
+    position : int
+        Slot in the squad, 1-15; 1-11 start.
+    purchase_price : int
+        What the player cost when bought, in tenths of a million.
+    selling_price : int
+        What FPL says they would sell for now, in tenths of a million.
+    is_captain : bool
+        Whether the player is captain.
+    is_vice_captain : bool
+        Whether the player is vice captain.
+    """
+
+    element: int
+    position: int
+    purchase_price: int
+    selling_price: int
+    is_captain: bool
+    is_vice_captain: bool
+
+
+@dataclass(config=my_team_config, frozen=True)
+class MyTeamTransfers:
+    """The transfer state attached to an authenticated squad.
+
+    Attributes
+    ----------
+    limit : int or None
+        Free transfers available. None while a wildcard or free hit is
+        active, which is the only signal the response gives that a chip
+        is in play.
+    made : int
+        Transfers already made this gameweek.
+    bank : int
+        Money in the bank, in tenths of a million.
+    value : int
+        Squad value, in tenths of a million.
+    """
+
+    limit: int | None
+    made: int
+    bank: int
+    value: int
+
+
+@dataclass(config=my_team_config, frozen=True)
+class MyTeam:
+    """The authenticated ``my-team`` response.
+
+    Attributes
+    ----------
+    picks : list[MyTeamPick]
+        The squad pending the next deadline.
+    transfers : MyTeamTransfers
+        Free transfers, bank and squad value.
+    """
+
+    picks: list[MyTeamPick]
+    transfers: MyTeamTransfers

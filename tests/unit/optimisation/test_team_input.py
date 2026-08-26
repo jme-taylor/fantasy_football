@@ -10,6 +10,7 @@ from fantasy_football.optimisation.team_input import (
     load_team_file,
     resolve_squad,
     selling_price,
+    squad_from_team_file,
 )
 from fantasy_football.storage import database
 from fantasy_football.storage.database import get_connection
@@ -299,3 +300,129 @@ def test_resolve_squad_finds_a_player_who_has_not_played(
     assert resolve_squad(team.players, SEASON) == [
         OwnedPlayer(element=500, purchase_price=55)
     ]
+
+
+def test_load_team_file_accepts_an_element_keyed_player(tmp_path) -> None:
+    """A player may be declared by element id instead of by name.
+
+    This is the form the API snapshot is written in, so it has to load
+    back through the same reader a hand-authored file uses.
+    """
+    path = _write_team(
+        tmp_path,
+        {
+            "gameweek": 5,
+            "free_transfers": 1,
+            "players": [{"element": 328, "purchase_price": 125}],
+        },
+    )
+    team = load_team_file(path)
+    assert team.players[0].element == 328
+    assert team.players[0].name is None
+
+
+def test_load_team_file_rejects_a_player_with_both_name_and_element(
+    tmp_path,
+) -> None:
+    """Declaring both leaves no answer for which one wins."""
+    path = _write_team(
+        tmp_path,
+        {
+            "gameweek": 5,
+            "free_transfers": 1,
+            "players": [{"name": "P0", "element": 328, "purchase_price": 125}],
+        },
+    )
+    with pytest.raises(ValueError):
+        load_team_file(path)
+
+
+def test_load_team_file_rejects_a_player_with_neither(tmp_path) -> None:
+    """A player identified by nothing at all is rejected."""
+    path = _write_team(
+        tmp_path,
+        {
+            "gameweek": 5,
+            "free_transfers": 1,
+            "players": [{"purchase_price": 125}],
+        },
+    )
+    with pytest.raises(ValueError):
+        load_team_file(path)
+
+
+def test_resolve_squad_passes_element_keyed_players_through(
+    tmp_path, monkeypatch
+) -> None:
+    """An element needs no roster lookup, so it is carried straight over.
+
+    The optimiser rejects an element with no predictions anyway, which is
+    a stricter check than roster membership.
+    """
+    _seed_roster(
+        tmp_path, monkeypatch, names=["Mohamed Salah"], elements=[328]
+    )
+    path = _write_team(
+        tmp_path,
+        {
+            "gameweek": 5,
+            "free_transfers": 1,
+            "players": [{"element": 999, "purchase_price": 60}],
+        },
+    )
+    team = load_team_file(path)
+
+    assert resolve_squad(team.players, SEASON) == [
+        OwnedPlayer(element=999, purchase_price=60)
+    ]
+
+
+def test_resolve_squad_mixes_named_and_element_keyed_players(
+    tmp_path, monkeypatch
+) -> None:
+    """Both forms can appear in one file, in order."""
+    _seed_roster(
+        tmp_path, monkeypatch, names=["Mohamed Salah"], elements=[328]
+    )
+    path = _write_team(
+        tmp_path,
+        {
+            "gameweek": 5,
+            "free_transfers": 1,
+            "players": [
+                {"element": 999, "purchase_price": 60},
+                {"name": "Mohamed Salah", "purchase_price": 125},
+            ],
+        },
+    )
+    team = load_team_file(path)
+
+    assert resolve_squad(team.players, SEASON) == [
+        OwnedPlayer(element=999, purchase_price=60),
+        OwnedPlayer(element=328, purchase_price=125),
+    ]
+
+
+def test_squad_from_team_file_resolves_names_and_carries_the_rest(
+    tmp_path, monkeypatch
+) -> None:
+    """The file path reaches the same Squad the API path produces."""
+    _seed_roster(
+        tmp_path, monkeypatch, names=["Mohamed Salah"], elements=[328]
+    )
+    path = _write_team(
+        tmp_path,
+        {
+            "gameweek": 5,
+            "free_transfers": 2,
+            "bank": 8,
+            "players": [_declared("Mohamed Salah", 125)],
+        },
+    )
+
+    squad = squad_from_team_file(load_team_file(path), SEASON)
+
+    assert squad.gameweek == 5
+    assert squad.free_transfers == 2
+    assert squad.bank == 8
+    assert squad.players == [OwnedPlayer(element=328, purchase_price=125)]
