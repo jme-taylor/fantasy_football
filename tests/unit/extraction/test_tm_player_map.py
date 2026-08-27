@@ -50,8 +50,13 @@ def _add_fpl_player(
     birth_date: date | None,
     team: str = "Man City",
     season: str = "2026-27",
+    with_week: bool = True,
 ) -> None:
-    """Insert one FPL player, with a player-week row giving them a club."""
+    """Insert one FPL player, with a player-week row giving them a club.
+
+    ``with_week`` off leaves them registered but never appearing, which is
+    what a squad member who played no minutes looks like.
+    """
     element = player_code % 1000
     PLAYER_SEASON.append(
         connection,
@@ -68,6 +73,8 @@ def _add_fpl_player(
             )
         ),
     )
+    if not with_week:
+        return
     PLAYER_WEEK.append(
         connection,
         PLAYER_WEEK.conform(
@@ -487,3 +494,24 @@ def test_the_report_honours_the_candidate_limit(
         )
     report = unmatched_report(db, _build(db), candidates=1)
     assert report.height == 1
+
+
+def test_a_player_who_never_appeared_is_left_out_of_the_report(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """A registered squad member with no minutes is nobody's manual work."""
+    _add_fpl_player(
+        db, 41, "Never", "Played", date(2005, 1, 1), with_week=False
+    )
+    _add_tm_player(db, "7", "Someone Else", date(1999, 9, 9))
+    assert unmatched_report(db, _build(db)).is_empty()
+
+
+def test_the_report_counts_the_player_weeks_behind_each_row(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """The count is carried so a thin history is visible before deciding."""
+    _add_fpl_player(db, 42, "Bukayo", "Saka", date(2001, 9, 5))
+    _add_tm_player(db, "8", "Wojciech Szczesny", date(1990, 4, 18))
+    report = unmatched_report(db, _build(db))
+    assert report["fpl_player_weeks"].to_list() == [1]

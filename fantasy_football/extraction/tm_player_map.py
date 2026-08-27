@@ -226,9 +226,18 @@ def _register_sources(
             FROM player_season
             WHERE player_code IS NOT NULL
             GROUP BY player_code
+        ),
+        weeks AS (
+            SELECT ps.player_code, count(*) AS player_weeks
+            FROM player_week AS pw
+            JOIN player_season AS ps
+                ON ps.season = pw.season AND ps.element = pw.element
+            WHERE ps.player_code IS NOT NULL
+            GROUP BY ps.player_code
         )
         SELECT
-            player_code,
+            person.player_code,
+            coalesce(weeks.player_weeks, 0) AS player_weeks,
             birth_date,
             trim(coalesce(first_name, '') || ' ' || coalesce(second_name, ''))
                 AS fpl_name,
@@ -236,6 +245,7 @@ def _register_sources(
                 AS name_norm,
             {_surname(_normalised_name("second_name"))} AS surname_norm
         FROM person
+        LEFT JOIN weeks USING (player_code)
         """
     )
     connection.execute(
@@ -528,6 +538,11 @@ def unmatched_report(
     it alongside for eyeballing -- including the Transfermarkt page, so a
     doubtful one is one click away.
 
+    Players with no ``player_week`` row at all are left out: they are
+    registered squad members who never appeared, so nothing downstream
+    reads them and mapping them by hand is wasted effort. They are still
+    matched into ``tm_player_map`` when the automatic rungs can manage it.
+
     Parameters
     ----------
     connection : duckdb.DuckDBPyConnection
@@ -552,6 +567,7 @@ def unmatched_report(
                 f.fpl_name,
                 t.tm_name,
                 t.tm_player_link,
+                f.player_weeks,
                 f.birth_date,
                 t.dob_date,
                 jaro_winkler_similarity(f.name_norm, t.name_norm) AS score,
@@ -566,6 +582,7 @@ def unmatched_report(
                     SELECT tm_player_id FROM tm_map_claimed
                 )
             WHERE f.player_code NOT IN (SELECT player_code FROM tm_map_claimed)
+              AND f.player_weeks > 0
         )
         SELECT
             player_code,
@@ -573,6 +590,7 @@ def unmatched_report(
             fpl_name,
             tm_name,
             tm_player_link,
+            player_weeks AS fpl_player_weeks,
             birth_date AS fpl_birth_date,
             dob_date AS tm_dob_date,
             score AS name_similarity
