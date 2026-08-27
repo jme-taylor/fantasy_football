@@ -179,8 +179,8 @@ def test_generated_ddl_matches_legacy_ddl(table, legacy):
 
 
 def test_tables_tuple_covers_every_spec():
-    """``TABLES`` holds all eighteen specs, so loops cannot miss one."""
-    assert len(TABLES) == 18
+    """``TABLES`` holds all nineteen specs, so loops cannot miss one."""
+    assert len(TABLES) == 19
     assert {t.name for t in TABLES} == {
         "player_week",
         "team_fixture",
@@ -200,6 +200,7 @@ def test_tables_tuple_covers_every_spec():
         "tm_player_season",
         "tm_transfer",
         "tm_market_value",
+        "tm_player_map",
     }
 
 

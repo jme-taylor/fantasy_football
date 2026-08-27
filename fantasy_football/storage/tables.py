@@ -593,6 +593,24 @@ TM_MARKET_VALUE = Table(
     order_by=("tm_player_id", "value_date"),
 )
 
+# Person-level bridge from FPL to Transfermarkt, rebuilt wholesale by
+# scripts/scrape_transfermarkt.py. UNIQUE on tm_player_id because the map
+# must be one-to-one in both directions; a duplicate fans out the join.
+TM_PLAYER_MAP = Table(
+    name="tm_player_map",
+    schema={
+        "player_code": pl.Int64,
+        "tm_player_id": pl.Utf8,
+        "match_rung": pl.Utf8,
+        "match_score": pl.Float64,
+        "fpl_name": pl.Utf8,
+        "tm_name": pl.Utf8,
+    },
+    primary_key=("player_code",),
+    order_by=("player_code",),
+    unique=(("tm_player_id",),),
+)
+
 # Every stored table. ``get_connection`` and ``reset_database`` loop over
 # this, so a new table cannot be forgotten by either.
 TABLES: tuple[Table, ...] = (
@@ -614,6 +632,7 @@ TABLES: tuple[Table, ...] = (
     TM_PLAYER_SEASON,
     TM_TRANSFER,
     TM_MARKET_VALUE,
+    TM_PLAYER_MAP,
 )
 
 

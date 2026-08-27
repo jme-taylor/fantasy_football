@@ -12,6 +12,11 @@ Either phase can be run alone: ``--links-only`` stops after collection,
 ``--scrape-only`` skips it, so a resumed scrape is never blocked by a
 season Transfermarkt has not published yet.
 
+The run finishes by rebuilding ``tm_player_map``, the person-level bridge
+from FPL to Transfermarkt, and writing a candidate report for whatever it
+could not match. ``--map-only`` rebuilds just that, which is what to run
+after editing the override CSV.
+
 Nothing in ``main.py`` populates these tables, so ``main(rebuild=True)``
 drops them and only a re-scrape brings them back.
 """
@@ -27,6 +32,7 @@ from fantasy_football.constants import (
     EARLIEST_IDENTITY_SEASON,
 )
 from fantasy_football.extraction.seasons import seasons_in_range
+from fantasy_football.extraction.tm_player_map import refresh_player_map
 from fantasy_football.extraction.transfermarkt import (
     REQUEST_DELAY_SECONDS,
     collect_player_links,
@@ -59,6 +65,12 @@ def parse_args() -> argparse.Namespace:
         "them, so a resumed run cannot be blocked by the link phase.",
     )
     parser.add_argument(
+        "--map-only",
+        action="store_true",
+        help="Rebuild tm_player_map from the stored scrape and the "
+        "mapping CSVs, without scraping anything.",
+    )
+    parser.add_argument(
         "--refresh",
         action="store_true",
         help="Re-scrape players already stored, rather than resuming.",
@@ -78,7 +90,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Collect season links, then scrape the players still missing."""
+    """Collect season links, scrape what is missing, then rebuild the map."""
     configure_logging()
     args = parse_args()
     seasons = args.seasons or seasons_in_range(
@@ -87,6 +99,9 @@ def main() -> None:
     transfermarkt = sfc.Transfermarkt()
     connection = get_connection(DATABASE_PATH)
     try:
+        if args.map_only:
+            refresh_player_map(connection)
+            return
         if not args.scrape_only:
             collect_player_links(connection, seasons, transfermarkt)
         if args.links_only:
@@ -98,6 +113,7 @@ def main() -> None:
             limit=args.limit,
             delay=args.delay,
         )
+        refresh_player_map(connection)
     finally:
         connection.close()
 

@@ -402,3 +402,48 @@ def test_unknown_columns_empty_when_frame_matches_schema():
         {"season": ["a"], "element": [1], "label": ["x"], "ratio": [1.0]}
     )
     assert WIDGET.unknown_columns(frame) == []
+
+
+def test_replace_all_empties_the_table_first():
+    """A wholesale rebuild leaves only the rows it was handed."""
+    connection = duckdb.connect(":memory:")
+    try:
+        connection.execute(WIDGET.ddl)
+        WIDGET.append(
+            connection,
+            pl.DataFrame(
+                {
+                    "season": ["2023-24"],
+                    "element": [1],
+                    "label": ["stale"],
+                    "ratio": [0.1],
+                }
+            ),
+        )
+        WIDGET.replace_all(
+            connection,
+            pl.DataFrame(
+                {
+                    "season": ["2024-25"],
+                    "element": [2],
+                    "label": ["fresh"],
+                    "ratio": [0.2],
+                }
+            ),
+        )
+        stored = WIDGET.load(connection)
+        assert stored["label"].to_list() == ["fresh"]
+    finally:
+        connection.close()
+
+
+def test_ddl_declares_each_unique_group():
+    """A unique group beyond the primary key reaches the create statement."""
+    table = Table(
+        name="widget_unique",
+        schema={"season": pl.Utf8, "element": pl.Int64},
+        primary_key=("season",),
+        order_by=("season",),
+        unique=(("element",),),
+    )
+    assert "UNIQUE (element)" in table.ddl
