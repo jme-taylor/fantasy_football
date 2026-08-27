@@ -66,12 +66,6 @@ REPORT_CANDIDATES = 3
 
 OVERRIDE_COLUMNS = ("player_code", "tm_player_id", "fpl_name", "tm_name")
 
-# Rungs whose matches are written back into the override file. They are
-# the ones resting on a name alone, which is also what makes them worth
-# freezing: once written they arrive as overrides, so the map stops moving
-# under a re-scrape and the pairing becomes reviewable in a diff.
-AUTO_RUNGS = ("exact_name", "exact_name_dob_conflict")
-
 
 def _normalised_name(column: str) -> str:
     """Return SQL normalising a name column for comparison.
@@ -137,8 +131,7 @@ def load_overrides(path: Path | None = None) -> pl.DataFrame:
     -------
     pl.DataFrame
         Columns ``player_code``, ``tm_player_id``, ``fpl_name``,
-        ``tm_name``, ``source``. A file without ``source`` -- rows pasted
-        straight out of the candidate report -- reads as ``manual``.
+        ``tm_name``.
 
     Raises
     ------
@@ -149,9 +142,7 @@ def load_overrides(path: Path | None = None) -> pl.DataFrame:
         path or OVERRIDES_PATH,
         schema_overrides={"player_code": pl.Int64, "tm_player_id": pl.Utf8},
     )
-    if "source" not in frame.columns:
-        frame = frame.with_columns(pl.lit("manual").alias("source"))
-    frame = frame.select(*OVERRIDE_COLUMNS, "source")
+    frame = frame.select(OVERRIDE_COLUMNS)
     for column in ("player_code", "tm_player_id"):
         duplicates = (
             frame.filter(pl.col(column).is_duplicated())[column]
@@ -607,56 +598,14 @@ def store_player_map(
     TM_PLAYER_MAP.replace_all(connection, matches)
 
 
-def append_overrides(
-    matches: pl.DataFrame, path: Path | None = None
-) -> pl.DataFrame:
-    """Write the name-only matches into the override file.
-
-    Only rungs in ``AUTO_RUNGS``, and only where neither id is already
-    spoken for, so a hand-written row is never overwritten by a guess and
-    the file stays one-to-one.
-
-    Parameters
-    ----------
-    matches : pl.DataFrame
-        What ``build_player_map`` returned.
-    path : Path | None, optional
-        The override file to extend. Defaults to ``OVERRIDES_PATH``.
-
-    Returns
-    -------
-    pl.DataFrame
-        The rows added, empty when there were none.
-    """
-    target = path or OVERRIDES_PATH
-    existing = load_overrides(target)
-    fresh = (
-        matches.filter(pl.col("match_rung").is_in(AUTO_RUNGS))
-        .filter(
-            ~pl.col("player_code").is_in(existing["player_code"].implode())
-        )
-        .filter(
-            ~pl.col("tm_player_id").is_in(existing["tm_player_id"].implode())
-        )
-        .select(*OVERRIDE_COLUMNS)
-        .with_columns(pl.lit("auto").alias("source"))
-    )
-    if fresh.is_empty():
-        return fresh
-    pl.concat([existing, fresh]).sort("player_code").write_csv(target)
-    return fresh
-
-
 def refresh_player_map(
     connection: "duckdb.DuckDBPyConnection",
     report_path: Path | None = None,
 ) -> pl.DataFrame:
-    """Rebuild the map, extend the override file, and report the rest.
+    """Rebuild the stored map and write the candidate report beside it.
 
-    Matches resting on a name alone are written into the override file so
-    they need deciding once. Whatever is still unmatched goes to the
-    candidate report in the gitignored data folder rather than the
-    mappings folder: a stale report must never be mistaken for a mapping.
+    The report goes to the gitignored data folder rather than the mappings
+    folder: a stale report must never be mistaken for a real mapping.
 
     Parameters
     ----------
@@ -672,8 +621,6 @@ def refresh_player_map(
     """
     matches = build_player_map(connection)
     store_player_map(connection, matches)
-    added = append_overrides(matches)
-    logger.info("Added %d matches to %s", added.height, OVERRIDES_PATH)
     report = unmatched_report(connection, matches)
     unmatched = (
         report["player_code"].n_unique() if not report.is_empty() else 0
