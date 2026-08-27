@@ -509,6 +509,90 @@ PLAYER_SEASON = Table(
     enrich=propagate_static_columns,
 )
 
+# Raw Transfermarkt scrapes. Kept verbatim as VARCHAR with parsed
+# siblings alongside, so a parser bug never destroys scraped data. These
+# are not populated by main() -- see scripts/scrape_transfermarkt.py --
+# so reset_database wipes them and a re-scrape is the only cure.
+TM_PLAYER = Table(
+    name="tm_player",
+    schema={
+        "tm_player_id": pl.Utf8,
+        "name": pl.Utf8,
+        "player_link": pl.Utf8,
+        "dob": pl.Utf8,
+        "dob_date": pl.Date,
+        "height_m": pl.Float64,
+        "nationality": pl.Utf8,
+        "citizenship": pl.Utf8,
+        "position": pl.Utf8,
+        "team": pl.Utf8,
+        "last_club": pl.Utf8,
+        "since": pl.Utf8,
+        "since_date": pl.Date,
+        "joined": pl.Utf8,
+        "joined_date": pl.Date,
+        "contract_expiration": pl.Utf8,
+        "contract_expiration_date": pl.Date,
+        "value": pl.Utf8,
+        "value_eur": pl.Int64,
+        "value_last_updated": pl.Utf8,
+        "value_last_updated_date": pl.Date,
+        "scraped_at": pl.Datetime,
+    },
+    primary_key=("tm_player_id",),
+    order_by=("tm_player_id",),
+)
+
+TM_PLAYER_SEASON = Table(
+    name="tm_player_season",
+    schema={
+        "season": pl.Utf8,
+        "tm_player_id": pl.Utf8,
+        "player_link": pl.Utf8,
+    },
+    primary_key=("season", "tm_player_id"),
+    order_by=("season", "tm_player_id"),
+)
+
+# transfer_seq is scrape order, and Transfermarkt lists newest first, so
+# seq 0 is the most recent transfer. A synthetic key rather than the date
+# because a player can have two transfers on one day (loan end plus new
+# loan), and because a raw table must not reject a row for failing a parse.
+TM_TRANSFER = Table(
+    name="tm_transfer",
+    schema={
+        "tm_player_id": pl.Utf8,
+        "transfer_seq": pl.Int64,
+        "season": pl.Utf8,
+        "transfer_date": pl.Utf8,
+        "transfer_date_parsed": pl.Date,
+        "left_club": pl.Utf8,
+        "joined_club": pl.Utf8,
+        "market_value": pl.Utf8,
+        "market_value_eur": pl.Int64,
+        "fee": pl.Utf8,
+        "fee_eur": pl.Int64,
+        "fee_type": pl.Utf8,
+    },
+    primary_key=("tm_player_id", "transfer_seq"),
+    order_by=("tm_player_id", "transfer_seq"),
+)
+
+# value_eur arrives already typed from the market-value JSON endpoint, so
+# this is the one table with nothing to parse but the date. That date is in
+# the key, so a row whose date will not parse cannot be stored.
+TM_MARKET_VALUE = Table(
+    name="tm_market_value",
+    schema={
+        "tm_player_id": pl.Utf8,
+        "value_date": pl.Date,
+        "value_date_raw": pl.Utf8,
+        "value_eur": pl.Int64,
+    },
+    primary_key=("tm_player_id", "value_date"),
+    order_by=("tm_player_id", "value_date"),
+)
+
 # Every stored table. ``get_connection`` and ``reset_database`` loop over
 # this, so a new table cannot be forgotten by either.
 TABLES: tuple[Table, ...] = (
@@ -526,6 +610,10 @@ TABLES: tuple[Table, ...] = (
     TEST_CONCEDING_PREDICTION,
     PLAYER_SEASON,
     PLAYER_SNAPSHOT,
+    TM_PLAYER,
+    TM_PLAYER_SEASON,
+    TM_TRANSFER,
+    TM_MARKET_VALUE,
 )
 
 

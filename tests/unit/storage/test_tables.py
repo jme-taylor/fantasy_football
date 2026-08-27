@@ -1,5 +1,7 @@
 """Tests for the table specs, including DDL equivalence."""
 
+from datetime import date
+
 import duckdb
 import polars as pl
 import pytest
@@ -177,8 +179,8 @@ def test_generated_ddl_matches_legacy_ddl(table, legacy):
 
 
 def test_tables_tuple_covers_every_spec():
-    """``TABLES`` holds all fourteen specs, so loops cannot miss one."""
-    assert len(TABLES) == 14
+    """``TABLES`` holds all eighteen specs, so loops cannot miss one."""
+    assert len(TABLES) == 18
     assert {t.name for t in TABLES} == {
         "player_week",
         "team_fixture",
@@ -194,6 +196,10 @@ def test_tables_tuple_covers_every_spec():
         "test_points_prediction",
         "test_minutes_prediction",
         "test_conceding_prediction",
+        "tm_player",
+        "tm_player_season",
+        "tm_transfer",
+        "tm_market_value",
     }
 
 
@@ -236,8 +242,8 @@ def test_propagate_static_columns_leaves_null_codes_alone():
 def minimal_row(table) -> pl.DataFrame:
     """Build a one-row frame satisfying a table's NOT NULL columns.
 
-    Primary-key columns across all six tables are either Utf8 or Int64,
-    so those two placeholders suffice. Every other column is null.
+    Primary-key columns are Utf8, Int64 or Date, so those three
+    placeholders suffice. Every other column is null.
 
     Parameters
     ----------
@@ -255,6 +261,8 @@ def minimal_row(table) -> pl.DataFrame:
             values[column] = [None]
         elif dtype == pl.Utf8:
             values[column] = ["2024-25"]
+        elif dtype == pl.Date:
+            values[column] = [date(2024, 8, 1)]
         else:
             values[column] = [1]
     return pl.DataFrame(values, schema=table.schema)
@@ -263,7 +271,9 @@ def minimal_row(table) -> pl.DataFrame:
 def test_reset_database_clears_every_table(db):
     """Reset empties every table, not a hand-listed subset."""
     for table in TABLES:
-        table.upsert_current(db, minimal_row(table), "2024-25")
+        # append rather than upsert_current: the raw Transfermarkt tables
+        # are not partitioned by season, and this is a test of reset.
+        table.append(db, minimal_row(table))
         assert not table.load(db).is_empty()
 
     database.reset_database(db)
