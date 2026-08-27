@@ -122,4 +122,3 @@ SELECT
     json_extract(features, '$.is_promoted_club')::DOUBLE AS is_promoted_club
 FROM scored
 ORDER BY absolute_error DESC
-LIMIT 100;

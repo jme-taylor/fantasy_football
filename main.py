@@ -3,7 +3,6 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import polars as pl
 from dotenv import load_dotenv
 
 from fantasy_football.constants import CURRENT_SEASON
@@ -13,6 +12,7 @@ from fantasy_football.extraction.availability import (
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fci import FciExtractor
 from fantasy_football.extraction.fixtures import load_fixtures
+from fantasy_football.extraction.fplcache import FplCacheExtractor
 from fantasy_football.extraction.player_identity import (
     load_player_identity_data,
 )
@@ -264,38 +264,28 @@ def check_prior_season_loaded(
         )
 
 
-def gameweek_prices(
-    season: str, connection: "DuckDBPyConnection | None" = None
-) -> "Callable[[int], dict[int, int]]":
-    """Return a lookup from gameweek to every player's price in it.
+def deadline_prices(season: str) -> "Callable[[int], dict[int, int]]":
+    """Return a lookup from gameweek to every player's deadline price.
 
-    Purchase prices for a squad that has never been transferred come from
-    what the players cost at the manager's opening deadline, which is
-    what ``player_week`` stores.
+    Purchase prices are what was paid at a deadline. ``player_week.value``
+    is the price at that gameweek's matches, which nightly price moves put
+    up to a few tenths away, so the fplcache deadline snapshot is read
+    instead.
 
     Parameters
     ----------
     season : str
-        The season to read.
-    connection : duckdb.DuckDBPyConnection | None, optional
-        An open connection. When None, one is opened per table read.
+        The season to price in.
 
     Returns
     -------
     Callable[[int], dict[int, int]]
         Given a gameweek, element to price in tenths of a million.
     """
-    stored = PLAYER_WEEK.load(connection).filter(pl.col("season") == season)
+    extractor = FplCacheExtractor()
 
     def prices(gw: int) -> dict[int, int]:
-        week = stored.filter(pl.col("gw") == gw)
-        return dict(
-            zip(
-                week["element"].to_list(),
-                week["value"].to_list(),
-                strict=True,
-            )
-        )
+        return extractor.deadline_prices(season, gw)
 
     return prices
 
@@ -332,7 +322,7 @@ def carried_in_squad(team_file: str | None, start_gw: int) -> "Squad | None":
         season=CURRENT_SEASON,
         expected_gameweek=start_gw,
         free_transfers=free_transfers_from_env(),
-        prices_at_gameweek=gameweek_prices(CURRENT_SEASON),
+        prices_at_gameweek=deadline_prices(CURRENT_SEASON),
     )
 
 

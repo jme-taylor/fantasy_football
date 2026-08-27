@@ -468,9 +468,9 @@ def load_public_squad(
     free_transfers : int
         Free transfers available at that gameweek.
     prices_at_gameweek : Callable[[int], Mapping[int, int]]
-        Given a gameweek, the price of every player in it. Called for
-        the manager's opening gameweek, which the entry reports rather
-        than the caller knowing it up front.
+        Given a gameweek, the price of every player at its deadline.
+        Called for the manager's opening gameweek, which the entry
+        reports rather than the caller knowing it up front.
     api : EntrySource | None, optional
         The client to read through. Defaults to a fresh FplAPI.
     snapshot_folder : pathlib.Path | None, optional
@@ -490,7 +490,8 @@ def load_public_squad(
     OpeningBudgetError
         If the reconstructed opening squad does not total the budget.
     SquadUnavailableError
-        If FPL cannot be reached, or the manager has no settled gameweek.
+        If FPL or the price source cannot be reached, or the manager has
+        no settled gameweek.
     """
     from fantasy_football.extraction.fpl import FplAPI
 
@@ -529,7 +530,13 @@ def load_public_squad(
             "hand."
         )
 
-    opening_prices = prices_at_gameweek(entry.started_event)
+    try:
+        opening_prices = prices_at_gameweek(entry.started_event)
+    except requests.RequestException as error:
+        raise SquadUnavailableError(
+            f"Could not read gameweek {entry.started_event} deadline prices "
+            f"({type(error).__name__}), so the squad cannot be priced."
+        ) from None
     opening_squad = {
         element: opening_prices[element]
         for element in opening.elements

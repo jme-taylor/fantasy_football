@@ -201,6 +201,7 @@ class FplCacheExtractor:
         for gw in gameweeks:
             try:
                 path = self._snapshot_path_for(deadlines[gw])
+            # TODO (JT): If no future, stop the loop.
             except ValueError:
                 logger.warning(
                     "No fplcache snapshot for %s GW%d yet; skipping.",
@@ -231,6 +232,40 @@ class FplCacheExtractor:
                 f"{gameweeks}"
             )
         return pl.concat(frames, how="vertical")
+
+    def deadline_prices(self, season: str, gw: int) -> dict[int, int]:
+        """Return every player's price at a gameweek's deadline.
+
+        FPL prices move nightly, so a price recorded against a gameweek's
+        matches is not the price paid at its deadline. Purchase prices need
+        the deadline itself, which is what the snapshot at or after it holds.
+
+        Parameters
+        ----------
+        season : str
+            Short-form season string, e.g. ``"2026-27"``.
+        gw : int
+            Gameweek whose deadline to price at.
+
+        Returns
+        -------
+        dict[int, int]
+            Element id to price in tenths of a million.
+
+        Raises
+        ------
+        ValueError
+            If the season has no such gameweek, or no snapshot covers its
+            deadline.
+        """
+        deadlines = self.season_event_deadlines(season)
+        if gw not in deadlines:
+            raise ValueError(f"{season} has no GW{gw} to price at.")
+        snapshot = self._read_snapshot(self._snapshot_path_for(deadlines[gw]))
+        return {
+            element["id"]: element["now_cost"]
+            for element in snapshot["elements"]
+        }
 
     def _season_probe_datetime(self, season: str) -> datetime:
         """Return a datetime reliably inside a season (1 October of its start year).

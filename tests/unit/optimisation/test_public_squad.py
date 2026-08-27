@@ -251,6 +251,20 @@ def test_load_public_squad_survives_a_network_failure(tmp_path) -> None:
             _load(api, tmp_path)
 
 
+def test_load_public_squad_survives_an_unreachable_price_source(
+    tmp_path,
+) -> None:
+    """Opening prices are a network read too, so it fails the same way."""
+
+    def unreachable(gw: int):
+        raise requests.ConnectionError("no route")
+
+    api = _FakeApi(picks={1: _picks(OPENING)})
+
+    with pytest.raises(SquadUnavailableError):
+        _load(api, tmp_path, prices_at_gameweek=unreachable)
+
+
 def test_load_public_squad_reports_a_manager_who_has_not_started(
     tmp_path,
 ) -> None:

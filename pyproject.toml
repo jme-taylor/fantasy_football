@@ -14,7 +14,7 @@ dependencies = [
     "numpy>=2.2.4,<3",
     "scikit-learn>=1.6.1",
     "mlflow>=3",
-    "scraperfc>=4.5.0",
+    "scraperfc",
     "pulp>=3.3.2",
     "polars>=1.43.2,<2",
 ]
@@ -58,3 +58,8 @@ addopts = "-m 'not integration'"
 
 [tool.ty.src]
 exclude = ["notebooks"]
+
+[tool.uv.sources]
+# Fork carrying the Transfermarkt height fix; upstream 4.5.0 does not
+# have it. uv.lock pins the exact commit, so this stays reproducible.
+scraperfc = { git = "https://github.com/jme-taylor/ScraperFC", branch = "main" }
