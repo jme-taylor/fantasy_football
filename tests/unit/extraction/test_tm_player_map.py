@@ -36,6 +36,7 @@ NO_OVERRIDES = pl.DataFrame(
         "tm_player_id": pl.Series([], dtype=pl.Utf8),
         "fpl_name": pl.Series([], dtype=pl.Utf8),
         "tm_name": pl.Series([], dtype=pl.Utf8),
+        "source": pl.Series([], dtype=pl.Utf8),
     }
 )
 
@@ -133,6 +134,7 @@ def test_committed_overrides_file_reads() -> None:
         "tm_player_id",
         "fpl_name",
         "tm_name",
+        "source",
     ]
 
 
@@ -480,3 +482,71 @@ def test_the_report_honours_the_candidate_limit(
         )
     report = unmatched_report(db, _build(db), candidates=1)
     assert report.height == 1
+
+
+def _override_rows(path: Path) -> pl.DataFrame:
+    """Read back whatever the override file now holds."""
+    return load_overrides(path)
+
+
+def test_a_name_only_match_is_written_into_the_override_file(
+    db: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """The rows resting on a name alone stop being decided every run."""
+    path = _override_file(tmp_path)
+    _add_fpl_player(db, 888, "James", "Smith", None, team="Man City")
+    _add_tm_player(db, "3", "James Smith", None, team="Tottenham Hotspur")
+
+    added = tm_player_map.append_overrides(_build(db), path=path)
+
+    assert added["player_code"].to_list() == [888]
+    stored = _override_rows(path)
+    assert stored["tm_player_id"].to_list() == ["3"]
+    assert stored["source"].to_list() == ["auto"]
+
+
+def test_a_dob_matched_player_is_not_written_into_the_override_file(
+    db: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """Only the name-only rungs are frozen; the rest stay derived."""
+    path = _override_file(tmp_path)
+    _add_fpl_player(db, 111, "Erling", "Haaland", date(2000, 7, 21))
+    _add_tm_player(db, "418560", "Erling Haaland", date(2000, 7, 21))
+    assert tm_player_map.append_overrides(_build(db), path=path).is_empty()
+    assert _override_rows(path).is_empty()
+
+
+def test_appending_overrides_twice_adds_nothing_the_second_time(
+    db: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """A re-run must not duplicate a row and break the one-to-one map."""
+    path = _override_file(tmp_path)
+    _add_fpl_player(db, 888, "James", "Smith", None, team="Man City")
+    _add_tm_player(db, "3", "James Smith", None, team="Tottenham Hotspur")
+    matches = _build(db)
+    tm_player_map.append_overrides(matches, path=path)
+    assert tm_player_map.append_overrides(matches, path=path).is_empty()
+    assert _override_rows(path).height == 1
+
+
+def test_a_hand_written_row_is_never_replaced_by_a_guess(
+    db: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    """The human's decision stays the golden source it was promised to be."""
+    path = tmp_path / "overrides.csv"
+    pl.DataFrame(
+        {
+            "player_code": [888],
+            "tm_player_id": ["chosen"],
+            "fpl_name": ["James Smith"],
+            "tm_name": ["James Smith"],
+        }
+    ).write_csv(path)
+    _add_fpl_player(db, 888, "James", "Smith", None, team="Man City")
+    _add_tm_player(db, "3", "James Smith", None, team="Tottenham Hotspur")
+
+    tm_player_map.append_overrides(_build(db), path=path)
+
+    stored = _override_rows(path)
+    assert stored["tm_player_id"].to_list() == ["chosen"]
+    assert stored["source"].to_list() == ["manual"]
