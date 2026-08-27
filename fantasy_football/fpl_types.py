@@ -376,3 +376,87 @@ class GameWeekPlan:
     free_transfers: int
     expected_points: float
     bank: int
+
+
+# The entry payloads are FPL's, not ours, and carry far more than the
+# optimiser reads. Extras are ignored rather than forbidden so a new key
+# on their side is not an outage on ours.
+entry_config = ConfigDict(extra="ignore")
+
+
+@dataclass(config=entry_config, frozen=True)
+class Entry:
+    """A manager's headline state, from the public ``entry`` endpoint.
+
+    Attributes
+    ----------
+    started_event : int
+        The gameweek the manager entered the game. Their opening squad
+        was bought against that deadline, not necessarily GW1's.
+    current_event : int
+        The latest gameweek with a settled team, and so the newest one
+        ``picks`` can be read for.
+    """
+
+    started_event: int
+    current_event: int | None
+
+
+@dataclass(config=entry_config, frozen=True)
+class EntryPicks:
+    """One gameweek's settled squad, from the public ``picks`` endpoint.
+
+    Only available once the gameweek's deadline has passed, which is why
+    the squad carried into the next gameweek is read from the last
+    settled one rather than the upcoming one.
+
+    Attributes
+    ----------
+    elements : list[int]
+        The fifteen element ids picked, in squad order.
+    bank : int
+        Money in the bank at that gameweek's deadline, in tenths of a
+        million.
+    active_chip : str or None
+        The chip played that gameweek, if any.
+    """
+
+    elements: list[int]
+    bank: int
+    active_chip: str | None
+
+    @classmethod
+    def from_response(cls, response: dict) -> "EntryPicks":
+        """Build from the raw ``picks`` payload."""
+        return cls(
+            elements=[pick["element"] for pick in response["picks"]],
+            bank=response["entry_history"]["bank"],
+            active_chip=response.get("active_chip"),
+        )
+
+
+@dataclass(config=entry_config, frozen=True)
+class EntryTransfer:
+    """One completed transfer, from the public ``transfers`` endpoint.
+
+    ``element_in_cost`` is the price actually paid, which is what makes
+    the purchase price of a transferred-in player exact rather than
+    reconstructed. Only transfers whose gameweek has kicked off appear
+    here; one made for an upcoming deadline is not public.
+
+    Attributes
+    ----------
+    element_in : int
+        The element bought.
+    element_in_cost : int
+        What it cost, in tenths of a million.
+    element_out : int
+        The element sold.
+    event : int
+        The gameweek the transfer was made for.
+    """
+
+    element_in: int
+    element_in_cost: int
+    element_out: int
+    event: int

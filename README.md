@@ -12,8 +12,9 @@ This is an early-stage work in progress. `main.py` is the entry point that
 refreshes the current season's data into a DuckDB store, derives feature
 views, trains the minutes-played and per-position points models, writes their
 forward predictions to the database, and runs the optimiser on top of them.
-Mid-season the optimiser needs a team file naming the squad being carried in;
-without one it logs and skips, leaving the rest of the run intact. The package is organised by domain:
+Mid-season the optimiser needs the squad being carried in, read from FPL's
+public entry endpoints or from a team file; with neither it logs and skips,
+leaving the rest of the run intact. The package is organised by domain:
 
 ```text
 fantasy_football/
@@ -427,6 +428,31 @@ This project uses Python 3.12 and [uv](https://docs.astral.sh/uv/) for dependenc
 A `GITHUB_API_KEY` (in a `.env` file) is required to download the Vaastav,
 FCI, and fplcache datasets via the GitHub API.
 
+To read your live squad rather than hand-maintaining a team file, set
+`FPL_MANAGER_ID` (your FPL entry id — the number in the URL of your Points
+page) in the same `.env`. No credentials are needed: the squad, bank and
+transfer history all come from FPL's public `entry` endpoints.
+
+Purchase prices are reconstructed rather than read. Players still holding
+their opening place are priced at what they cost at your opening deadline
+(from `player_week`); anyone transferred in since is priced at
+`element_in_cost`, which is exactly what you paid. The reconstruction is
+checked against the budget every manager starts on — opening squad plus
+opening bank must equal 100.0m — and the run stops if it does not, because a
+wrong purchase price is a wrong selling price in every gameweek of the plan.
+
+Free transfers are the one number no public endpoint publishes, so set
+`FPL_FREE_TRANSFERS` to what the FPL site shows. Unset, it assumes 1 and warns.
+The authenticated `my-team` endpoint does carry it, but FPL no longer accepts a
+session cookie as an API credential — it returns "Authentication credentials
+were not provided" however logged-in the browser is — so that route is closed.
+
+Two limitations follow from using public data. Picks only become available once
+a gameweek has kicked off, so the squad read is your last settled one — correct
+as the squad you carry in, but it will not show a transfer you have already
+made for the upcoming deadline. And a free hit gameweek reports a squad that
+reverts, so the run stops rather than planning from it.
+
 ## Usage
 
 Run the full pipeline via `uv`:
@@ -441,11 +467,21 @@ uv run python main.py
 * `rebuild` (default `False`) — drop and reload every season from scratch
   (full refresh / recovery escape hatch). The default loads only missing
   immutable seasons and upserts the current season.
-* `team_file` — path to a name-authored team JSON naming the squad carried
-  into the upcoming gameweek. Required to optimise once the season is under
-  way; without one, mid-season runs log and skip optimisation, leaving the
-  ingest, training and prediction work of that run intact. At GW1 the
-  optimiser free-builds and needs no team file.
+* `team_file` — path to a team JSON naming the squad carried into the
+  upcoming gameweek. Players are declared by `name` or by `element`, each with
+  a `purchase_price`. Passing this overrides the live squad, which is what
+  makes it useful for asking "what if I owned this instead". With it unset the
+  squad is read from the public entry endpoints using `FPL_MANAGER_ID`. One or
+  the other is required to optimise once the season is under way; with neither,
+  mid-season runs log and skip optimisation, leaving the ingest, training and
+  prediction work of that run intact. At GW1 the optimiser free-builds and
+  needs no squad at all.
+
+  Every squad read from the API is recorded to `data/teams/{season}_gw{n}.json`
+  in that same team-file format, so a run is always reproducible by handing the
+  snapshot back as `team_file`. Snapshots are a record, never an automatic
+  input: a stale one would silently plan transfers from a team you no longer
+  own.
 
 ### Evaluating the models with MLflow
 

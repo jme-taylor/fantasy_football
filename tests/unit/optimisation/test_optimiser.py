@@ -965,14 +965,73 @@ def test_optimise_plan_requires_initial_squad_after_gw1() -> None:
         optimise_plan(season=SEASON, start_gw=10, horizon=2)
 
 
+def test_zero_free_transfers_pays_a_hit_for_every_transfer() -> None:
+    """Having already used the week's transfers is a real state.
+
+    ``my-team`` reports free transfers as an allowance less what has been
+    made, so a mid-week run legitimately arrives with none left; every
+    transfer from there costs four points.
+    """
+    predictions, prices = _feasible_universe([10])
+    star = pl.DataFrame(
+        [
+            {
+                "element": 900,
+                "gw": 10,
+                "name": _display("STAR0"),
+                "position": "FWD",
+                "team": "X0",
+                "value": 50,
+                "predicted_points": 100.0,
+            }
+        ]
+    )
+    predictions = pl.concat([predictions, star])
+    prices[900, 10] = 50
+
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10],
+        start_gw=10,
+        initial_squad=_owned(_LEGAL_SQUAD),
+        free_transfers=0,
+    )
+    assert _solve_problem(prob) == "Optimal"
+    buys = sum(
+        round(var.value()) for (p, t), var in v["buy"].items() if t == 10
+    )
+    assert buys == 1
+    assert round(v["paid"][10].value()) == 1
+
+
+def test_optimise_plan_accepts_zero_free_transfers() -> None:
+    """Zero passes validation; it is a state, not a mistake."""
+    predictions, _ = _feasible_universe([10])
+    with pytest.raises(ValueError, match="initial_squad"):
+        optimise_plan(
+            season=SEASON,
+            start_gw=10,
+            horizon=1,
+            free_transfers=0,
+        )
+
+
 def test_optimise_plan_rejects_bad_free_transfers() -> None:
-    """free_transfers must be within 1..MAX_FREE_TRANSFERS."""
+    """free_transfers must be within 0..MAX_FREE_TRANSFERS."""
     with pytest.raises(ValueError, match="free_transfers"):
         optimise_plan(
             season=SEASON,
             start_gw=1,
             horizon=1,
             free_transfers=6,
+        )
+    with pytest.raises(ValueError, match="free_transfers"):
+        optimise_plan(
+            season=SEASON,
+            start_gw=1,
+            horizon=1,
+            free_transfers=-1,
         )
 
 

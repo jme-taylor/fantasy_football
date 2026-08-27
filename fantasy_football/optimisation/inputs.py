@@ -14,8 +14,10 @@ import polars as pl
 
 from fantasy_football.features.roster import current_roster
 from fantasy_football.fpl_types import PlayerBreakdown
+from fantasy_football.modelling.forward import last_played_gw
 from fantasy_football.storage.tables import (
     FORWARD_KIND,
+    PLAYER_WEEK,
     POINTS_COMPONENT,
     POINTS_PREDICTION,
 )
@@ -250,7 +252,13 @@ def load_component_breakdown(
 def forward_gameweeks(
     season: str, connection: "DuckDBPyConnection | None" = None
 ) -> list[int]:
-    """Return the gameweeks that have forward predictions, in order.
+    """Return the unplayed gameweeks that have forward predictions.
+
+    Played gameweeks are excluded even though their forward rows are
+    still stored. ``replace_partition`` rewrites forward predictions only
+    from the first unplayed gameweek up, which deliberately freezes each
+    week's pre-deadline forecast in place. Those frozen rows are a record
+    of what was predicted, not something left to plan.
 
     Parameters
     ----------
@@ -262,10 +270,12 @@ def forward_gameweeks(
     Returns
     -------
     list[int]
-        Sorted gameweek numbers, empty when nothing has been predicted.
+        Sorted gameweek numbers, empty when nothing is left to predict.
     """
+    played = last_played_gw(PLAYER_WEEK.load(connection), season)
     stored = POINTS_PREDICTION.load(connection).filter(
         (pl.col("season") == season)
         & (pl.col("prediction_kind") == FORWARD_KIND)
+        & (pl.col("gw") > played)
     )
     return sorted(stored["gw"].unique().to_list())

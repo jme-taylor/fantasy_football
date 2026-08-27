@@ -154,6 +154,11 @@ class GoalsMetrics:
     under-predicts its own best players, which is the compression a
     squared-error forest is expected to show -- and that decile is the
     one holding every player worth captaining.
+
+    Attributes
+    ----------
+    poisson_deviance : float
+        The poisson deviance score. This tells us how
     """
 
     poisson_deviance: float

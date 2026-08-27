@@ -531,3 +531,58 @@ def test_played_gameweeks_skips_gameweeks_with_no_deadline(
         2,
         3,
     ]
+
+
+def test_deadline_prices_reads_the_gameweeks_deadline_snapshot(
+    mocker: MockerFixture,
+) -> None:
+    """Prices come from the snapshot active at that gameweek's deadline.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "season_event_deadlines", return_value=_DEADLINES
+    )
+    mocker.patch.object(
+        extractor,
+        "_snapshot_path_for",
+        side_effect=lambda d: f"cache/{d.day}.json.xz",
+    )
+    snapshots = {
+        "cache/21.json.xz": {
+            "elements": [
+                {"id": 55, "now_cost": 80},
+                {"id": 226, "now_cost": 55},
+            ]
+        },
+        "cache/28.json.xz": {"elements": [{"id": 55, "now_cost": 79}]},
+    }
+    mocker.patch.object(
+        extractor, "_read_snapshot", side_effect=lambda p: snapshots[p]
+    )
+
+    assert extractor.deadline_prices("2026-27", 1) == {55: 80, 226: 55}
+    assert extractor.deadline_prices("2026-27", 2) == {55: 79}
+
+
+def test_deadline_prices_rejects_a_gameweek_with_no_deadline(
+    mocker: MockerFixture,
+) -> None:
+    """A gameweek absent from the season's events cannot be priced.
+
+    Parameters
+    ----------
+    mocker : MockerFixture
+        Pytest fixture for mocking.
+    """
+    extractor = _make_extractor()
+    mocker.patch.object(
+        extractor, "season_event_deadlines", return_value=_DEADLINES
+    )
+
+    with pytest.raises(ValueError, match="GW99"):
+        extractor.deadline_prices("2026-27", 99)

@@ -1,6 +1,9 @@
 import logging
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+
+from dotenv import load_dotenv
 
 from fantasy_football.constants import CURRENT_SEASON
 from fantasy_football.extraction.availability import (
@@ -9,6 +12,7 @@ from fantasy_football.extraction.availability import (
 from fantasy_football.extraction.extractor import DataExtractor
 from fantasy_football.extraction.fci import FciExtractor
 from fantasy_football.extraction.fixtures import load_fixtures
+from fantasy_football.extraction.fplcache import FplCacheExtractor
 from fantasy_football.extraction.player_identity import (
     load_player_identity_data,
 )
@@ -103,8 +107,10 @@ from fantasy_football.modelling.yellow_cards import (
 from fantasy_football.optimisation.inputs import forward_gameweeks
 from fantasy_football.optimisation.optimiser import optimise_plan
 from fantasy_football.optimisation.team_input import (
+    SquadUnavailableError,
+    load_public_squad,
     load_team_file,
-    resolve_squad,
+    squad_from_team_file,
 )
 from fantasy_football.storage.database import get_connection, reset_database
 from fantasy_football.storage.tables import (
@@ -115,7 +121,13 @@ from fantasy_football.storage.tables import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from duckdb import DuckDBPyConnection
+
+    from fantasy_football.optimisation.team_input import Squad
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -252,6 +264,101 @@ def check_prior_season_loaded(
         )
 
 
+def deadline_prices(season: str) -> "Callable[[int], dict[int, int]]":
+    """Return a lookup from gameweek to every player's deadline price.
+
+    Purchase prices are what was paid at a deadline. ``player_week.value``
+    is the price at that gameweek's matches, which nightly price moves put
+    up to a few tenths away, so the fplcache deadline snapshot is read
+    instead.
+
+    Parameters
+    ----------
+    season : str
+        The season to price in.
+
+    Returns
+    -------
+    Callable[[int], dict[int, int]]
+        Given a gameweek, element to price in tenths of a million.
+    """
+    extractor = FplCacheExtractor()
+
+    def prices(gw: int) -> dict[int, int]:
+        return extractor.deadline_prices(season, gw)
+
+    return prices
+
+
+def carried_in_squad(team_file: str | None, start_gw: int) -> "Squad | None":
+    """Get the squad being carried into ``start_gw``, if there is one.
+
+    An explicit team file wins over the API: its remaining job is to ask
+    "what if I owned this instead", which only works if passing it
+    overrides the live squad. With no file and no manager id there is
+    nothing to carry in, which is a free build at GW1 and a skipped
+    optimisation after it.
+
+    Parameters
+    ----------
+    team_file : str | None
+        Path to a team JSON, or None to read the live squad.
+    start_gw : int
+        The gameweek the forward predictions start at.
+
+    Returns
+    -------
+    Squad | None
+        The carried-in squad, or None when neither source is configured.
+    """
+    if team_file is not None:
+        return squad_from_team_file(load_team_file(team_file), CURRENT_SEASON)
+
+    manager_id = os.getenv("FPL_MANAGER_ID")
+    if not manager_id:
+        return None
+    return load_public_squad(
+        manager_id,
+        season=CURRENT_SEASON,
+        expected_gameweek=start_gw,
+        free_transfers=free_transfers_from_env(),
+        prices_at_gameweek=deadline_prices(CURRENT_SEASON),
+    )
+
+
+def free_transfers_from_env() -> int:
+    """Read the free transfer count, which FPL publishes nowhere.
+
+    Every other number a carried-in squad needs is on a public endpoint.
+    This one is only on the authenticated ``my-team`` endpoint, which no
+    longer accepts a session cookie, so it is supplied by hand.
+
+    Returns
+    -------
+    int
+        The configured count, defaulting to 1.
+
+    Raises
+    ------
+    ValueError
+        If FPL_FREE_TRANSFERS is set to something that is not a number.
+    """
+    raw = os.getenv("FPL_FREE_TRANSFERS")
+    if raw is None:
+        logger.warning(
+            "FPL_FREE_TRANSFERS is not set; assuming 1 free transfer. Set "
+            "it to what the FPL site shows before trusting the plan's "
+            "transfer costs."
+        )
+        return 1
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(
+            f"FPL_FREE_TRANSFERS must be a whole number, got {raw!r}."
+        ) from None
+
+
 def main(
     *,
     rebuild: bool = False,
@@ -266,9 +373,11 @@ def main(
         recovery escape hatch). Defaults to False, which loads only missing
         immutable seasons and upserts the current season.
     team_file : str | None, optional
-        Path to a name-authored team JSON. Required to optimise once the
-        season is under way: the optimiser needs the squad being carried in.
-        Defaults to None.
+        Path to a team JSON, overriding the live squad. With this unset the
+        squad is read from FPL's public endpoints using FPL_MANAGER_ID,
+        with FPL_FREE_TRANSFERS supplying the one number they do not
+        publish. One or the other is needed to optimise once the season is
+        under way. Defaults to None.
     """
     configure_logging()
     # A rebuild drops and recreates every table, so it is the cure for
@@ -458,7 +567,9 @@ def main(
     finally:
         connection.close()
 
-    team = load_team_file(team_file) if team_file is not None else None
+    # The forward predictions decide which gameweek is being planned, so
+    # they are checked before anything is fetched: a finished season has
+    # no next gameweek for FPL to agree with.
     available = forward_gameweeks(CURRENT_SEASON)
     if not available:
         logger.warning(
@@ -470,25 +581,37 @@ def main(
         return
 
     start_gw = available[0]
-    if team is None:
+    try:
+        squad = carried_in_squad(team_file, start_gw)
+    except SquadUnavailableError as error:
+        logger.warning(
+            "%s Skipping optimisation; the data, models and predictions "
+            "from this run are unaffected.",
+            error,
+        )
+        return
+
+    if squad is None:
         if start_gw > 1:
             logger.warning(
-                "Gameweek %d is mid-season and no team file was given, so "
+                "Gameweek %d is mid-season and no squad was given, so "
                 "there is no squad to carry in; skipping optimisation. The "
                 "data, models and predictions from this run are unaffected. "
-                "Pass team_file to plan transfers.",
+                "Pass team_file, or set FPL_MANAGER_ID, to plan "
+                "transfers.",
                 start_gw,
             )
             return
-        optimise_plan(CURRENT_SEASON, start_gw)
+        optimise_plan(CURRENT_SEASON, start_gw, horizon=37)
         return
 
     optimise_plan(
         CURRENT_SEASON,
-        team.gameweek,
-        initial_squad=resolve_squad(team.players, CURRENT_SEASON),
-        free_transfers=team.free_transfers,
-        bank=team.bank,
+        squad.gameweek,
+        horizon=37,
+        initial_squad=squad.players,
+        free_transfers=squad.free_transfers,
+        bank=squad.bank,
     )
 
 
