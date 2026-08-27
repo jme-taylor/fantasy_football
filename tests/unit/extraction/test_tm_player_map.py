@@ -23,6 +23,8 @@ from fantasy_football.storage.tables import (
     TM_TRANSFER,
 )
 
+TM_BASE_URL = "https://www.transfermarkt.us/x/profil/spieler"
+
 CLUB_MAP = pl.DataFrame(
     {
         "tm_club": ["Manchester City", "Tottenham Hotspur"],
@@ -89,7 +91,7 @@ def _add_tm_player(
     dob_date: date | None,
     team: str = "Manchester City",
 ) -> None:
-    """Insert one Transfermarkt player."""
+    """Insert one Transfermarkt player, with its profile link."""
     TM_PLAYER.append(
         connection,
         TM_PLAYER.conform(
@@ -97,6 +99,7 @@ def _add_tm_player(
                 {
                     "tm_player_id": [tm_player_id],
                     "name": [name],
+                    "player_link": [f"{TM_BASE_URL}/{tm_player_id}"],
                     "dob_date": [dob_date],
                     "team": [team],
                     "scraped_at": [datetime(2026, 8, 27, 12, 0)],
@@ -375,6 +378,10 @@ def test_the_report_offers_candidates_in_the_override_schema(
         "tm_name",
     ]
     assert report["tm_player_id"].to_list() == ["near", "far"]
+    assert report["tm_player_link"].to_list() == [
+        f"{TM_BASE_URL}/near",
+        f"{TM_BASE_URL}/far",
+    ]
 
 
 def test_a_matched_player_is_absent_from_the_report(

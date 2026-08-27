@@ -257,6 +257,7 @@ def _register_sources(
             tm_player_id,
             dob_date,
             name AS tm_name,
+            player_link AS tm_player_link,
             {_normalised_name("name")} AS name_norm,
             {_surname(_normalised_name("name"))} AS surname_norm
         FROM tm_player
@@ -524,7 +525,8 @@ def unmatched_report(
 
     The rows carry the override file's own columns first, so a correct
     candidate is pasted straight across, with the evidence that produced
-    it alongside for eyeballing.
+    it alongside for eyeballing -- including the Transfermarkt page, so a
+    doubtful one is one click away.
 
     Parameters
     ----------
@@ -549,6 +551,7 @@ def unmatched_report(
                 t.tm_player_id,
                 f.fpl_name,
                 t.tm_name,
+                t.tm_player_link,
                 f.birth_date,
                 t.dob_date,
                 jaro_winkler_similarity(f.name_norm, t.name_norm) AS score,
@@ -569,6 +572,7 @@ def unmatched_report(
             tm_player_id,
             fpl_name,
             tm_name,
+            tm_player_link,
             birth_date AS fpl_birth_date,
             dob_date AS tm_dob_date,
             score AS name_similarity
