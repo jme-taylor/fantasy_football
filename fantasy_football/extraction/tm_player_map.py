@@ -19,6 +19,13 @@ an earlier rung is never offered to a later one:
 2. ``dob_fuzzy_name``   -- date of birth plus a similar full name
 3. ``dob_surname``      -- date of birth plus a similar surname
 4. ``club_exact_name``  -- no date of birth either side: exact name + club
+5. ``exact_name``       -- an exact name unique on both sides, no DOB used
+6. ``exact_name_dob_conflict`` -- as above, but the two dates disagree
+
+The last two carry no date-of-birth evidence at all, so they lean entirely
+on the name being the only one of its kind on both sides. The sixth is
+split out because a shared name over two different birthdays is the
+likeliest place for a wrong match to hide; query it to audit.
 
 Within a rung, a player with two or more surviving candidates is left
 unmatched rather than guessed at. Everything unmatched lands in the
@@ -351,6 +358,17 @@ _SOLE_ON_DOB = """
     )
 """
 
+# Both sides know a date of birth and they disagree. An exact name still
+# matches on it, but under its own rung name so the weakest evidence in
+# the map stays queryable.
+_DOB_CONFLICT = """
+    (
+        f.birth_date IS NOT NULL
+        AND t.dob_date IS NOT NULL
+        AND f.birth_date <> t.dob_date
+    )
+"""
+
 _SHARED_CLUB = """
     EXISTS (
         SELECT 1
@@ -407,6 +425,16 @@ def _rungs(threshold: float) -> tuple[Rung, ...]:
             "club_exact_name",
             "(f.birth_date IS NULL OR t.dob_date IS NULL) "
             f"AND f.name_norm = t.name_norm AND {_SHARED_CLUB}",
+            "1.0",
+        ),
+        Rung(
+            "exact_name",
+            f"f.name_norm = t.name_norm AND NOT {_DOB_CONFLICT}",
+            "1.0",
+        ),
+        Rung(
+            "exact_name_dob_conflict",
+            f"f.name_norm = t.name_norm AND {_DOB_CONFLICT}",
             "1.0",
         ),
     )

@@ -237,14 +237,26 @@ def test_a_shared_surname_matches_when_the_full_name_does_not(
     assert _build(db)["match_rung"].to_list() == ["dob_surname"]
 
 
-def test_two_candidates_on_one_birthday_are_left_to_the_human(
+def test_two_near_candidates_on_one_birthday_are_left_to_the_human(
     db: duckdb.DuckDBPyConnection,
 ) -> None:
     """Ambiguity goes to the override file rather than to the better score."""
     _add_fpl_player(db, 666, "Danny", "Ings", date(1992, 7, 23))
+    _add_tm_player(db, "1", "Dany Ings", date(1992, 7, 23))
+    _add_tm_player(db, "2", "Danni Ings", date(1992, 7, 23))
+    assert _build(db).is_empty()
+
+
+def test_an_exact_name_wins_a_crowded_birthday(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """One exact name among the near misses is claimed without asking."""
+    _add_fpl_player(db, 666, "Danny", "Ings", date(1992, 7, 23))
     _add_tm_player(db, "1", "Danny Ings", date(1992, 7, 23))
     _add_tm_player(db, "2", "Dany Ings", date(1992, 7, 23))
-    assert _build(db).is_empty()
+    matches = _build(db)
+    assert matches["tm_player_id"].to_list() == ["1"]
+    assert matches["match_rung"].to_list() == ["exact_name"]
 
 
 def test_a_null_birth_date_falls_back_to_name_and_club(
@@ -258,13 +270,33 @@ def test_a_null_birth_date_falls_back_to_name_and_club(
     assert _build(db)["match_rung"].to_list() == ["club_exact_name"]
 
 
-def test_a_null_birth_date_at_a_different_club_stays_unmatched(
+def test_a_sole_exact_name_matches_without_a_shared_club(
     db: duckdb.DuckDBPyConnection,
 ) -> None:
-    """Name alone, with no birthday and no shared club, is not a match."""
+    """Being the only one of that name is evidence enough on its own."""
     _add_fpl_player(db, 888, "James", "Smith", None, team="Man City")
     _add_tm_player(db, "3", "James Smith", None, team="Tottenham Hotspur")
+    assert _build(db)["match_rung"].to_list() == ["exact_name"]
+
+
+def test_two_players_of_the_same_name_are_left_to_the_human(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """The exact-name rungs claim a name only when it is unique."""
+    _add_fpl_player(db, 889, "James", "Smith", None)
+    _add_tm_player(db, "4", "James Smith", None)
+    _add_tm_player(db, "5", "James Smith", date(1999, 1, 1))
     assert _build(db).is_empty()
+
+
+def test_an_exact_name_over_clashing_birthdays_is_flagged(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """Still matched, but under the rung that says why to distrust it."""
+    _add_fpl_player(db, 890, "James", "Smith", date(1990, 1, 1))
+    _add_tm_player(db, "6", "James Smith", date(1995, 5, 5))
+    matches = _build(db)
+    assert matches["match_rung"].to_list() == ["exact_name_dob_conflict"]
 
 
 def test_a_club_matches_through_a_transfer_row(
