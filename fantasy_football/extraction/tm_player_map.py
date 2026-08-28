@@ -66,6 +66,11 @@ REPORT_CANDIDATES = 3
 
 OVERRIDE_COLUMNS = ("player_code", "tm_player_id", "fpl_name", "tm_name")
 
+# FPL sells managers alongside players and gives them their own element
+# type, which player_identity maps to a null position. Transfermarkt has
+# no counterpart, so they are dropped rather than left to be guessed at.
+PLAYER_POSITIONS = ("GK", "DEF", "MID", "FWD")
+
 
 def _normalised_name(column: str) -> str:
     """Return SQL normalising a name column for comparison.
@@ -157,6 +162,12 @@ def load_overrides(path: Path | None = None) -> pl.DataFrame:
     return frame
 
 
+def _sql_tuple(values: tuple[str, ...]) -> str:
+    """Render a tuple of labels as a SQL ``IN`` list."""
+    joined = ", ".join(f"'{value}'" for value in values)
+    return f"({joined})"
+
+
 def _temp_table(
     connection: "duckdb.DuckDBPyConnection",
     name: str,
@@ -226,6 +237,9 @@ def _register_sources(
             FROM player_season
             WHERE player_code IS NOT NULL
             GROUP BY player_code
+            HAVING count(*) FILTER (
+                WHERE position IN {_sql_tuple(PLAYER_POSITIONS)}
+            ) > 0
         ),
         weeks AS (
             SELECT ps.player_code, count(*) AS player_weeks

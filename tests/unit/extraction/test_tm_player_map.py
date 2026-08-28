@@ -51,11 +51,13 @@ def _add_fpl_player(
     team: str = "Man City",
     season: str = "2026-27",
     with_week: bool = True,
+    position: str | None = "MID",
 ) -> None:
     """Insert one FPL player, with a player-week row giving them a club.
 
     ``with_week`` off leaves them registered but never appearing, which is
-    what a squad member who played no minutes looks like.
+    what a squad member who played no minutes looks like. A null
+    ``position`` is what a manager looks like.
     """
     element = player_code % 1000
     PLAYER_SEASON.append(
@@ -68,6 +70,7 @@ def _add_fpl_player(
                     "player_code": [player_code],
                     "first_name": [first_name],
                     "second_name": [second_name],
+                    "position": [position],
                     "birth_date": [birth_date],
                 }
             )
@@ -515,3 +518,33 @@ def test_the_report_counts_the_player_weeks_behind_each_row(
     _add_tm_player(db, "8", "Wojciech Szczesny", date(1990, 4, 18))
     report = unmatched_report(db, _build(db))
     assert report["fpl_player_weeks"].to_list() == [1]
+
+
+def test_a_manager_is_never_matched_or_reported(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """FPL sells managers; Transfermarkt has no counterpart to match."""
+    _add_fpl_player(db, 51, "David", "Moyes", date(1963, 4, 25), position=None)
+    _add_tm_player(db, "9", "David Moyes", date(1963, 4, 25))
+    assert _build(db).is_empty()
+    assert unmatched_report(db, _build(db)).is_empty()
+
+
+def test_a_player_managing_later_is_still_matched(
+    db: duckdb.DuckDBPyConnection,
+) -> None:
+    """One playing season is enough; the null-position seasons do not veto."""
+    _add_fpl_player(
+        db, 52, "Wayne", "Rooney", date(1985, 10, 24), season="2016-17"
+    )
+    _add_fpl_player(
+        db,
+        52,
+        "Wayne",
+        "Rooney",
+        date(1985, 10, 24),
+        season="2026-27",
+        position=None,
+    )
+    _add_tm_player(db, "3332", "Wayne Rooney", date(1985, 10, 24))
+    assert _build(db)["match_rung"].to_list() == ["dob_exact_name"]
