@@ -53,6 +53,7 @@ from fantasy_football.storage.tables import (
     TEAM_FIXTURE,
     TEST_MINUTES_PREDICTION,
 )
+from fantasy_football.storage.coverage import FPL_STAT_SEASONS
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,11 @@ NUM_FEATURES = [
 CAT_FEATURES = ["position"]
 BOOL_FEATURES = ["is_pl_newcomer", "is_promoted_club"]
 FEATURES = NUM_FEATURES + CAT_FEATURES + BOOL_FEATURES
+
+TRAINING_START_SEASON = "2020-21"
+TRAINING_SEASONS: tuple[str, ...] = tuple(
+    season for season in FPL_STAT_SEASONS if season >= TRAINING_START_SEASON
+)
 
 # HISTORY_FEATURES and COLD_START_FEATURES are imported (rather than only used
 # in features/history.py) so this assertion catches drift between this
@@ -210,6 +216,7 @@ def build_feature_frame(
     frame = frame.with_columns(
         [pl.col(column).cast(pl.Int8) for column in BOOL_FEATURES]
     )
+    frame = frame.filter(pl.col("season").is_in(TRAINING_SEASONS))
     return frame.select(
         ["season", "gw", "element", "position", *NUM_FEATURES, *BOOL_FEATURES]
     )
