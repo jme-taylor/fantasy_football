@@ -1,6 +1,7 @@
 import logging
 import os
 from collections.abc import Callable
+from datetime import date
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -118,6 +119,8 @@ from fantasy_football.storage.tables import (
     FORWARD_KIND,
     PLAYER_WEEK,
     TEAM_FIXTURE,
+    TM_MARKET_VALUE,
+    TM_PLAYER_MAP,
 )
 
 if TYPE_CHECKING:
@@ -359,6 +362,103 @@ def free_transfers_from_env() -> int:
         ) from None
 
 
+# The minutes model reads Transfermarkt features, but the tm_* tables are
+# not populated by main() -- scripts/scrape_transfermarkt.py fills them by
+# hand. These are the thresholds a manual refresh has to clear.
+TM_MAX_VALUE_AGE_DAYS = 45
+TM_MIN_MAP_COVERAGE = 0.9
+
+
+def check_transfermarkt_freshness(
+    connection: "DuckDBPyConnection", season: str = CURRENT_SEASON
+) -> None:
+    """Assert the Transfermarkt tables are fresh enough to predict from.
+
+    Two different failures wear the same symptom -- a minutes model quietly
+    reading nulls -- so both are checked. A stale ``tm_market_value`` means
+    the scrape was not run; thin ``tm_player_map`` coverage means it was run
+    but the new arrivals did not match, which is what the manual override
+    file exists to patch. Neither is recoverable from inside main(), so both
+    raise rather than warn.
+
+    Coverage is measured over players who have actually appeared this
+    season. Before a ball is kicked no one has, and the check falls back to
+    staleness alone rather than failing on an unmeasurable ratio.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        Open connection to the database, after extraction has run.
+    season : str, optional
+        The current season. Defaults to ``CURRENT_SEASON``.
+
+    Raises
+    ------
+    RuntimeError
+        If the newest valuation is older than
+        :data:`TM_MAX_VALUE_AGE_DAYS`, or map coverage of players who have
+        appeared is below :data:`TM_MIN_MAP_COVERAGE`.
+    """
+    remedy = (
+        "Re-run scripts/scrape_transfermarkt.py (add --map-only to rebuild "
+        "just the player map) and try again."
+    )
+    newest = connection.sql(
+        f"SELECT MAX(value_date) FROM {TM_MARKET_VALUE.name}"
+    ).fetchone()
+    if newest is None or newest[0] is None:
+        raise RuntimeError(f"{TM_MARKET_VALUE.name} is empty. {remedy}")
+    age = (date.today() - newest[0]).days
+    if age > TM_MAX_VALUE_AGE_DAYS:
+        raise RuntimeError(
+            f"Newest Transfermarkt valuation is {age} days old (limit "
+            f"{TM_MAX_VALUE_AGE_DAYS}). The minutes model would price every "
+            f"player off a stale scrape. {remedy}"
+        )
+
+    counts = connection.sql(
+        f"""
+        SELECT
+             COUNT(*) AS appeared
+            ,COUNT(m.tm_player_id) AS mapped
+
+        FROM (
+            SELECT DISTINCT w.element
+            FROM {PLAYER_WEEK.name} AS w
+            WHERE w.season = '{season}' AND w.minutes > 0
+        ) AS played
+        JOIN player_season AS ps
+            ON ps.season = '{season}'
+            AND ps.element = played.element
+        LEFT JOIN {TM_PLAYER_MAP.name} AS m
+            ON m.player_code = ps.player_code
+        """
+    ).fetchone()
+    appeared, mapped = counts or (0, 0)
+    if not appeared:
+        logger.info(
+            "No %s appearances yet; Transfermarkt map coverage unmeasurable, "
+            "checked valuation freshness only.",
+            season,
+        )
+        return
+    coverage = mapped / appeared
+    if coverage < TM_MIN_MAP_COVERAGE:
+        raise RuntimeError(
+            f"Only {mapped}/{appeared} ({coverage:.1%}) of {season} players "
+            f"who have appeared map to Transfermarkt, below "
+            f"{TM_MIN_MAP_COVERAGE:.0%}. Their Transfermarkt features would "
+            f"all be null. {remedy}"
+        )
+    logger.info(
+        "Transfermarkt data fresh: newest valuation %s days old, map covers "
+        "%d/%d players who have appeared.",
+        age,
+        mapped,
+        appeared,
+    )
+
+
 def main(
     *,
     rebuild: bool = False,
@@ -396,6 +496,7 @@ def main(
         load_player_identity_data(connection, CURRENT_SEASON)
         load_player_snapshot(CURRENT_SEASON, connection)
         check_prior_season_loaded(connection, CURRENT_SEASON)
+        check_transfermarkt_freshness(connection, CURRENT_SEASON)
 
         # TODO(JT): Add a single method to predictor to do all of these in
         # one. Five near-identical train/backfill/forward blocks now, one
@@ -602,13 +703,13 @@ def main(
                 start_gw,
             )
             return
-        optimise_plan(CURRENT_SEASON, start_gw, horizon=37)
+        optimise_plan(CURRENT_SEASON, start_gw, horizon=38)
         return
 
     optimise_plan(
         CURRENT_SEASON,
         squad.gameweek,
-        horizon=37,
+        horizon=38,
         initial_squad=squad.players,
         free_transfers=squad.free_transfers,
         bank=squad.bank,

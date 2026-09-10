@@ -170,6 +170,7 @@ def _seed_roster(
                 "team": "T",
                 "position": "MID",
                 "chance_of_playing_this_round": 100,
+                "status": "a",
             }
             for element in dict.fromkeys(elements)
         ]

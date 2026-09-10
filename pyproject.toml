@@ -17,6 +17,7 @@ dependencies = [
     "scraperfc",
     "pulp>=3.3.2",
     "polars>=1.44.1",
+    "xgboost>=3.4.1",
 ]
 
 [dependency-groups]

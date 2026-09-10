@@ -450,7 +450,7 @@ def test_cross_validate_of_a_single_fold_reports_no_spread(
     folds = list(predictor.fold_strategy.split(model_df))
     per_fold, agg = predictor.cross_validate(folds)
     assert len(per_fold) == 1
-    assert "holdout_mae" in agg
+    assert "mae" in agg
     assert not any(key.endswith(("_mean", "_std")) for key in agg)
 
 
@@ -576,10 +576,10 @@ def test_train_and_register_model_logs_and_registers(
 def test_train_and_register_model_prefixes_per_fold_metrics(
     predictor, synthetic_frame, mocker
 ) -> None:
-    """Per-fold series are prefixed too, or holdout and CV runs collide.
+    """Per-fold series carry the strategy's prefix too.
 
-    A bare ``mae`` at step 0 would land in the same MLflow series as
-    every historical cross-validated ``mae``.
+    An unprefixed ``mae`` at step 0 would land in the same MLflow series
+    as a single holdout's, which is a different quantity.
     """
     predictor._model_dataframe = synthetic_frame(predictor)
     patched = _patch_mlflow(mocker)

@@ -31,6 +31,7 @@ def snapshot() -> pl.DataFrame:
             "team": ["Arsenal", "Arsenal"],
             "position": ["DEF", "FWD"],
             "chance_of_playing_this_round": [100, 75],
+            "status": ["a", "a"],
         }
     )
 
@@ -81,6 +82,7 @@ def test_latest_snapshot_returns_only_the_latest_capture() -> None:
             "team": ["Arsenal", "Arsenal", "Arsenal"],
             "position": ["DEF", "DEF", "FWD"],
             "chance_of_playing_this_round": [100, 100, 75],
+            "status": ["a", "a", "a"],
         }
     )
 
@@ -90,6 +92,47 @@ def test_latest_snapshot_returns_only_the_latest_capture() -> None:
     assert result["captured_at"].n_unique() == 1
     assert result["captured_at"][0] == datetime(2026, 7, 31, 12, 0)
     assert sorted(result["element"].to_list()) == [1, 2]
+
+
+def test_latest_snapshot_drops_departed_players() -> None:
+    """A player FPL marks unavailable is not part of the current roster."""
+    snapshot = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 3,
+            "captured_at": [datetime(2026, 7, 31, 12, 0)] * 3,
+            "element": [1, 2, 3],
+            "value": [50, 90, 78],
+            "team": ["Arsenal", "Arsenal", "Aston Villa"],
+            "position": ["DEF", "FWD", "FWD"],
+            "chance_of_playing_this_round": [100, 75, None],
+            "status": ["a", "i", "u"],
+        }
+    )
+
+    result = latest_snapshot(snapshot, "2026-27")
+
+    assert sorted(result["element"].to_list()) == [1, 2]
+
+
+def test_latest_snapshot_keeps_players_with_no_status() -> None:
+    """Captures taken before the status column existed are still usable."""
+    snapshot = pl.DataFrame(
+        {
+            "season": ["2026-27"] * 2,
+            "captured_at": [datetime(2026, 7, 31, 12, 0)] * 2,
+            "element": [1, 2],
+            "value": [50, 90],
+            "team": ["Arsenal", "Arsenal"],
+            "position": ["DEF", "FWD"],
+            "chance_of_playing_this_round": [100, 75],
+            "status": [None, None],
+        },
+        schema_overrides={"status": pl.Utf8},
+    )
+
+    result = latest_snapshot(snapshot, "2026-27")
+
+    assert result.height == 2
 
 
 def test_latest_snapshot_empty_for_missing_season() -> None:
@@ -103,6 +146,7 @@ def test_latest_snapshot_empty_for_missing_season() -> None:
             "team": ["Arsenal"],
             "position": ["DEF"],
             "chance_of_playing_this_round": [100],
+            "status": ["a"],
         }
     )
 

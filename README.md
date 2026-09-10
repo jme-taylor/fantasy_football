@@ -285,7 +285,8 @@ from `2022-23` (fplcache's earliest snapshots, set by `FPLCACHE_FIRST_SEASON`).
 
 ## Minutes-played model
 
-`modelling/minutes.py` trains a single 3-class classifier that predicts each
+`modelling/minutes.py` trains a single 3-class gradient-boosted classifier
+(XGBoost) that predicts each
 player's minutes bucket for an upcoming match: benched (`0_minutes`), partial
 (`1_to_59_minutes`), or a full-ish shift (`60_minutes_plus`). It is scored on
 the two decision boundaries the downstream points models care about —
@@ -293,17 +294,43 @@ probability of *any* appearance and probability of a *60+ minute* appearance —
 cross-validated with an expanding window over seasons, then refit on all
 seasons and logged to MLflow (experiment `minutes_played_classification`).
 
+Numeric features pass through the pipeline unimputed and unscaled: XGBoost
+learns a missing-direction per split, which says more than a median stand-in,
+and trees are indifferent to scale. Categoricals are one-hot encoded with
+nulls mapped to an explicit `unknown` category, and the label encoder lives
+inside the estimator so `classes_` stays string-valued end to end.
+
 Its features are assembled from the `player_match`, `player_week`,
-`player_availability` and `player_season` tables. Contemporaneous features
-(knowable at the deadline): value, value share of team, positional value rank,
-number of same-position teammates, FPL chance-of-playing, positional
-availability (fit same-club, same-position rivals ahead and at the same
-position), rolling 5-match minutes, and games played so far this season.
-Cross-season features, joined through `player_season.player_code` (see
-[Storage](#storage)): previous-season minutes, start rate and points-per-start,
-seasons played in the Premier League, seasons since the player was last in the
-Premier League, age, days since joining the current club, whether the player
-is a Premier League newcomer, and whether their club was promoted. These
+`player_availability`, `player_season` and `tm_*` tables. Contemporaneous
+features (knowable at the deadline): number of same-position teammates, FPL
+chance-of-playing, positional availability (fit same-club, same-position
+rivals ahead and at the same position), rolling 5-match minutes, and games
+played so far this season. Cross-season features, joined through
+`player_season.player_code` (see [Storage](#storage)): previous-season minutes
+and start rate, seasons played in the Premier League, seasons since the player
+was last in the Premier League, age, whether the player is a Premier League
+newcomer, and whether their club was promoted.
+
+Transfermarkt features (`features/transfermarkt.py`) run on two clocks.
+Features derived from matches the player has played — minutes in each of the
+last two games, days between them, season-to-date minutes and share of the
+club's position-group minutes — **freeze** at the last played match, so a
+forward gameweek inherits the state entering it and does not drift. Features
+derived from the calendar — market value as of the fixture, and the count,
+value and recency of rivals signed into the same position group within the
+last 365 days — read the fixture's **own kickoff**, because a valuation or a
+signing is a known fact at prediction time. Freezing those would hide a summer
+signing from every pre-season prediction, which is the failure that motivated
+the model: a keeper predicted as his club's number one after a replacement had
+already been bought.
+
+The `tm_*` tables are populated by hand (`scripts/scrape_transfermarkt.py`),
+so `main()` calls `check_transfermarkt_freshness()` before predicting. It
+fails loudly on valuations older than 45 days, and on fewer than 90% of the
+season's actual appearers mapping to Transfermarkt — two different failures
+that otherwise share one symptom, a model quietly reading nulls. Players with
+no Transfermarkt match are never filtered out: their TM features are null and
+the model reads the absence as signal. These
 reach across the summer break, which is what lets the model say anything
 useful about a player at GW1 of a new season, before any in-season evidence
 exists — previously it had nothing but contemporaneous, in-season signal. The

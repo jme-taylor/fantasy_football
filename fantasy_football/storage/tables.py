@@ -483,6 +483,7 @@ PLAYER_SNAPSHOT = Table(
         "team": pl.Utf8,
         "position": pl.Utf8,
         "chance_of_playing_this_round": pl.Int64,
+        "status": pl.Utf8,
     },
     primary_key=("season", "captured_at", "element"),
     order_by=("season", "captured_at", "element"),

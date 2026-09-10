@@ -149,6 +149,7 @@ class FplAPI:
                     chance_of_playing_this_round=player.get(
                         "chance_of_playing_this_round"
                     ),
+                    status=player.get("status"),
                 )
                 players.append(fpl_player)
             self._players = players

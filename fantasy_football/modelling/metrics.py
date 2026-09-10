@@ -372,14 +372,34 @@ def aggregate(per_fold: Sequence[Metrics]) -> dict[str, float]:
     return agg
 
 
+def metric_name(prefix: str | None, key: str) -> str:
+    """Name one metric for MLflow, under its strategy's prefix.
+
+    Parameters
+    ----------
+    prefix : str | None
+        The fold strategy's ``metric_prefix``. None leaves the key bare.
+    key : str
+        The metric's own name.
+
+    Returns
+    -------
+    str
+        The name to log under.
+    """
+    return key if prefix is None else f"{prefix}_{key}"
+
+
 def summarise(
-    per_fold: Sequence[Metrics], prefix: str, aggregated: bool
+    per_fold: Sequence[Metrics], prefix: str | None, aggregated: bool
 ) -> dict[str, float]:
     """Name a run's scores for MLflow, under its strategy's prefix.
 
-    The prefix keeps a pooled holdout error out of the same MLflow column
-    as a mean of per-gameweek errors: they are different quantities and
-    would otherwise be compared by eye.
+    The prefix keeps a mean of per-gameweek errors out of the same MLflow
+    column as a single pooled error: they are different quantities and
+    would otherwise be compared by eye. A strategy scoring one fold needs
+    no prefix, since the aggregating strategies carry ``_mean``/``_std``
+    that already tell the two apart.
 
     ``aggregated`` is the strategy's own answer, not a count of the folds
     that happened to survive. A cross-validating strategy always reports
@@ -393,7 +413,7 @@ def summarise(
     ----------
     per_fold : Sequence[Metrics]
         One entry per scored fold.
-    prefix : str
+    prefix : str | None
         The fold strategy's ``metric_prefix``.
     aggregated : bool
         The fold strategy's ``aggregates``.
@@ -406,4 +426,4 @@ def summarise(
     if not per_fold:
         return {}
     scores = aggregate(per_fold) if aggregated else per_fold[0].as_dict()
-    return {f"{prefix}_{key}": value for key, value in scores.items()}
+    return {metric_name(prefix, key): value for key, value in scores.items()}

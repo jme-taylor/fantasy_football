@@ -41,6 +41,7 @@ def _api(mocker: pytest_mock.MockerFixture) -> object:
             team_id=1,
             element_type=1,
             chance_of_playing_this_round=None,
+            status="a",
         ),
         FplPlayer(
             id=2,
@@ -52,6 +53,7 @@ def _api(mocker: pytest_mock.MockerFixture) -> object:
             team_id=2,
             element_type=4,
             chance_of_playing_this_round=50,
+            status="u",
         ),
     ]
     api.get_teams.return_value = [
@@ -76,6 +78,8 @@ def test_build_snapshot_maps_position_and_team(
     assert rows[2]["position"] == "FWD"
     assert rows[2]["value"] == 110
     assert rows[2]["chance_of_playing_this_round"] == 50
+    assert rows[1]["status"] == "a"
+    assert rows[2]["status"] == "u"
 
 
 def test_load_player_snapshot_writes_normalised_rows(

@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS player_snapshot (
     team VARCHAR,
     position VARCHAR,
     chance_of_playing_this_round BIGINT,
+    status VARCHAR,
     PRIMARY KEY (season, captured_at, element)
 )
 """

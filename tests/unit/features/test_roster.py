@@ -11,7 +11,13 @@ from fantasy_football.storage.database import get_connection
 from fantasy_football.storage.tables import PLAYER_SEASON, PLAYER_SNAPSHOT
 
 
-def _seed(tmp_path, monkeypatch, season="2026-27", captures=1) -> None:
+def _seed(
+    tmp_path,
+    monkeypatch,
+    season="2026-27",
+    captures=1,
+    departed_element: int | None = None,
+) -> None:
     """Seed player_snapshot and player_season into a tmp database."""
     stamps = [datetime(2026, 7, 20, 12, 0), datetime(2026, 7, 30, 12, 0)]
     rows = []
@@ -39,6 +45,8 @@ def _seed(tmp_path, monkeypatch, season="2026-27", captures=1) -> None:
             "chance_of_playing_this_round": 100,
         }
     )
+    for row in rows:
+        row["status"] = "u" if row["element"] == departed_element else "a"
     snapshot = pl.DataFrame(rows)
     identity = pl.DataFrame(
         {
@@ -80,6 +88,7 @@ def test_current_roster_joins_snapshot_to_identity(
 
     assert sorted(roster.columns) == [
         "element",
+        "is_departed",
         "name",
         "player_code",
         "position",
@@ -105,6 +114,24 @@ def test_current_roster_uses_only_the_newest_capture(
     assert (
         roster.filter(pl.col("name") == "Bukayo Saka")["value"].item() == 135
     )
+
+
+def test_current_roster_flags_departed_players(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A departed player stays on the roster, marked, so he can be sold."""
+    _seed(tmp_path, monkeypatch, departed_element=56)
+
+    roster = current_roster("2026-27")
+
+    departed = dict(
+        zip(
+            roster["element"].to_list(),
+            roster["is_departed"].to_list(),
+            strict=True,
+        )
+    )
+    assert departed == {55: False, 56: True}
 
 
 def test_current_roster_is_empty_for_a_season_with_no_snapshot(

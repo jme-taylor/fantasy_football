@@ -284,6 +284,7 @@ def _build_problem(
 
     Decision variables, per player p and week t:
       own[p,t], start[p,t], cap[p,t], buy[p,t], sell[p,t]  (all binary)
+      buy and start are pinned to 0 for a player who has left the league
       ft[t]   integer free transfers banked at the start of week t (0..5)
       paid[t] integer transfers paid for as hits in week t (>= 0)
       bank[t] continuous money held after week t's transfers settle (>= 0)
@@ -348,6 +349,17 @@ def _build_problem(
         (row["element"], row["gw"]): row["predicted_points"]
         for row in predictions.iter_rows(named=True)
     }
+    # Backfill and hand-built frames carry no availability column; only the
+    # optimiser inputs do, and only they can hold a departed player.
+    departed = (
+        set(
+            predictions.filter(pl.col("is_departed"))["element"]
+            .unique()
+            .to_list()
+        )
+        if "is_departed" in predictions.columns
+        else set()
+    )
 
     prob = pulp.LpProblem("fpl_optimisation", pulp.LpMaximize)
 
@@ -394,6 +406,12 @@ def _build_problem(
             prob += count >= lo
             prob += count <= hi
         prob += pulp.lpSum(cap[p, t] for p in players) == 1
+        # A departed player can be carried in and sold, never bought or
+        # fielded. Zero points alone would not stop the solver starting
+        # him, since an eleventh starter costs nothing.
+        for p in departed:
+            prob += buy[p, t] == 0
+            prob += start[p, t] == 0
 
     free_build = initial_squad is None
     purchase = {

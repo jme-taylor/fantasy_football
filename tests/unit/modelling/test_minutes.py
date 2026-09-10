@@ -18,15 +18,18 @@ from fantasy_football.modelling.minutes import (
     BUCKET_PARTIAL,
     BUCKET_SIXTY_PLUS,
     BUCKET_ZERO,
+    CAT_FEATURES,
     FEATURES,
     MINUTES_BUCKETS,
     MINUTES_SPEC,
+    NUM_FEATURES,
     MinutesPredictor,
     boundary_metrics,
     build_feature_frame,
     build_model_frame,
     create_minutes_bucket,
     make_pipeline,
+    prepare_features,
     score_minutes,
 )
 from fantasy_football.storage.tables import (
@@ -37,6 +40,10 @@ from fantasy_football.storage.tables import (
     PLAYER_WEEK,
     TEAM_FIXTURE,
     TEST_MINUTES_PREDICTION,
+    TM_MARKET_VALUE,
+    TM_PLAYER,
+    TM_PLAYER_MAP,
+    TM_TRANSFER,
 )
 
 
@@ -127,6 +134,26 @@ def _team_fixture() -> pl.DataFrame:
     )
 
 
+def _transfermarkt_tables(
+    players: pl.DataFrame | None = None,
+    player_map: pl.DataFrame | None = None,
+    market_value: pl.DataFrame | None = None,
+    transfers: pl.DataFrame | None = None,
+) -> tuple[pl.DataFrame, ...]:
+    """Return the four Transfermarkt frames, empty unless supplied.
+
+    Empty is the realistic default for a test that is not about
+    Transfermarkt: every TM feature goes null, which is exactly what an
+    unmapped player looks like in production.
+    """
+    supplied = (players, player_map, market_value, transfers)
+    tables = (TM_PLAYER, TM_PLAYER_MAP, TM_MARKET_VALUE, TM_TRANSFER)
+    return tuple(
+        pl.DataFrame(schema=table.schema) if frame is None else frame
+        for frame, table in zip(supplied, tables, strict=True)
+    )
+
+
 def test_build_feature_frame_has_one_row_per_player_week() -> None:
     """Feature frame keeps the player-week grain and the feature columns."""
     frame = build_feature_frame(
@@ -135,18 +162,19 @@ def test_build_feature_frame_has_one_row_per_player_week() -> None:
         _history_player_match(),
         _player_season(),
         _team_fixture(),
+        *_transfermarkt_tables(),
     )
 
     assert frame.height == 3
     for column in ["season", "gw", "element", "position", *FEATURES]:
         assert column in frame.columns
-    # Arsenal MID pecking order: element 1 (value 70) ranks above element 2.
-    ranks = {
-        row["element"]: row["pos_value_rank"]
+    # Two Arsenal midfielders, so both see a two-strong position group.
+    group_sizes = {
+        row["element"]: row["players_same_pos"]
         for row in frame.iter_rows(named=True)
     }
-    assert ranks[1] == 1
-    assert ranks[2] == 2
+    assert group_sizes[1] == 2
+    assert group_sizes[2] == 2
 
 
 def test_build_model_frame_joins_features_onto_matches() -> None:
@@ -157,6 +185,7 @@ def test_build_model_frame_joins_features_onto_matches() -> None:
         _history_player_match(),
         _player_season(),
         _team_fixture(),
+        *_transfermarkt_tables(),
     )
     player_match = pl.DataFrame(
         {
@@ -227,28 +256,15 @@ def test_make_pipeline_fits_and_predicts_proba() -> None:
             "value_share_of_team": rng.random(n),
             "pos_value_rank": rng.integers(1, 6, n),
             "players_same_pos": rng.integers(1, 6, n),
-            "chance_of_playing_this_round": rng.choice([0, 75, 100], n),
-            "fit_rivals_same_pos": rng.integers(0, 4, n),
-            "fit_rivals_ahead": rng.integers(0, 4, n),
-            "avg_minutes_rolling_5": rng.random(n) * 90,
-            "games_played_this_season": rng.integers(0, 10, n),
-            "prev_season_minutes": rng.integers(0, 3000, n),
-            "prev_season_start_rate": rng.random(n),
-            "prev_season_points_per_start": rng.random(n) * 6,
-            "pl_seasons_played": rng.integers(0, 5, n),
-            "seasons_since_last_pl": rng.integers(0, 3, n),
-            "age_years": rng.random(n) * 15 + 17,
-            "days_since_team_join": rng.random(n) * 3000,
-            "position": rng.choice(["GK", "DEF", "MID", "FWD"], n),
-            "is_pl_newcomer": rng.integers(0, 2, n),
-            "is_promoted_club": rng.integers(0, 2, n),
             "minutes_bucket": rng.choice(MINUTES_BUCKETS, n),
+            **{feature: rng.random(n) * 90 for feature in NUM_FEATURES},
+            **{feature: rng.choice(["a", "b"], n) for feature in CAT_FEATURES},
         }
     )
 
     pipe = make_pipeline()
-    pipe.fit(df.select(FEATURES).to_pandas(), df["minutes_bucket"].to_list())
-    proba = pipe.predict_proba(df.select(FEATURES).to_pandas())
+    pipe.fit(prepare_features(df), df["minutes_bucket"].to_list())
+    proba = pipe.predict_proba(prepare_features(df))
 
     assert proba.shape == (n, len(MINUTES_BUCKETS))
 
@@ -280,25 +296,20 @@ def _synthetic_model_df(
                     "gw": index + 1,
                     "element": index + 1,
                     "opponent": 1,
-                    "value": int(rng.integers(40, 120)),
-                    "value_share_of_team": float(rng.random()),
-                    "pos_value_rank": rank,
-                    "players_same_pos": 5,
-                    "chance_of_playing_this_round": 100,
-                    "fit_rivals_same_pos": rank - 1,
+                    # Rank is the learnable signal; every other declared
+                    # feature is noise, so the frame always matches FEATURES.
+                    "tm_pos_value_rank_norm": (rank - 1) / 4,
                     "fit_rivals_ahead": rank - 1,
-                    "avg_minutes_rolling_5": float(rng.random() * 90),
-                    "games_played_this_season": int(rng.integers(0, 10)),
-                    "prev_season_minutes": int(rng.integers(0, 3000)),
-                    "prev_season_start_rate": float(rng.random()),
-                    "prev_season_points_per_start": float(rng.random() * 6),
-                    "pl_seasons_played": int(rng.integers(0, 5)),
-                    "seasons_since_last_pl": int(rng.integers(0, 3)),
-                    "age_years": float(rng.random() * 15 + 17),
-                    "days_since_team_join": float(rng.random() * 3000),
-                    "position": rng.choice(["DEF", "MID", "FWD"]),
-                    "is_pl_newcomer": int(rng.integers(0, 2)),
-                    "is_promoted_club": int(rng.integers(0, 2)),
+                    **{
+                        feature: float(rng.random())
+                        for feature in NUM_FEATURES
+                        if feature
+                        not in {"tm_pos_value_rank_norm", "fit_rivals_ahead"}
+                    },
+                    **{
+                        feature: str(rng.choice(["a", "b"]))
+                        for feature in CAT_FEATURES
+                    },
                     "minutes": minutes,
                     "minutes_bucket": bucket,
                 }
@@ -314,6 +325,7 @@ def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
         _history_player_match(),
         _player_season(),
         _team_fixture(),
+        *_transfermarkt_tables(),
     )
 
     # Element 1 plays twice in GW1 (opponents 10 and 20 — a double gameweek).
@@ -338,7 +350,7 @@ def test_build_model_frame_double_gameweek_yields_two_rows() -> None:
         BUCKET_SIXTY_PLUS,
     ]
     # Both rows share the same player-week features.
-    ranks = element_1_rows["pos_value_rank"].to_list()
+    ranks = element_1_rows["players_same_pos"].to_list()
     assert ranks[0] == ranks[1]
 
 
@@ -350,6 +362,7 @@ def test_build_model_frame_carries_opponent_for_match_grain() -> None:
         _history_player_match(),
         _player_season(),
         _team_fixture(),
+        *_transfermarkt_tables(),
     )
     player_match = pl.DataFrame(
         {
@@ -400,7 +413,7 @@ def _scoring_frame() -> pl.DataFrame:
         "opponent": [12, 12],
     }
     for feature in FEATURES:
-        rows[feature] = [1.0, 2.0] if feature != "position" else ["MID", "FWD"]
+        rows[feature] = ["a", "b"] if feature in CAT_FEATURES else [1.0, 2.0]
     return pl.DataFrame(rows)
 
 
@@ -425,19 +438,20 @@ def test_score_minutes_full_three_classes() -> None:
         assert key in out.columns
 
 
-def test_score_minutes_missing_class_gives_zero_column() -> None:
-    """A class absent from classes_ yields a zero probability column."""
+def test_score_minutes_missing_class_raises() -> None:
+    """A class absent from classes_ is an error, never a zero column.
+
+    A zero column is a plausible-looking prediction: it would reach the
+    optimiser as "this player never plays a partial shift" rather than as
+    a model that cannot answer the question.
+    """
     # classes_ omits BUCKET_PARTIAL — proba has two columns.
     proba = np.array([[0.3, 0.7]])
     model = _stub_model([BUCKET_ZERO, BUCKET_SIXTY_PLUS], proba)
     frame = _scoring_frame().head(1)
 
-    out = score_minutes(frame, model)
-
-    assert out["p_partial"].to_list() == [0.0]
-    assert out["p_zero"].to_list() == [0.3]
-    assert out["p_sixty_plus"].to_list() == [0.7]
-    assert out["expected_minutes"].to_list() == [0.7 * 75]
+    with pytest.raises(ValueError, match=BUCKET_PARTIAL):
+        score_minutes(frame, model)
 
 
 def test_num_features_includes_history_and_cold_start() -> None:
@@ -448,19 +462,24 @@ def test_num_features_includes_history_and_cold_start() -> None:
     )
     from fantasy_football.modelling.minutes import NUM_FEATURES
 
-    # is_pl_newcomer and is_promoted_club are booleans that live in
-    # BOOL_FEATURES instead (passthrough, not median-imputed/scaled) -- see
-    # make_pipeline. days_since_team_join is deliberately excluded from the
-    # model (see the comment on NUM_FEATURES): it is 100% null in most
-    # training seasons and null for every 2026-27 row. Every other
-    # history/cold-start feature is continuous and must land in NUM_FEATURES.
-    excluded = {"is_pl_newcomer", "is_promoted_club", "days_since_team_join"}
+    # is_pl_newcomer and is_promoted_club are one-hot encoded, so they
+    # live in CAT_FEATURES. days_since_team_join is 100% null in most
+    # training seasons, and prev_season_points_per_start was dropped when
+    # the Transfermarkt features landed; both are deliberately excluded.
+    # Every other history/cold-start feature must land in NUM_FEATURES.
+    excluded = {
+        "is_pl_newcomer",
+        "is_promoted_club",
+        "days_since_team_join",
+        "prev_season_points_per_start",
+    }
     for feature in HISTORY_FEATURES + COLD_START_FEATURES:
         if feature in excluded:
             continue
         assert feature in NUM_FEATURES, f"{feature} missing from NUM_FEATURES"
 
     assert "days_since_team_join" not in NUM_FEATURES
+    assert "prev_season_points_per_start" not in NUM_FEATURES
     assert "avg_minutes_rolling_5" in NUM_FEATURES
     assert "games_played_this_season" in NUM_FEATURES
 
@@ -522,7 +541,12 @@ def test_build_feature_frame_emits_every_declared_feature() -> None:
     )
 
     out = build_feature_frame(
-        player_week, availability, player_match, player_season, team_fixture
+        player_week,
+        availability,
+        player_match,
+        player_season,
+        team_fixture,
+        *_transfermarkt_tables(),
     )
 
     for feature in FEATURES:
@@ -632,6 +656,7 @@ def test_build_feature_frame_freezes_rolling_minutes_across_forward_gws() -> (
         played_match,
         player_season,
         team_fixture,
+        *_transfermarkt_tables(),
         forward_fixtures=forward_fixtures,
     )
 
@@ -770,6 +795,37 @@ def test_build_training_data_returns_a_scorable_model_frame(
     assert buckets[(5, 1)] == BUCKET_SIXTY_PLUS
     assert buckets[(6, 1)] == BUCKET_ZERO
     assert buckets[(6, 2)] == BUCKET_PARTIAL
+
+
+def test_forward_rows_survive_absent_transfermarkt_data(
+    predictor: MinutesPredictor,
+) -> None:
+    """A player with no Transfermarkt row still gets scored, not dropped.
+
+    The seeded database has no ``tm_*`` rows at all, which is what every
+    unmapped player looks like in production. A model frame that filtered
+    them out would leave the optimiser with no minutes prediction for that
+    player -- absent, not zero -- so the row count is the assertion.
+    """
+    training_data = predictor.build_training_data()
+    needs_a_match = [
+        "value_tm",
+        "tm_pos_value_share",
+        "tm_pos_value_rank_norm",
+        "rivals_joined_same_pos",
+        "max_rival_value_eur",
+        "days_since_rival_joined",
+    ]
+
+    assert training_data.height > 0
+    for feature in needs_a_match:
+        assert training_data[feature].null_count() == training_data.height
+
+    model = predictor.train_final(training_data)
+    scored = score_minutes(training_data, model)
+
+    assert scored.height == training_data.height
+    assert scored["expected_minutes"].null_count() == 0
 
 
 def test_build_forward_data_gives_every_forward_fixture_features(

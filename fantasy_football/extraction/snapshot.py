@@ -69,6 +69,7 @@ def build_snapshot(
             "chance_of_playing_this_round": (
                 player.chance_of_playing_this_round
             ),
+            "status": player.status,
         }
         for player in players
     ]

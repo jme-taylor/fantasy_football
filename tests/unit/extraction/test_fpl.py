@@ -925,3 +925,34 @@ class TestFplAPI:
         players = api.get_players()
 
         assert players[0].chance_of_playing_this_round == 75
+
+    def test_get_players_carries_status(
+        self,
+        mocker: MockerFixture,
+    ) -> None:
+        """A departed player keeps their club and price but status 'u'."""
+        api = FplAPI()
+        mocker.patch.object(
+            api,
+            "get_bootstrap_data",
+            return_value={
+                "elements": [
+                    {
+                        "id": 55,
+                        "first_name": "Ollie",
+                        "second_name": "Watkins",
+                        "web_name": "Watkins",
+                        "selected_by_percent": "1.0",
+                        "now_cost": 78,
+                        "team": 2,
+                        "element_type": 4,
+                        "chance_of_playing_this_round": None,
+                        "status": "u",
+                    }
+                ]
+            },
+        )
+
+        players = api.get_players()
+
+        assert players[0].status == "u"
