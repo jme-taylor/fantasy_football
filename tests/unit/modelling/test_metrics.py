@@ -8,6 +8,7 @@ import pytest
 from fantasy_football.modelling.metrics import (
     PointsMetrics,
     mae,
+    metric_name,
     poisson_deviance,
     precision_at_k,
     rmse,
@@ -143,16 +144,22 @@ def test_summarise_keeps_aggregate_names_when_one_fold_survives() -> None:
 
 def test_summarise_reports_a_single_fold_without_a_spread() -> None:
     """One measurement has no spread, so no zero std is reported."""
-    summary = summarise([_points_metrics(1.5)], "holdout", aggregated=False)
+    summary = summarise([_points_metrics(1.5)], None, aggregated=False)
     assert summary == {
-        "holdout_mae": 1.5,
-        "holdout_rmse": 2.0,
-        "holdout_skill_score": 0.1,
-        "holdout_spearman": 0.5,
-        "holdout_precision_at_k": 0.4,
+        "mae": 1.5,
+        "rmse": 2.0,
+        "skill_score": 0.1,
+        "spearman": 0.5,
+        "precision_at_k": 0.4,
     }
+
+
+def test_metric_name_leaves_an_unprefixed_strategy_bare() -> None:
+    """A strategy with no prefix logs the metric under its own name."""
+    assert metric_name(None, "auc") == "auc"
+    assert metric_name("cv", "auc") == "cv_auc"
 
 
 def test_summarise_of_no_folds_is_empty() -> None:
     """Nothing scored means nothing to log."""
-    assert summarise([], "holdout", aggregated=False) == {}
+    assert summarise([], None, aggregated=False) == {}

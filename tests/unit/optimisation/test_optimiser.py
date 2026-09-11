@@ -147,6 +147,7 @@ def _seed_db(
                 "team": row["team"],
                 "position": row["position"],
                 "chance_of_playing_this_round": 100,
+                "status": "a",
             }
             for row in roster.iter_rows(named=True)
         ]
@@ -292,6 +293,45 @@ def test_initial_squad_with_no_better_option_makes_no_transfers() -> None:
     assert _solve_problem(prob) == "Optimal"
     buys = sum(round(var.value()) for var in v["buy"].values())
     assert buys == 0
+
+
+def test_departed_player_is_sold_and_never_bought() -> None:
+    """A carried-in player who has left the league is transferred out."""
+    predictions, prices = _feasible_universe([10])
+    departed = E["FWD0"]
+    predictions = predictions.with_columns(
+        (pl.col("element") == departed).alias("is_departed"),
+        pl.when(pl.col("element") == departed)
+        .then(0.0)
+        .otherwise(pl.col("predicted_points"))
+        .alias("predicted_points"),
+    )
+    prob, v = _build_problem(
+        predictions,
+        prices,
+        weeks=[10],
+        start_gw=10,
+        initial_squad=_owned(_LEGAL_SQUAD),
+        free_transfers=1,
+    )
+
+    assert _solve_problem(prob) == "Optimal"
+    assert round(v["sell"][departed, 10].value()) == 1
+    assert round(v["buy"][departed, 10].value()) == 0
+    assert round(v["start"][departed, 10].value()) == 0
+
+
+def test_departed_player_out_of_the_squad_is_never_bought() -> None:
+    """An unowned departed player cannot enter a free build."""
+    predictions, prices = _feasible_universe([10])
+    departed = E["MID0"]
+    predictions = predictions.with_columns(
+        (pl.col("element") == departed).alias("is_departed")
+    )
+    prob, v = _build_problem(predictions, prices, weeks=[10], start_gw=10)
+
+    assert _solve_problem(prob) == "Optimal"
+    assert round(v["own"][departed, 10].value()) == 0
 
 
 def test_initial_squad_uses_one_free_transfer_to_upgrade() -> None:

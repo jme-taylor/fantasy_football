@@ -291,8 +291,8 @@ def test_split_preserves_columns():
 
 
 def test_strategies_name_themselves_for_metric_prefixing():
-    """Holdout and cross-validated metrics must not share a name."""
-    assert TrainTestSplitStrategy().metric_prefix == "holdout"
+    """Cross-validated metrics are prefixed; a single holdout is not."""
+    assert TrainTestSplitStrategy().metric_prefix is None
     assert SeasonFoldStrategy().metric_prefix == "cv"
     assert ExpandingGameweekFoldStrategy().metric_prefix == "cv"
 

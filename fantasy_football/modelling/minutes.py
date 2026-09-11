@@ -1,18 +1,20 @@
 import logging
+from collections.abc import Sequence
 from typing import override
 
 import numpy as np
+import pandas as pd
 import polars as pl
+from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     brier_score_loss,
     log_loss,
     roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from xgboost import XGBClassifier
 
 from fantasy_football.constants import (
     MINUTES_PRODUCTION_ALIAS,
@@ -30,6 +32,9 @@ from fantasy_football.features.history import (
     add_cold_start_features,
     add_history_features,
 )
+from fantasy_football.features.transfermarkt import (
+    add_transfermarkt_features,
+)
 from fantasy_football.features.valuation import (
     add_positional_value_rank,
     add_team_value,
@@ -44,6 +49,7 @@ from fantasy_football.modelling.predictor import (
     Predictor,
     feature_json,
 )
+from fantasy_football.storage.coverage import FPL_STAT_SEASONS
 from fantasy_football.storage.tables import (
     MINUTES_PREDICTION,
     PLAYER_AVAILABILITY,
@@ -52,6 +58,10 @@ from fantasy_football.storage.tables import (
     PLAYER_WEEK,
     TEAM_FIXTURE,
     TEST_MINUTES_PREDICTION,
+    TM_MARKET_VALUE,
+    TM_PLAYER,
+    TM_PLAYER_MAP,
+    TM_TRANSFER,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,10 +72,24 @@ BUCKET_PARTIAL = "1_to_59_minutes"
 BUCKET_SIXTY_PLUS = "60_minutes_plus"
 MINUTES_BUCKETS = [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
 
+TM_FEATURES = [
+    "value_tm",
+    "players_same_tm_pos",
+    "tm_pos_value_share",
+    "tm_pos_value_rank_norm",
+    "prev_game_minutes",
+    "prev_game_minutes_2",
+    "days_since_prev_game",
+    "prev_pct_position_minutes",
+    "minutes_to_date",
+    "pct_position_minutes_to_date",
+    "rivals_joined_same_pos",
+    "higher_value_rivals_joined_same_pos",
+    "max_rival_value_eur",
+    "days_since_rival_joined",
+]
+
 NUM_FEATURES = [
-    "value",
-    "value_share_of_team",
-    "pos_value_rank",
     "players_same_pos",
     "chance_of_playing_this_round",
     "fit_rivals_same_pos",
@@ -74,23 +98,35 @@ NUM_FEATURES = [
     "games_played_this_season",
     "prev_season_minutes",
     "prev_season_start_rate",
-    "prev_season_points_per_start",
     "pl_seasons_played",
     "seasons_since_last_pl",
     "age_years",
+    *TM_FEATURES,
 ]
-CAT_FEATURES = ["position"]
-BOOL_FEATURES = ["is_pl_newcomer", "is_promoted_club"]
-FEATURES = NUM_FEATURES + CAT_FEATURES + BOOL_FEATURES
+# The booleans are one-hot encoded rather than passed through: they can be
+# null now that a player may have no Transfermarkt row, and "unknown" is a
+# third state the tree can split on.
+CAT_FEATURES = ["is_pl_newcomer", "is_promoted_club", "tm_position"]
+FEATURES = NUM_FEATURES + CAT_FEATURES
+
+# Placeholder for a null categorical, so the one-hot encoder sees a
+# category rather than a NaN it cannot encode.
+UNKNOWN_CATEGORY = "unknown"
+
+TRAINING_START_SEASON = "2020-21"
+TRAINING_SEASONS: tuple[str, ...] = tuple(
+    season for season in FPL_STAT_SEASONS if season >= TRAINING_START_SEASON
+)
 
 # HISTORY_FEATURES and COLD_START_FEATURES are imported (rather than only used
 # in features/history.py) so this assertion catches drift between this
 # module's feature list and the features module the moment either changes.
-# days_since_team_join is deliberately excluded from the model (see the
-# comment on NUM_FEATURES above), so it is the one column carved out here.
-assert set(HISTORY_FEATURES) | set(COLD_START_FEATURES) - {
-    "days_since_team_join"
-} <= set(NUM_FEATURES) | set(BOOL_FEATURES)
+# days_since_team_join and prev_season_points_per_start are deliberately
+# excluded from the model, so they are the columns carved out here.
+assert (set(HISTORY_FEATURES) | set(COLD_START_FEATURES)) - {
+    "days_since_team_join",
+    "prev_season_points_per_start",
+} <= set(FEATURES)
 
 # Representative minutes per bucket, for the expected-minutes leverage metric.
 MINUTE_MIDPOINTS = {
@@ -98,6 +134,40 @@ MINUTE_MIDPOINTS = {
     BUCKET_PARTIAL: 30.0,
     BUCKET_SIXTY_PLUS: 75.0,
 }
+
+
+class LabelledXGBClassifier(BaseEstimator, ClassifierMixin):
+    """XGBoost classifier that keeps string class labels.
+
+    ``XGBClassifier`` only accepts integer-encoded targets, so the encoder
+    lives inside the estimator rather than beside it. Everything
+    downstream -- :func:`_boundary_column`, :func:`fold_predictions`,
+    :func:`score_minutes` -- matches ``classes_`` against the bucket
+    label constants, so an int-classed model would silently mismatch.
+    """
+
+    def __init__(self, params: dict[str, object] | None = None) -> None:
+        """Store the XGBoost keyword arguments, unpacked at fit time."""
+        self.params = params
+
+    def fit(
+        self, X: pd.DataFrame, y: Sequence[str]
+    ) -> "LabelledXGBClassifier":
+        """Encode the labels, fit XGBoost, and expose string ``classes_``."""
+        self._encoder = LabelEncoder()
+        encoded = self._encoder.fit_transform(list(y))
+        self._model = XGBClassifier(**(self.params or {}))
+        self._model.fit(X, encoded)
+        self.classes_ = list(self._encoder.classes_)
+        return self
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        """Return class probabilities, columns aligned to ``classes_``."""
+        return self._model.predict_proba(X)
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """Return predicted bucket labels as strings."""
+        return self._encoder.inverse_transform(self._model.predict(X))
 
 
 def create_minutes_bucket(
@@ -137,6 +207,10 @@ def build_feature_frame(
     player_match: pl.DataFrame,
     player_season: pl.DataFrame,
     team_fixture: pl.DataFrame,
+    tm_player: pl.DataFrame,
+    tm_player_map: pl.DataFrame,
+    tm_market_value: pl.DataFrame,
+    tm_transfer: pl.DataFrame,
     forward_fixtures: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Build the model feature frame at the player-week grain.
@@ -160,6 +234,14 @@ def build_feature_frame(
     team_fixture : pl.DataFrame
         Fixture rows from :meth:`TEAM_FIXTURE.load`, used to detect promoted
         clubs.
+    tm_player : pl.DataFrame
+        Transfermarkt players from :meth:`TM_PLAYER.load`.
+    tm_player_map : pl.DataFrame
+        FPL-to-Transfermarkt bridge from :meth:`TM_PLAYER_MAP.load`.
+    tm_market_value : pl.DataFrame
+        Dated valuations from :meth:`TM_MARKET_VALUE.load`.
+    tm_transfer : pl.DataFrame
+        Transfer history from :meth:`TM_TRANSFER.load`.
     forward_fixtures : pl.DataFrame | None
         Optional match-grain rows for fixtures not yet played, with a null
         ``minutes`` (``season``, ``gw``, ``element``, ``kickoff_time``,
@@ -174,7 +256,7 @@ def build_feature_frame(
     -------
     pl.DataFrame
         One row per ``(season, gw, element)`` with ``position`` and every
-        column in ``NUM_FEATURES`` and ``BOOL_FEATURES``.
+        column in ``FEATURES``.
     """
     frame = add_team_value(player_week)
     frame = add_positional_value_rank(frame)
@@ -207,12 +289,17 @@ def build_feature_frame(
         coalesce=True,
     )
     frame = add_cold_start_features(frame, team_fixture)
-    frame = frame.with_columns(
-        [pl.col(column).cast(pl.Int8) for column in BOOL_FEATURES]
+    frame = add_transfermarkt_features(
+        frame,
+        match_stream,
+        player_season,
+        tm_player,
+        tm_player_map,
+        tm_market_value,
+        tm_transfer,
     )
-    return frame.select(
-        ["season", "gw", "element", "position", *NUM_FEATURES, *BOOL_FEATURES]
-    )
+    frame = frame.filter(pl.col("season").is_in(TRAINING_SEASONS))
+    return frame.select(["season", "gw", "element", "position", *FEATURES])
 
 
 # TODO (JT): Work out a cleaner way to do this (feature store?)
@@ -253,60 +340,86 @@ def build_model_frame(
             "opponent",
             "minutes",
             "minutes_bucket",
-            *NUM_FEATURES,
-            *CAT_FEATURES,
-            *BOOL_FEATURES,
+            *FEATURES,
         ]
     )
 
 
 def make_pipeline() -> Pipeline:
-    """Build the logistic-regression pipeline.
+    """Build the gradient-boosted minutes pipeline.
 
-    Numeric features are median-imputed then standardised; the categorical
-    ``position`` is one-hot encoded; the boolean ``BOOL_FEATURES`` pass straight
-    through untouched -- they are cast to ``Int8`` and never null by the time
-    they reach the pipeline (see :func:`build_feature_frame`), so they need
-    neither imputation nor scaling. All preprocessing lives inside the pipeline
-    so it is refit per CV fold on train data only.
+    Numeric features pass through unimputed and unscaled: XGBoost learns a
+    default direction per split for missing values, which carries more
+    information than a median stand-in, and trees are indifferent to scale.
+    Categoricals are one-hot encoded after :func:`prepare_features` has
+    turned their nulls into an explicit category. All preprocessing lives
+    inside the pipeline so it is refit per CV fold on train data only.
 
     Returns
     -------
     sklearn.pipeline.Pipeline
-        Unfitted pipeline ending in ``LogisticRegression(max_iter=1000)``.
+        Unfitted pipeline ending in :class:`LabelledXGBClassifier`.
     """
     preprocessor = ColumnTransformer(
         [
-            (
-                "num",
-                Pipeline(
-                    [
-                        ("impute", SimpleImputer(strategy="median")),
-                        ("scale", StandardScaler()),
-                    ]
-                ),
-                NUM_FEATURES,
-            ),
+            ("num", "passthrough", NUM_FEATURES),
             ("cat", OneHotEncoder(handle_unknown="ignore"), CAT_FEATURES),
-            ("bool", "passthrough", BOOL_FEATURES),
         ]
     )
     return Pipeline(
         [
             ("prep", preprocessor),
-            ("clf", LogisticRegression(max_iter=1000)),
+            ("clf", LabelledXGBClassifier()),
         ]
+    )
+
+
+def prepare_features(frame: pl.DataFrame) -> pd.DataFrame:
+    """Shape a feature frame for the pipeline.
+
+    Categoricals are cast to string and their nulls replaced with
+    :data:`UNKNOWN_CATEGORY`, so the one-hot encoder sees a category
+    rather than a NaN. Numerics keep their nulls, which reach XGBoost as
+    NaN and are exactly what its missing-direction split consumes.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        Rows carrying every column in :data:`FEATURES`.
+
+    Returns
+    -------
+    pd.DataFrame
+        The feature columns, in :data:`FEATURES` order.
+    """
+    return (
+        frame.with_columns(
+            [
+                pl.col(column).cast(pl.Utf8).fill_null(UNKNOWN_CATEGORY)
+                for column in CAT_FEATURES
+            ]
+        )
+        .select(FEATURES)
+        .to_pandas()
     )
 
 
 def _boundary_column(
     proba: np.ndarray, classes: list[str], label: str
 ) -> np.ndarray:
-    """Return the probability column for ``label`` (zeros if absent)."""
+    """Return the probability column for ``label``.
+
+    Raises rather than defaulting to zeros: a label the model has never
+    seen and a label the model reports under a different type look
+    identical here, and a zero column is a plausible-looking prediction
+    that would flow all the way to the optimiser unnoticed.
+    """
     classes = list(classes)
-    if label in classes:
-        return proba[:, classes.index(label)]
-    return np.zeros(proba.shape[0])
+    if label not in classes:
+        raise ValueError(
+            f"{label!r} is not among the model's classes {classes!r}"
+        )
+    return proba[:, classes.index(label)]
 
 
 # TODO (JT): Make a boundary metrics dataclass as output type
@@ -378,10 +491,10 @@ def _fit_predict_fold(
     """
     pipe = make_pipeline()
     pipe.fit(
-        train_df.select(FEATURES).to_pandas(),
+        prepare_features(train_df),
         train_df["minutes_bucket"].to_list(),
     )
-    proba = pipe.predict_proba(test_df.select(FEATURES).to_pandas())
+    proba = pipe.predict_proba(prepare_features(test_df))
     classes = list(pipe.classes_)
     return (
         boundary_metrics(
@@ -458,7 +571,7 @@ def score_minutes(frame: pl.DataFrame, model: Pipeline) -> pl.DataFrame:
     """
     return minutes_from_proba(
         frame,
-        model.predict_proba(frame.select(FEATURES).to_pandas()),
+        model.predict_proba(prepare_features(frame)),
         list(model.classes_),
     )
 
@@ -511,6 +624,15 @@ class MinutesPredictor(Predictor):
         """Return the declared model inputs."""
         return list(FEATURES)
 
+    def _transfermarkt_tables(self) -> tuple[pl.DataFrame, ...]:
+        """Load the Transfermarkt tables, in build_feature_frame order."""
+        return (
+            TM_PLAYER.load(self.connection),
+            TM_PLAYER_MAP.load(self.connection),
+            TM_MARKET_VALUE.load(self.connection),
+            TM_TRANSFER.load(self.connection),
+        )
+
     @override
     def build_training_data(self) -> pl.DataFrame:
         player_match = PLAYER_MATCH.load(self.connection)
@@ -520,6 +642,7 @@ class MinutesPredictor(Predictor):
             player_match,
             PLAYER_SEASON.load(self.connection),
             TEAM_FIXTURE.load(self.connection),
+            *self._transfermarkt_tables(),
         )
         return build_model_frame(player_match, feature_frame)
 
@@ -540,6 +663,7 @@ class MinutesPredictor(Predictor):
             PLAYER_MATCH.load(self.connection),
             PLAYER_SEASON.load(self.connection),
             TEAM_FIXTURE.load(self.connection),
+            *self._transfermarkt_tables(),
             forward_fixtures=forward_fixtures,
         )
         return forward_fixtures.select(
@@ -559,7 +683,7 @@ class MinutesPredictor(Predictor):
     def train_final(self, feature_frame: pl.DataFrame) -> Pipeline:
         pipe = make_pipeline()
         pipe.fit(
-            feature_frame.select(FEATURES).to_pandas(),
+            prepare_features(feature_frame),
             feature_frame["minutes_bucket"].to_list(),
         )
         return pipe

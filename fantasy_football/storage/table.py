@@ -65,6 +65,8 @@ class Table:
         Columns forming the primary key. These become NOT NULL.
     order_by : tuple[str, ...]
         Columns rows are sorted by when read.
+    unique : tuple[tuple[str, ...], ...]
+        Column groups carrying a UNIQUE constraint beyond the primary key.
     normalise : Callable | None
         Optional pre-write fixup applied before column selection.
     enrich : Callable | None
@@ -75,6 +77,7 @@ class Table:
     schema: dict[str, pl.DataType]
     primary_key: tuple[str, ...]
     order_by: tuple[str, ...]
+    unique: tuple[tuple[str, ...], ...] = ()
     normalise: Callable[[pl.DataFrame], pl.DataFrame] | None = None
     enrich: Callable[[pl.DataFrame], pl.DataFrame] | None = None
 
@@ -94,7 +97,7 @@ class Table:
         """Return the ``CREATE TABLE IF NOT EXISTS`` statement.
 
         Primary-key columns are declared NOT NULL; every other column is
-        nullable.
+        nullable. Each ``unique`` group becomes its own UNIQUE constraint.
 
         Returns
         -------
@@ -106,6 +109,8 @@ class Table:
             suffix = " NOT NULL" if column in self.primary_key else ""
             lines.append(f"    {column} {duckdb_type(dtype)}{suffix}")
         lines.append(f"    PRIMARY KEY ({', '.join(self.primary_key)})")
+        for columns in self.unique:
+            lines.append(f"    UNIQUE ({', '.join(columns)})")
         body = ",\n".join(lines)
         return f"CREATE TABLE IF NOT EXISTS {self.name} (\n{body}\n)"
 
@@ -299,6 +304,28 @@ class Table:
         shaped = self.coerce(frame)
         engine.insert_frame(connection, self.name, shaped)
         logger.info("Appended %d %s rows", shaped.height, self.name)
+
+    def replace_all(
+        self,
+        connection: "duckdb.DuckDBPyConnection",
+        frame: pl.DataFrame,
+    ) -> None:
+        """Replace every stored row with a fresh frame.
+
+        For tables derived wholesale from their sources, where nothing
+        accumulates that a rebuild cannot reproduce.
+
+        Parameters
+        ----------
+        connection : duckdb.DuckDBPyConnection
+            An open connection.
+        frame : pl.DataFrame
+            The replacement rows.
+        """
+        shaped = self.coerce(frame)
+        engine.delete_all(connection, self.name)
+        engine.insert_frame(connection, self.name, shaped)
+        logger.info("Replaced %s with %d rows", self.name, shaped.height)
 
     def replace_partition(
         self,

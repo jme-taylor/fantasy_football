@@ -35,6 +35,7 @@ INPUT_COLUMNS: list[str] = [
     "team",
     "value",
     "predicted_points",
+    "is_departed",
 ]
 
 
@@ -146,6 +147,10 @@ def load_optimiser_inputs(
     optimiser reads as "will not score" -- the same thing a blank gameweek
     means.
 
+    Departed players are in the universe too, carrying ``is_departed`` and
+    no predictions. A squad can still be holding one, and the optimiser
+    has to be able to sell what it cannot buy.
+
     Parameters
     ----------
     season : str
@@ -159,7 +164,7 @@ def load_optimiser_inputs(
     -------
     pl.DataFrame
         Columns ``element``, ``gw``, ``name``, ``position``, ``team``,
-        ``value`` and ``predicted_points``.
+        ``value``, ``predicted_points`` and ``is_departed``.
 
     Raises
     ------
@@ -177,7 +182,7 @@ def load_optimiser_inputs(
         )
 
     universe = roster.select(
-        "element", "name", "position", "team", "value"
+        "element", "name", "position", "team", "value", "is_departed"
     ).join(pl.DataFrame({"gw": weeks}, schema={"gw": pl.Int64}), how="cross")
 
     joined = universe.join(
@@ -187,11 +192,18 @@ def load_optimiser_inputs(
         on=["element", "gw"],
         how="left",
     ).with_columns(
-        pl.col("predicted_points").fill_null(0.0),
+        # A departed player keeps whatever was predicted for him before he
+        # left, so his points are zeroed rather than read from the join.
+        pl.when(pl.col("is_departed"))
+        .then(0.0)
+        .otherwise(pl.col("predicted_points").fill_null(0.0))
+        .alias("predicted_points"),
         pl.col("has_prediction").fill_null(0),
     )
 
-    _check_coverage(joined, weeks)
+    # Departed players are deliberately unscored, so counting them as
+    # missing coverage would warn about 90-odd players every run.
+    _check_coverage(joined.filter(~pl.col("is_departed")), weeks)
     return joined.select(INPUT_COLUMNS).sort("gw", "element")
 
 

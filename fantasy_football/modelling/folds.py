@@ -12,10 +12,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_TRAIN_GAMEWEEKS = 10
 DEFAULT_TEST_FRACTION = 0.2
 
-# Metric prefixes, so a pooled holdout score and a mean of per-gameweek
-# scores never land in the same MLflow column.
+# Prefix for the cross-validating strategies, so a mean of per-gameweek
+# scores never lands in the same MLflow column as a single pooled score.
 CV_PREFIX = "cv"
-HOLDOUT_PREFIX = "holdout"
 
 # Bookkeeping column carrying a row's chronological gameweek position.
 # Always dropped before a fold is yielded.
@@ -100,7 +99,9 @@ class FoldStrategy(Protocol):
     """
 
     #: Prefix every metric this strategy's folds produce is logged under.
-    metric_prefix: str
+    #: None logs them under their bare names, which is right for a
+    #: strategy whose scores need nothing to tell them apart.
+    metric_prefix: str | None
     #: Whether a run reports the mean and spread across folds, or one
     #: fold's metrics directly. Fixed per strategy so the metric names a
     #: run logs never depend on how many folds the data allowed.
@@ -125,7 +126,7 @@ class FoldStrategy(Protocol):
 class SeasonFoldStrategy:
     """Fold strategy that splits the training data into folds by season."""
 
-    metric_prefix = CV_PREFIX
+    metric_prefix: str | None = CV_PREFIX
     aggregates = True
 
     def split(self, training_data: pl.DataFrame) -> Iterable[Fold]:
@@ -187,7 +188,7 @@ class ExpandingGameweekFoldStrategy:
         what the deployed model does.
     """
 
-    metric_prefix = CV_PREFIX
+    metric_prefix: str | None = CV_PREFIX
     aggregates = True
 
     def __init__(
@@ -304,7 +305,7 @@ class TrainTestSplitStrategy:
         deployed model does.
     """
 
-    metric_prefix = HOLDOUT_PREFIX
+    metric_prefix: str | None = None
     aggregates = False
 
     def __init__(

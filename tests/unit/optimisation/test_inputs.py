@@ -40,6 +40,7 @@ def _seed(
     predictions: list[dict],
     roster: tuple = ROSTER,
     season: str = SEASON,
+    departed_element: int | None = None,
 ) -> None:
     """Seed snapshot, identity and prediction rows into a tmp database."""
     captured = datetime(2026, 8, 1, 12, 0)
@@ -53,6 +54,7 @@ def _seed(
                 "team": team,
                 "position": position,
                 "chance_of_playing_this_round": 100,
+                "status": "u" if element == departed_element else "a",
             }
             for element, position, team, value, _, _ in roster
         ]
@@ -138,6 +140,7 @@ def test_returns_one_row_per_player_and_gameweek(
     assert sorted(frame.columns) == [
         "element",
         "gw",
+        "is_departed",
         "name",
         "position",
         "predicted_points",
@@ -145,6 +148,25 @@ def test_returns_one_row_per_player_and_gameweek(
         "value",
     ]
     assert sorted(frame["gw"].unique().to_list()) == [5, 6]
+
+
+def test_departed_player_is_in_the_universe_scoring_zero(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Predictions made before a player left do not survive his departure."""
+    _seed(
+        tmp_path,
+        monkeypatch,
+        _full_cover([5]),
+        departed_element=4,
+    )
+
+    frame = load_optimiser_inputs(SEASON, [5])
+
+    forward = frame.filter(pl.col("element") == 4)
+    assert forward["is_departed"].item() is True
+    assert forward["predicted_points"].item() == 0.0
+    assert frame.filter(~pl.col("is_departed")).height == len(ROSTER) - 1
 
 
 def test_carries_roster_name_club_position_and_price(

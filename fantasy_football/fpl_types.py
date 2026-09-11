@@ -54,6 +54,10 @@ class FplPlayer:
     chance_of_playing_this_round : int | None
         FPL's pre-deadline availability percentage, or None when the
         player carries no injury doubt.
+    status : str | None
+        FPL's availability code: ``a`` available, ``d`` doubtful, ``i``
+        injured, ``s`` suspended, ``u`` unavailable. ``u`` is the only one
+        that means the player has left the league.
     """
 
     id: int
@@ -65,6 +69,7 @@ class FplPlayer:
     team_id: int
     element_type: int
     chance_of_playing_this_round: int | None = None
+    status: str | None = None
 
 
 @dataclass(config=config, frozen=True)

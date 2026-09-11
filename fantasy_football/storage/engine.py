@@ -151,6 +151,19 @@ def delete_where(
     connection.execute(f"DELETE FROM {table_name} WHERE {where}", params)
 
 
+def delete_all(connection: duckdb.DuckDBPyConnection, table_name: str) -> None:
+    """Delete every row in a table.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection.
+    table_name : str
+        The table to empty.
+    """
+    connection.execute(f"DELETE FROM {table_name}")
+
+
 def select(
     connection: duckdb.DuckDBPyConnection,
     table_name: str,

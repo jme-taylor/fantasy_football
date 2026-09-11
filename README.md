@@ -1,83 +1,103 @@
 # Fantasy Football
 
-A personal project to automatically pick my Fantasy Premier League (FPL) team. The rough plan is:
+A fully automated way of selecting your fantasy football team. At a high level it works in the following manner:
 
-* Use historic player and points data to build models that predict future points scored.
-* Predict points for upcoming gameweeks.
-* Run an optimisation algorithm on top of those predictions to select the best squad, starting XI, captain, and transfers.
+1. Collect all data from sources.
+2. Train machine learning models for all points scoring components on all historic data.
+3. Use trained machine learning models to make future predictions for upcoming gameweeks.
+4. Run an optimisation algorithm over the future predictions, to make team selections and transfer decisions for the season.
 
-## Current State
+There is further detail on all sections of this below.
 
-This is an early-stage work in progress. `main.py` is the entry point that
-refreshes the current season's data into a DuckDB store, derives feature
-views, trains the minutes-played and per-position points models, writes their
-forward predictions to the database, and runs the optimiser on top of them.
-Mid-season the optimiser needs the squad being carried in, read from FPL's
-public entry endpoints or from a team file; with neither it logs and skips,
-leaving the rest of the run intact. The package is organised by domain:
+## Installation
 
-```text
-fantasy_football/
-├── constants.py        — shared constants (current season, paths, model tunables, MLflow config)
-├── logging_config.py   — logging setup
-├── fpl_types.py        — Pydantic types describing FPL API responses
-├── storage/            — persistence
-│   ├── engine.py       — DuckDB primitives (create/drop/insert/delete/
-│   │                      select/distinct); the only module that touches
-│   │                      Arrow, `register`/`unregister`, and `.pl()`
-│   ├── table.py        — the `Table` descriptor: column order and dtypes
-│   │                      from one `schema` dict, generated DDL, and the
-│   │                      five operations (coerce, load, seasons_present,
-│   │                      write_immutable, upsert_current)
-│   ├── tables.py       — the ten table specs (player_season, player_week,
-│   │                      team_fixture, player_match, player_match_fpl,
-│   │                      player_match_opta, player_availability,
-│   │                      minutes_prediction, points_prediction,
-│   │                      player_snapshot) and the `TABLES` tuple; adding
-│   │                      a table means adding a spec here and nothing
-│   │                      else
-│   └── database.py     — `get_connection` and `reset_database`, both
-│                          driven by `TABLES`
-├── extraction/         — ingest raw data into the DuckDB store
-│   ├── fpl.py          — wrappers around the live FPL API (players, teams, fixtures, per-fixture history)
-│   ├── player_match.py — build the current season's per-fixture player_match rows from the FPL API
-│   ├── player_match_fpl.py  — load Vaastav's full per-fixture stat set into player_match_fpl
-│   ├── player_match_opta.py — load FCI's per-fixture Opta stat set (all competitions) into player_match_opta
-│   ├── extractor.py    — download the frozen Vaastav historic dataset (player_week + player_match); GitHub API client
-│   ├── fci.py          — download current-season data from FPL Core Insights and reshape to player_week rows
-│   ├── fplcache.py     — read per-gameweek team and chance-of-playing from the Randdalf/fplcache snapshots
-│   ├── availability.py — backfill/upsert the player_availability table
-│   ├── fixtures.py     — load team-fixture rows (historic Vaastav, current FPL API) into team_fixture
-│   └── seasons.py      — season-string conversions and data-source routing
-├── features/           — derive model-ready features
-│   ├── naming.py       — shared rolling-column and identity naming helpers
-│   ├── roster.py       — who is in the league now, with club, position and price
-│   ├── match_form.py   — per-appearance rolling form views
-│   ├── team_form.py    — per-match team form views
-│   ├── elo.py          — build team Elo ratings (scraped via ScraperFC ClubElo);
-│                          not yet wired into the position models
-│   ├── valuation.py    — team-value share and positional value rank features
-│   ├── availability.py — rolling minutes, chance-of-playing and positional-availability features
-│   └── views.py        — register every session-scoped feature view
-├── modelling/          — train and predict
-│   ├── minutes.py      — end-to-end minutes-played classifier (features, CV,
-│                          MLflow registry) + production-model backfill to DB
-│   ├── defender.py     — end-to-end defender points model (features, CV,
-│                          MLflow registry, backfill and forward scoring)
-│   ├── goalkeeper.py, midfielder.py, forwards.py — the same for the other positions
-│   ├── folds.py        — expanding-window CV folds by season or gameweek
-│   ├── registry.py     — load the alias-promoted model from MLflow
-│   └── metrics.py      — regression metrics (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
-└── optimisation/       — build the plan
-    ├── inputs.py       — assemble the optimiser's inputs from points_prediction + roster
-    ├── optimiser.py    — linear-programming optimiser → squad, XI, captain, transfers
-    ├── plan_report.py  — format the optimiser output into readable decisions
-    └── team_input.py   — load and resolve a carried-in squad
+This project uses Python 3.12 and [uv](https://docs.astral.sh/uv/) for dependency and environment management.
+
+1. Clone the repository and `cd` into it.
+2. Install Python 3.12 (e.g. via [pyenv](https://github.com/pyenv/pyenv) or `uv python install 3.12`).
+3. Install dependencies:
+
+   ```bash
+   uv sync
+   ```
+
+   This will create a `.venv/` and install both runtime and dev dependencies from `uv.lock`.
+
+A `GITHUB_API_KEY` (in a `.env` file) is required to download the Vaastav,
+FCI, and fplcache datasets via the GitHub API.
+
+To read your live squad rather than hand-maintaining a team file, set
+`FPL_MANAGER_ID` (your FPL entry id — the number in the URL of your Points
+page) in the same `.env`. No credentials are needed: the squad, bank and
+transfer history all come from FPL's public `entry` endpoints.
+
+A full example environment that you can copy is seen in `example.env`.
+
+## Usage
+
+Run the full pipeline via `uv`:
+
+```bash
+# Refresh the current season, train the minutes model, predict and optimise
+uv run python main.py
 ```
 
-`tests/unit/` mirrors this structure and runs in CI. `tests/integration/`
-holds tests that hit live network data sources (FPL / fplcache); they are
-marked `@pytest.mark.integration` and deselected by default.
+`main()` accepts a few keyword arguments:
+
+* `rebuild` (default `False`) — drop and reload every season from scratch
+  (full refresh / recovery escape hatch). The default loads only missing
+  immutable seasons and upserts the current season.
+* `team_file` — path to a team JSON naming the squad carried into the
+  upcoming gameweek. Players are declared by `name` or by `element`, each with
+  a `purchase_price`. Passing this overrides the live squad, which is what
+  makes it useful for asking "what if I owned this instead". With it unset the
+  squad is read from the public entry endpoints using `FPL_MANAGER_ID`. One or
+  the other is required to optimise once the season is under way; with neither,
+  mid-season runs log and skip optimisation, leaving the ingest, training and
+  prediction work of that run intact. At GW1 the optimiser free-builds and
+  needs no squad at all.
+
+  Every squad read from the API is recorded to `data/teams/{season}_gw{n}.json`
+  in that same team-file format, so a run is always reproducible by handing the
+  snapshot back as `team_file`. Snapshots are a record, never an automatic
+  input: a stale one would silently plan transfers from a team you no longer
+  own.
+
+### Evaluating the models with MLflow
+
+Each position (GK, DEF, MID, FWD) has its own points model, and each is
+evaluated by its own expanding-window cross-validation during training,
+logged to MLflow — one experiment per position (`gk-points-model`,
+`def-points-model`, `mid-points-model`, `fwd-points-model`). The minutes
+model logs to its own experiment (`minutes_played_classification`).
+
+There is currently no harness that scores the four positions against each
+other on one scale; the rolling-origin replay that used to do so measured
+the deleted rolling-points formula rather than the models, and was removed
+with it.
+
+Browse the results in the MLflow UI using the helper scripts:
+
+```bash
+./.bin/start_mlflow.sh   # launches the UI at http://127.0.0.1:5050
+./.bin/stop_mlflow.sh    # stops it again
+```
+
+`start_mlflow.sh` first clears any process already on the port, so re-running
+it restarts the UI cleanly. All MLflow data lives under the `models/` folder,
+which is gitignored — only the scripts are tracked.
+
+## Development
+
+Run the unit suite and linters with `uv`:
+
+```bash
+uv run pytest                  # unit tests only (integration deselected)
+uv run pytest -m integration   # live network integration tests
+uv run ruff check .
+uv run ruff format --check .
+uv run ty check
+```
 
 ## Storage
 
@@ -141,6 +161,33 @@ position and price. Its own output (`optimisation_plan.jsonl` and
 `team_elo.csv` cache.
 
 ## Data sources
+
+### Transfermarkt
+
+[Transfermarkt](https://www.transfermarkt.co.uk/) is used as a source of data for player values (in €), granular positions and club history. To get this data, we use the [ScraperFc](https://scraperfc.readthedocs.io/en/latest/index.html) python package, however there were some bugs in there, so I've fixed these in my [own fork](https://github.com/jme-taylor/ScraperFC) of the package. This fork is what the uv environment installs.
+
+Transfermarkt names do not fully align with FPL players, and there is no unique identifier that joins the two. So we join players to FPL data in the following manner:
+* **`override`** — the hand-maintained CSV, which always wins
+* **`dob_exact_name`** — date of birth plus an exact normalised name
+* **`dob_fuzzy_name`** — date of birth plus a Jaro-Winkler name score ≥ 0.85
+* **`dob_surname`** — date of birth plus a surname score ≥ 0.85
+* **`club_exact_name`** — no date of birth either side: exact name plus a shared club
+* **`exact_name`** — an exact name that is the only one of its kind on both sides
+* **`exact_name_dob_conflict`** — as above, but the two dates of birth disagree
+
+Each rung is tried in order, and an id claimed by one is never offered to a
+later one, so the map stays one-to-one. Names are normalised first —
+lowercased, accents stripped, punctuation collapsed. Ambiguity is never
+guessed at: two people sharing a birthday both go to the human, whatever
+their names score. Managers and players who never appeared are dropped.
+
+Identity is resolved once, at person level, into `tm_player_map`; market
+values and transfers join through it by date. The two hand-maintained files
+in `fantasy_football/extraction/mappings/` are the only durable inputs, and
+whatever stays unmatched lands in `data/tm_player_map_candidates.csv` for a
+manual decision. Rebuild with `scripts/scrape_transfermarkt.py --map-only`.
+
+## Other Data
 
 Historic data (through the 2024-25 season) comes from the
 [Vaastav FPL repository](https://github.com/vaastav/Fantasy-Premier-League),
@@ -238,7 +285,8 @@ from `2022-23` (fplcache's earliest snapshots, set by `FPLCACHE_FIRST_SEASON`).
 
 ## Minutes-played model
 
-`modelling/minutes.py` trains a single 3-class classifier that predicts each
+`modelling/minutes.py` trains a single 3-class gradient-boosted classifier
+(XGBoost) that predicts each
 player's minutes bucket for an upcoming match: benched (`0_minutes`), partial
 (`1_to_59_minutes`), or a full-ish shift (`60_minutes_plus`). It is scored on
 the two decision boundaries the downstream points models care about —
@@ -246,17 +294,43 @@ probability of *any* appearance and probability of a *60+ minute* appearance —
 cross-validated with an expanding window over seasons, then refit on all
 seasons and logged to MLflow (experiment `minutes_played_classification`).
 
+Numeric features pass through the pipeline unimputed and unscaled: XGBoost
+learns a missing-direction per split, which says more than a median stand-in,
+and trees are indifferent to scale. Categoricals are one-hot encoded with
+nulls mapped to an explicit `unknown` category, and the label encoder lives
+inside the estimator so `classes_` stays string-valued end to end.
+
 Its features are assembled from the `player_match`, `player_week`,
-`player_availability` and `player_season` tables. Contemporaneous features
-(knowable at the deadline): value, value share of team, positional value rank,
-number of same-position teammates, FPL chance-of-playing, positional
-availability (fit same-club, same-position rivals ahead and at the same
-position), rolling 5-match minutes, and games played so far this season.
-Cross-season features, joined through `player_season.player_code` (see
-[Storage](#storage)): previous-season minutes, start rate and points-per-start,
-seasons played in the Premier League, seasons since the player was last in the
-Premier League, age, days since joining the current club, whether the player
-is a Premier League newcomer, and whether their club was promoted. These
+`player_availability`, `player_season` and `tm_*` tables. Contemporaneous
+features (knowable at the deadline): number of same-position teammates, FPL
+chance-of-playing, positional availability (fit same-club, same-position
+rivals ahead and at the same position), rolling 5-match minutes, and games
+played so far this season. Cross-season features, joined through
+`player_season.player_code` (see [Storage](#storage)): previous-season minutes
+and start rate, seasons played in the Premier League, seasons since the player
+was last in the Premier League, age, whether the player is a Premier League
+newcomer, and whether their club was promoted.
+
+Transfermarkt features (`features/transfermarkt.py`) run on two clocks.
+Features derived from matches the player has played — minutes in each of the
+last two games, days between them, season-to-date minutes and share of the
+club's position-group minutes — **freeze** at the last played match, so a
+forward gameweek inherits the state entering it and does not drift. Features
+derived from the calendar — market value as of the fixture, and the count,
+value and recency of rivals signed into the same position group within the
+last 365 days — read the fixture's **own kickoff**, because a valuation or a
+signing is a known fact at prediction time. Freezing those would hide a summer
+signing from every pre-season prediction, which is the failure that motivated
+the model: a keeper predicted as his club's number one after a replacement had
+already been bought.
+
+The `tm_*` tables are populated by hand (`scripts/scrape_transfermarkt.py`),
+so `main()` calls `check_transfermarkt_freshness()` before predicting. It
+fails loudly on valuations older than 45 days, and on fewer than 90% of the
+season's actual appearers mapping to Transfermarkt — two different failures
+that otherwise share one symptom, a model quietly reading nulls. Players with
+no Transfermarkt match are never filtered out: their TM features are null and
+the model reads the absence as signal. These
 reach across the summer break, which is what lets the model say anything
 useful about a player at GW1 of a new season, before any in-season evidence
 exists — previously it had nothing but contemporaneous, in-season signal. The
@@ -410,114 +484,6 @@ minutes model's `is_promoted_club` / `is_pl_newcomer` cold-start features
 (measured to improve every CV metric, see
 [Minutes-played model](#minutes-played-model)); it is no longer an open
 question there.
-
-## Installation
-
-This project uses Python 3.12 and [uv](https://docs.astral.sh/uv/) for dependency and environment management.
-
-1. Clone the repository and `cd` into it.
-2. Install Python 3.12 (e.g. via [pyenv](https://github.com/pyenv/pyenv) or `uv python install 3.12`).
-3. Install dependencies:
-
-   ```bash
-   uv sync
-   ```
-
-   This will create a `.venv/` and install both runtime and dev dependencies from `uv.lock`.
-
-A `GITHUB_API_KEY` (in a `.env` file) is required to download the Vaastav,
-FCI, and fplcache datasets via the GitHub API.
-
-To read your live squad rather than hand-maintaining a team file, set
-`FPL_MANAGER_ID` (your FPL entry id — the number in the URL of your Points
-page) in the same `.env`. No credentials are needed: the squad, bank and
-transfer history all come from FPL's public `entry` endpoints.
-
-Purchase prices are reconstructed rather than read. Players still holding
-their opening place are priced at what they cost at your opening deadline
-(from `player_week`); anyone transferred in since is priced at
-`element_in_cost`, which is exactly what you paid. The reconstruction is
-checked against the budget every manager starts on — opening squad plus
-opening bank must equal 100.0m — and the run stops if it does not, because a
-wrong purchase price is a wrong selling price in every gameweek of the plan.
-
-Free transfers are the one number no public endpoint publishes, so set
-`FPL_FREE_TRANSFERS` to what the FPL site shows. Unset, it assumes 1 and warns.
-The authenticated `my-team` endpoint does carry it, but FPL no longer accepts a
-session cookie as an API credential — it returns "Authentication credentials
-were not provided" however logged-in the browser is — so that route is closed.
-
-Two limitations follow from using public data. Picks only become available once
-a gameweek has kicked off, so the squad read is your last settled one — correct
-as the squad you carry in, but it will not show a transfer you have already
-made for the upcoming deadline. And a free hit gameweek reports a squad that
-reverts, so the run stops rather than planning from it.
-
-## Usage
-
-Run the full pipeline via `uv`:
-
-```bash
-# Refresh the current season, train the minutes model, predict and optimise
-uv run python main.py
-```
-
-`main()` accepts a few keyword arguments:
-
-* `rebuild` (default `False`) — drop and reload every season from scratch
-  (full refresh / recovery escape hatch). The default loads only missing
-  immutable seasons and upserts the current season.
-* `team_file` — path to a team JSON naming the squad carried into the
-  upcoming gameweek. Players are declared by `name` or by `element`, each with
-  a `purchase_price`. Passing this overrides the live squad, which is what
-  makes it useful for asking "what if I owned this instead". With it unset the
-  squad is read from the public entry endpoints using `FPL_MANAGER_ID`. One or
-  the other is required to optimise once the season is under way; with neither,
-  mid-season runs log and skip optimisation, leaving the ingest, training and
-  prediction work of that run intact. At GW1 the optimiser free-builds and
-  needs no squad at all.
-
-  Every squad read from the API is recorded to `data/teams/{season}_gw{n}.json`
-  in that same team-file format, so a run is always reproducible by handing the
-  snapshot back as `team_file`. Snapshots are a record, never an automatic
-  input: a stale one would silently plan transfers from a team you no longer
-  own.
-
-### Evaluating the models with MLflow
-
-Each position (GK, DEF, MID, FWD) has its own points model, and each is
-evaluated by its own expanding-window cross-validation during training,
-logged to MLflow — one experiment per position (`gk-points-model`,
-`def-points-model`, `mid-points-model`, `fwd-points-model`). The minutes
-model logs to its own experiment (`minutes_played_classification`).
-
-There is currently no harness that scores the four positions against each
-other on one scale; the rolling-origin replay that used to do so measured
-the deleted rolling-points formula rather than the models, and was removed
-with it.
-
-Browse the results in the MLflow UI using the helper scripts:
-
-```bash
-./.bin/start_mlflow.sh   # launches the UI at http://127.0.0.1:5050
-./.bin/stop_mlflow.sh    # stops it again
-```
-
-`start_mlflow.sh` first clears any process already on the port, so re-running
-it restarts the UI cleanly. All MLflow data lives under the `models/` folder,
-which is gitignored — only the scripts are tracked.
-
-## Development
-
-Run the unit suite and linters with `uv`:
-
-```bash
-uv run pytest                  # unit tests only (integration deselected)
-uv run pytest -m integration   # live network integration tests
-uv run ruff check .
-uv run ruff format --check .
-uv run ty check
-```
 
 ## Resources
 

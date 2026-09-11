@@ -20,7 +20,7 @@ from fantasy_football.modelling.forward import (
     build_forward_fixtures,
     last_played_gw,
 )
-from fantasy_football.modelling.metrics import summarise
+from fantasy_football.modelling.metrics import metric_name, summarise
 from fantasy_football.modelling.registry import load_production_model
 from fantasy_football.storage.tables import (
     BACKFILL_KIND,
@@ -356,7 +356,9 @@ class Predictor(ABC):
             mlflow.log_params(self.params)
             for step, result in enumerate(per_fold):
                 for key, value in result.metrics.as_dict().items():
-                    mlflow.log_metric(f"{prefix}_{key}", value, step=step)
+                    mlflow.log_metric(
+                        metric_name(prefix, key), value, step=step
+                    )
             mlflow.log_metrics(agg)
             mlflow.sklearn.log_model(
                 final_model,
