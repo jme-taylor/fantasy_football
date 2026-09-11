@@ -32,7 +32,9 @@ from fantasy_football.constants import (
     EARLIEST_IDENTITY_SEASON,
 )
 from fantasy_football.extraction.seasons import seasons_in_range
-from fantasy_football.extraction.tm_player_map import refresh_player_map
+from fantasy_football.extraction.tm_player_map import (
+    TransferMarktPlayerMap,
+)
 from fantasy_football.extraction.transfermarkt import (
     REQUEST_DELAY_SECONDS,
     collect_player_links,
@@ -100,7 +102,7 @@ def main() -> None:
     connection = get_connection(DATABASE_PATH)
     try:
         if args.map_only:
-            refresh_player_map(connection)
+            TransferMarktPlayerMap(connection).refresh_player_map()
             return
         if not args.scrape_only:
             collect_player_links(connection, seasons, transfermarkt)
@@ -113,7 +115,7 @@ def main() -> None:
             limit=args.limit,
             delay=args.delay,
         )
-        refresh_player_map(connection)
+        TransferMarktPlayerMap(connection).refresh_player_map()
     finally:
         connection.close()
 

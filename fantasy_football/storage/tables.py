@@ -602,7 +602,7 @@ TM_PLAYER_MAP = Table(
     schema={
         "player_code": pl.Int64,
         "tm_player_id": pl.Utf8,
-        "match_rung": pl.Utf8,
+        "match_rule": pl.Utf8,
         "match_score": pl.Float64,
         "fpl_name": pl.Utf8,
         "tm_name": pl.Utf8,

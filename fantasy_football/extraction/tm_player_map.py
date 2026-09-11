@@ -1,45 +1,9 @@
-"""Resolve FPL players to Transfermarkt players, once, at person level.
-
-FPL and Transfermarkt share no identifier, so the bridge has to be built
-from what both publish about a person: their name, their date of birth and
-the clubs they have played for. Date of birth does the heavy lifting -- two
-Premier League players sharing a birthday *and* a similar name is
-vanishingly rare -- which demotes name similarity from "is this the same
-person" to "confirm this is the same person".
-
-The result is one row per matched ``player_code``. Identity is
-time-invariant, so it is resolved once and the time-varying Transfermarkt
-data (market values, transfers) joins through it by date afterwards.
-
-The waterfall, in order. A ``player_code`` or ``tm_player_id`` claimed by
-an earlier rung is never offered to a later one:
-
-0. ``override``         -- the committed CSV, which always wins
-1. ``dob_exact_name``   -- date of birth plus an exact normalised name
-2. ``dob_fuzzy_name``   -- date of birth plus a similar full name
-3. ``dob_surname``      -- date of birth plus a similar surname
-4. ``club_exact_name``  -- no date of birth either side: exact name + club
-5. ``exact_name``       -- an exact name unique on both sides, no DOB used
-6. ``exact_name_dob_conflict`` -- as above, but the two dates disagree
-
-The last two carry no date-of-birth evidence at all, so they lean entirely
-on the name being the only one of its kind on both sides. The sixth is
-split out because a shared name over two different birthdays is the
-likeliest place for a wrong match to hide; query it to audit.
-
-Within a rung, a player with two or more surviving candidates is left
-unmatched rather than guessed at. Everything unmatched lands in the
-candidate report, pre-filled with its best Transfermarkt candidates in the
-override file's own schema, so closing the gap is a paste rather than a
-Transfermarkt search.
-"""
-
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import polars as pl
+from pydantic import BaseModel, Field
 
 from fantasy_football.constants import DATA_FOLDER
 from fantasy_football.storage.tables import TM_PLAYER_MAP
@@ -52,85 +16,287 @@ logger = logging.getLogger(__name__)
 MAPPINGS_FOLDER = Path(__file__).parent / "mappings"
 OVERRIDES_PATH = MAPPINGS_FOLDER / "tm_player_overrides.csv"
 CLUBS_PATH = MAPPINGS_FOLDER / "tm_clubs.csv"
+CANDIDATE_PATH = DATA_FOLDER / "tm_player_map_candidates.csv"
 
-# The report is regenerated every run, so it lives with the derived data
-# rather than beside the two files a human maintains.
-REPORT_PATH = DATA_FOLDER / "tm_player_map_candidates.csv"
-
-# Jaro-Winkler, not Levenshtein: it weights a shared prefix, which is what
-# distinguishes a transliteration from a different person.
 NAME_SIMILARITY_THRESHOLD = 0.85
 
-# How many Transfermarkt candidates each unmatched player gets offered.
-REPORT_CANDIDATES = 3
+CANDIDATE_COUNT = 3
 
 OVERRIDE_COLUMNS = ("player_code", "tm_player_id", "fpl_name", "tm_name")
 
-# FPL sells managers alongside players and gives them their own element
-# type, which player_identity maps to a null position. Transfermarkt has
-# no counterpart, so they are dropped rather than left to be guessed at.
 PLAYER_POSITIONS = ("GK", "DEF", "MID", "FWD")
 
 
-def _normalised_name(column: str) -> str:
-    """Return SQL normalising a name column for comparison.
+class TransferMarktMatchRule(BaseModel):
+    """A single rule for matching FPL players to Transfermarkt players.
 
-    Lowercased, accents stripped and every run of punctuation -- including
-    the underscores in Vaastav-era names -- collapsed to a single space.
+    For each matching rule, when a player is matched on that rule, the score
+    is calculated and stored in the match_score column. The rule that was used
+    to make the match is stored in the match_rule column.
     """
-    return (
-        f"trim(regexp_replace(lower(strip_accents({column})), "
-        "'[^a-z0-9]+', ' ', 'g'))"
+
+    name: str = Field(description="The value stored in the match_rule column.")
+    predicate: str = Field(
+        description="The join condition between the two sides."
+    )
+    score: str = Field(
+        description="The expression stored in the match_score column."
     )
 
 
-def _surname(expression: str) -> str:
-    """Return SQL taking the last token of an already-normalised name."""
-    return f"regexp_extract({expression}, '([a-z0-9]+)$', 1)"
+def create_match_rules(threshold: float) -> tuple[TransferMarktMatchRule, ...]:
+    """Create the match rules for the waterfall.
 
-
-def _normalised_club(column: str) -> str:
-    """Return SQL normalising a club name for comparison.
-
-    Transfermarkt is inconsistent about the ``FC``/``AFC`` suffix, so both
-    are dropped. That is what lets clubs whose two names already agree
-    match without needing a row in the club map at all.
-    """
-    padded = f"' ' || {_normalised_name(column)} || ' '"
-    return f"trim(regexp_replace({padded}, ' (fc|afc) ', ' ', 'g'))"
-
-
-def load_club_map(path: Path | None = None) -> pl.DataFrame:
-    """Read the hand-maintained Transfermarkt-to-FPL club map.
+    These will be executed in order, and the first rule that matches will be
+    used to match the player.
 
     Parameters
     ----------
-    path : Path | None, optional
-        The CSV to read. Defaults to the committed ``CLUBS_PATH``.
+    threshold: float
+        The threshold for the fuzzy match rules.
+
+    Returns
+    -------
+    tuple[TransferMarktMatchRule, ...]
+        The match rules for the waterfall.
+    """
+    full = "jaro_winkler_similarity(f.name_norm, t.name_norm)"
+    surname = "jaro_winkler_similarity(f.surname_norm, t.surname_norm)"
+    same_dob = f"f.birth_date = t.dob_date AND {_SOLE_ON_DOB}"
+    cutoff = float(threshold)
+    return (
+        TransferMarktMatchRule(
+            name="dob_exact_name",
+            predicate=f"{same_dob} AND f.name_norm = t.name_norm",
+            score="1.0",
+        ),
+        TransferMarktMatchRule(
+            name="dob_fuzzy_name",
+            predicate=f"{same_dob} AND {full} >= {cutoff}",
+            score=full,
+        ),
+        TransferMarktMatchRule(
+            name="dob_surname",
+            predicate=f"{same_dob} AND {surname} >= {cutoff}",
+            score=surname,
+        ),
+        TransferMarktMatchRule(
+            name="club_exact_name",
+            predicate="(f.birth_date IS NULL OR t.dob_date IS NULL) "
+            f"AND f.name_norm = t.name_norm AND {_SHARED_CLUB}",
+            score="1.0",
+        ),
+        TransferMarktMatchRule(
+            name="exact_name",
+            predicate=f"f.name_norm = t.name_norm AND NOT {_DOB_CONFLICT}",
+            score="1.0",
+        ),
+        TransferMarktMatchRule(
+            name="exact_name_dob_conflict",
+            predicate=f"f.name_norm = t.name_norm AND {_DOB_CONFLICT}",
+            score="1.0",
+        ),
+    )
+
+
+class TransferMarktPlayerMap:
+    """Class for matching FPL players to Transfermarkt players."""
+
+    def __init__(
+        self,
+        connection: "duckdb.DuckDBPyConnection",
+        threshold: float = NAME_SIMILARITY_THRESHOLD,
+        report_candidates: int = CANDIDATE_COUNT,
+    ) -> None:
+        """Hold the connection and the settings the waterfall runs under."""
+        self.connection = connection
+        self.threshold = threshold
+        self.report_candidates = report_candidates
+        self.match_rules = create_match_rules(threshold)
+
+    def build_player_map(self) -> pl.DataFrame:
+        """Match FPL players to Transfermarkt players using waterfall.
+
+        This will always first check the overrides file that has been
+        manually edited by a human, and then the rest of the candidates will
+        go through the waterfall of match rules. The order of the match rules
+        is determined by the create_match_rules function.
+
+        Returns
+        -------
+        pl.DataFrame
+            A DataFrame containing the matched FPL players and their Transfermarkt player IDs.
+        """
+        overrides = load_overrides()
+        club_map = load_club_map()
+        self._register_sources(club_map)
+
+        player_matches = self._override_matches(overrides)
+
+        for rule in self.match_rules:
+            self._refresh_claimed_ids(player_matches)
+            found = self.connection.execute(
+                MATCH_RULE_QUERY.format(
+                    predicate=rule.predicate,
+                    score=rule.score,
+                    match_rule=rule.name,
+                )
+            ).pl()
+            logger.info(
+                "Found %d matches using the %s rule", found.height, rule.name
+            )
+            player_matches = pl.concat([player_matches, _shape(found)])
+        return player_matches.sort("player_code")
+
+    def create_unmatched_report(self, player_matches: pl.DataFrame) -> int:
+        """Create a report of unmatched players for manual review.
+
+        First refreshes the claimed IDs table to ensure it is fresh. It
+        then creates a report of the unmatched players, with the top N
+        most similar players, as determined by the report_candidates class
+        variable. The report is written to the CANDIDATE_PATH file.
+
+        Parameters
+        ----------
+        player_matches: pl.DataFrame
+            The player matches to create the report for.
+
+        Returns
+        -------
+        int
+            The number of unmatched players
+        """
+        self._refresh_claimed_ids(player_matches)
+        unmatched_player_report = self.connection.execute(
+            UNMATCHED_REPORT_QUERY.format(candidates=self.report_candidates)
+        ).pl()
+        unmatched_count = (
+            unmatched_player_report["player_code"].n_unique()
+            if not unmatched_player_report.is_empty()
+            else 0
+        )
+        CANDIDATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        unmatched_player_report.write_csv(CANDIDATE_PATH)
+        return unmatched_count
+
+    def refresh_player_map(self) -> pl.DataFrame:
+        """Refresh the player map.
+
+        First builds the player matches, and then updates the TM_PLAYER_MAP
+        table with all matches. It then creates and saves the unmatched
+        player report.
+
+        Returns
+        -------
+        pl.DataFrame
+            The player matches.
+        """
+        player_matches = self.build_player_map()
+        TM_PLAYER_MAP.replace_all(self.connection, player_matches)
+        unmatched_count = self.create_unmatched_report(player_matches)
+        logger.info(
+            "Matched %d players; %d unmatched",
+            player_matches.height,
+            unmatched_count,
+        )
+        for match_rule, count in (
+            player_matches["match_rule"]
+            .value_counts()
+            .sort("match_rule")
+            .iter_rows()
+        ):
+            logger.info(" %s: %d", match_rule, count)
+        return player_matches
+
+    def _register_sources(self, club_map: pl.DataFrame) -> None:
+        """Register all sources required for the player mapping.
+
+        This will register the club map, the FPL player map, the Transfermarkt
+        player map and the Transfermarkt club map.
+
+        Parameters
+        ----------
+        club_map: pl.DataFrame
+            The club map to register.
+        """
+        _temp_table(
+            self.connection,
+            "tm_map_club",
+            club_map,
+            select=(
+                f"{_normalised_club('tm_club')} AS tm_club_norm, {_normalised_club('fpl_club')} AS fpl_club_norm"
+            ),
+        )
+        self.connection.execute(
+            TM_MAP_FPL_QUERY.format(
+                valid_positions=_sql_tuple(PLAYER_POSITIONS),
+                name_normalised=_normalised_name(
+                    "first_name || ' ' || second_name"
+                ),
+                surname_normalised=_surname(_normalised_name("second_name")),
+            )
+        )
+        self.connection.execute(
+            TM_MAP_FPL_CLUB_QUERY.format(
+                normalised_club=_normalised_club("pw.team")
+            )
+        )
+        self.connection.execute(
+            TM_MAP_TM_QUERY.format(
+                name_normalised=_normalised_name("name"),
+                surname_normalised=_surname(_normalised_name("name")),
+            )
+        )
+        self.connection.execute(
+            TM_MAP_TM_CLUB_QUERY.format(
+                club_normalised=_normalised_club("club")
+            )
+        )
+
+    def _override_matches(self, overrides: pl.DataFrame) -> pl.DataFrame:
+        if overrides.is_empty():
+            return _shape(pl.DataFrame(schema=TM_PLAYER_MAP.schema))
+        _temp_table(self.connection, "tm_map_override", overrides)
+        found = self.connection.execute(FOUND_OVERRIDES_QUERY).pl()
+        return _shape(found)
+
+    def _refresh_claimed_ids(self, player_matches: pl.DataFrame) -> None:
+        """Refresh the claimed IDs table.
+
+        This stops other rules from matching the player.
+
+        Parameters
+        ----------
+        player_matches: pl.DataFrame
+            The player matches to refresh the claimed IDs table with.
+        """
+        _temp_table(
+            self.connection,
+            "tm_map_claimed",
+            player_matches.select("player_code", "tm_player_id"),
+        )
+
+
+def load_club_map() -> pl.DataFrame:
+    """Read the hand-maintained Transfermarkt-to-FPL club map.
 
     Returns
     -------
     pl.DataFrame
         Columns ``tm_club`` and ``fpl_club``.
     """
-    frame = pl.read_csv(path or CLUBS_PATH)
+    frame = pl.read_csv(CLUBS_PATH)
     return frame.select(
         pl.col("tm_club").cast(pl.Utf8), pl.col("fpl_club").cast(pl.Utf8)
     )
 
 
-def load_overrides(path: Path | None = None) -> pl.DataFrame:
+def load_overrides() -> pl.DataFrame:
     """Read the hand-maintained player overrides, checking they are 1:1.
 
-    The file is edited by hand, so a duplicate on either side is a matter
-    of when rather than if -- and a duplicate would fan out every
-    ``player_week`` row it touches, silently inflating anything trained on
-    the join.
-
-    Parameters
-    ----------
-    path : Path | None, optional
-        The CSV to read. Defaults to the committed ``OVERRIDES_PATH``.
+    The file is edited by hand, so a duplicate on either side is likely due
+    to human error. A duplicate would fan out every ``player_week`` row it
+    touches, silently inflating anything trained on the join.
 
     Returns
     -------
@@ -144,7 +310,7 @@ def load_overrides(path: Path | None = None) -> pl.DataFrame:
         If a ``player_code`` or a ``tm_player_id`` appears twice.
     """
     frame = pl.read_csv(
-        path or OVERRIDES_PATH,
+        OVERRIDES_PATH,
         schema_overrides={"player_code": pl.Int64, "tm_player_id": pl.Utf8},
     )
     frame = frame.select(OVERRIDE_COLUMNS)
@@ -162,15 +328,85 @@ def load_overrides(path: Path | None = None) -> pl.DataFrame:
     return frame
 
 
+def _normalised_name(column: str) -> str:
+    """Return SQL normalising a name column for comparison.
+
+    Lowercased, accents stripped and every run of punctuation -- including
+    the underscores in Vaastav-era names -- collapsed to a single space.
+
+    Parameters
+    ----------
+    column : str
+        The name column in the table to normalise.
+
+    Returns
+    -------
+    str
+        The SQL to normalise the column.
+    """
+    return (
+        f"trim(regexp_replace(lower(strip_accents({column})), "
+        "'[^a-z0-9]+', ' ', 'g'))"
+    )
+
+
+def _surname(expression: str) -> str:
+    """Return SQL taking the last token of an already-normalised name.
+
+    Parameters
+    ----------
+    expression: str
+        The SQL to extract the surname from.
+
+    Returns
+    -------
+    str
+        The SQL to extract the surname from.
+    """
+    return f"regexp_extract({expression}, '([a-z0-9]+)$', 1)"
+
+
+def _normalised_club(column: str) -> str:
+    """Return SQL normalising a club name for comparison.
+
+    Transfermarkt is inconsistent about the ``FC``/``AFC`` suffix, so both
+    are dropped. That is what lets clubs whose two names already agree
+    match without needing a row in the club map at all.
+
+    Parameters
+    ----------
+    column: str
+        The club column in the table to normalise.
+
+    Returns
+    -------
+    str
+        The SQL to normalise the club column.
+    """
+    padded = f"' ' || {_normalised_name(column)} || ' '"
+    return f"trim(regexp_replace({padded}, ' (fc|afc) ', ' ', 'g'))"
+
+
 def _sql_tuple(values: tuple[str, ...]) -> str:
-    """Render a tuple of labels as a SQL ``IN`` list."""
+    """Render a tuple of labels as a SQL ``IN`` list.
+
+    Parameters
+    ----------
+    values: tuple[str, ...]
+        The values to render as a SQL ``IN`` list.
+
+    Returns
+    -------
+    str
+        The SQL to render the values as a ``IN`` list.
+    """
     joined = ", ".join(f"'{value}'" for value in values)
     return f"({joined})"
 
 
 def _temp_table(
     connection: "duckdb.DuckDBPyConnection",
-    name: str,
+    table_name: str,
     frame: pl.DataFrame,
     select: str = "*",
 ) -> None:
@@ -180,155 +416,30 @@ def _temp_table(
     ----------
     connection : duckdb.DuckDBPyConnection
         An open connection.
-    name : str
+    table_name : str
         The temp table to create or replace.
     frame : pl.DataFrame
         The rows to materialise.
     select : str, optional
         The select list to read the frame through. Defaults to ``*``.
     """
-    view = f"{name}_input"
+    view = f"{table_name}_input"
     connection.register(view, frame.to_arrow())
     try:
         connection.execute(
-            f"CREATE OR REPLACE TEMP TABLE {name} AS "
+            f"CREATE OR REPLACE TEMP TABLE {table_name} AS "
             f"SELECT {select} FROM {view}"
         )
     finally:
         connection.unregister(view)
 
 
-def _register_sources(
-    connection: "duckdb.DuckDBPyConnection", club_map: pl.DataFrame
-) -> None:
-    """Build the temp tables both sides of the waterfall read from.
-
-    Four of them: a person and a club set for each side. Names and clubs
-    arrive already normalised, so each rung is a plain join.
-
-    Parameters
-    ----------
-    connection : duckdb.DuckDBPyConnection
-        An open connection.
-    club_map : pl.DataFrame
-        The Transfermarkt-to-FPL club map.
-    """
-    _temp_table(
-        connection,
-        "tm_map_club",
-        club_map,
-        select=(
-            f"{_normalised_club('tm_club')} AS tm_club_norm, "
-            f"{_normalised_club('fpl_club')} AS fpl_club_norm"
-        ),
-    )
-    # max() ignores nulls, so one observation of a person-level column in
-    # any season supplies every season -- the same propagation
-    # player_season does on read.
-    connection.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE tm_map_fpl AS
-        WITH person AS (
-            SELECT
-                player_code,
-                max(birth_date) AS birth_date,
-                max(first_name) AS first_name,
-                max(second_name) AS second_name
-            FROM player_season
-            WHERE player_code IS NOT NULL
-            GROUP BY player_code
-            HAVING count(*) FILTER (
-                WHERE position IN {_sql_tuple(PLAYER_POSITIONS)}
-            ) > 0
-        ),
-        weeks AS (
-            SELECT ps.player_code, count(*) AS player_weeks
-            FROM player_week AS pw
-            JOIN player_season AS ps
-                ON ps.season = pw.season AND ps.element = pw.element
-            WHERE ps.player_code IS NOT NULL
-            GROUP BY ps.player_code
-        )
-        SELECT
-            person.player_code,
-            coalesce(weeks.player_weeks, 0) AS player_weeks,
-            birth_date,
-            trim(coalesce(first_name, '') || ' ' || coalesce(second_name, ''))
-                AS fpl_name,
-            {_normalised_name("first_name || ' ' || second_name")}
-                AS name_norm,
-            {_surname(_normalised_name("second_name"))} AS surname_norm
-        FROM person
-        LEFT JOIN weeks USING (player_code)
-        """
-    )
-    connection.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE tm_map_fpl_club AS
-        SELECT DISTINCT
-            ps.player_code,
-            {_normalised_club("pw.team")} AS club_norm
-        FROM player_week AS pw
-        JOIN player_season AS ps
-            ON ps.season = pw.season AND ps.element = pw.element
-        WHERE ps.player_code IS NOT NULL AND pw.team IS NOT NULL
-        """
-    )
-    connection.execute(
-        f"""
-        CREATE OR REPLACE TEMP TABLE tm_map_tm AS
-        SELECT
-            tm_player_id,
-            dob_date,
-            name AS tm_name,
-            player_link AS tm_player_link,
-            {_normalised_name("name")} AS name_norm,
-            {_surname(_normalised_name("name"))} AS surname_norm
-        FROM tm_player
-        """
-    )
-    # A club reaches FPL's spelling through the map where the two names
-    # diverge, and through normalisation alone where they do not.
-    connection.execute(
-        """
-        CREATE OR REPLACE TEMP TABLE tm_map_tm_club AS
-        WITH raw AS (
-            SELECT tm_player_id, team AS club FROM tm_player
-            UNION
-            SELECT tm_player_id, last_club FROM tm_player
-            UNION
-            SELECT tm_player_id, joined_club FROM tm_transfer
-            UNION
-            SELECT tm_player_id, left_club FROM tm_transfer
-        ),
-        normalised AS (
-            SELECT tm_player_id, {club} AS club_norm
-            FROM raw
-            WHERE club IS NOT NULL
-        )
-        SELECT DISTINCT
-            n.tm_player_id,
-            coalesce(m.fpl_club_norm, n.club_norm) AS club_norm
-        FROM normalised AS n
-        LEFT JOIN tm_map_club AS m ON m.tm_club_norm = n.club_norm
-        """.format(club=_normalised_club("club"))
-    )
+def _shape(frame: pl.DataFrame) -> pl.DataFrame:
+    """Narrow a match rule's output to the stored column order and dtypes."""
+    return TM_PLAYER_MAP.coerce(TM_PLAYER_MAP.conform(frame))
 
 
-def _claim(
-    connection: "duckdb.DuckDBPyConnection", matches: pl.DataFrame
-) -> None:
-    """Refresh the temp table of already-matched ids the rungs exclude."""
-    _temp_table(
-        connection,
-        "tm_map_claimed",
-        matches.select("player_code", "tm_player_id"),
-    )
-
-
-# Every rung is this one statement: pair the sides on the rung's own
-# predicate, then keep only pairings that are the sole one on both sides.
-_RUNG_QUERY = """
+MATCH_RULE_QUERY = """
 WITH pairs AS (
     SELECT
         f.player_code,
@@ -354,16 +465,152 @@ unambiguous AS (
 SELECT
     player_code,
     tm_player_id,
-    '{rung}' AS match_rung,
+    '{match_rule}' AS match_rule,
     match_score,
     fpl_name,
     tm_name
 FROM unambiguous
 """
 
-# Two people sharing a birthday go to the human whatever their names
-# score, exact matches included. Claimed ids do not count towards the
-# crowd, so an override resolving one of a pair unblocks the other.
+UNMATCHED_REPORT_QUERY = """
+WITH ranked AS (
+    SELECT
+        f.player_code,
+        t.tm_player_id,
+        f.fpl_name,
+        t.tm_name,
+        t.tm_player_link,
+        f.player_weeks,
+        f.birth_date,
+        t.dob_date,
+        jaro_winkler_similarity(f.name_norm, t.name_norm) AS score,
+        row_number() OVER (
+            PARTITION BY f.player_code
+            ORDER BY jaro_winkler_similarity(f.name_norm, t.name_norm)
+                DESC, t.tm_player_id
+        ) AS rank
+    FROM tm_map_fpl AS f
+    LEFT JOIN tm_map_tm AS t
+        ON t.tm_player_id NOT IN (
+            SELECT tm_player_id FROM tm_map_claimed
+        )
+    WHERE f.player_code NOT IN (SELECT player_code FROM tm_map_claimed)
+        AND f.player_weeks > 0
+)
+SELECT
+    player_code,
+    tm_player_id,
+    fpl_name,
+    tm_name,
+    tm_player_link,
+    player_weeks AS fpl_player_weeks,
+    birth_date AS fpl_birth_date,
+    dob_date AS tm_dob_date,
+    score AS name_similarity
+FROM ranked
+WHERE rank <= {candidates}
+ORDER BY player_code, rank
+"""
+
+# TODO(JT): Make this query name more verbose
+TM_MAP_FPL_QUERY = """
+CREATE OR REPLACE TEMP TABLE tm_map_fpl AS
+WITH person AS (
+    SELECT
+        player_code,
+        max(birth_date) AS birth_date,
+        max(first_name) AS first_name,
+        max(second_name) AS second_name
+    FROM player_season
+    WHERE player_code IS NOT NULL
+    GROUP BY player_code
+    HAVING count(*) FILTER (
+        WHERE position IN {valid_positions}
+    ) > 0
+),
+weeks AS (
+    SELECT ps.player_code, count(*) AS player_weeks
+    FROM player_week AS pw
+    JOIN player_season AS ps
+        ON ps.season = pw.season AND ps.element = pw.element
+    WHERE ps.player_code IS NOT NULL
+    GROUP BY ps.player_code
+)
+SELECT
+    person.player_code,
+    coalesce(weeks.player_weeks, 0) AS player_weeks,
+    birth_date,
+    trim(coalesce(first_name, '') || ' ' || coalesce(second_name, ''))
+        AS fpl_name,
+    {name_normalised}
+        AS name_norm,
+    {surname_normalised} AS surname_norm
+FROM person
+LEFT JOIN weeks USING (player_code)
+"""
+
+# TODO(JT): Make this query name more verbose
+TM_MAP_FPL_CLUB_QUERY = """
+CREATE OR REPLACE TEMP TABLE tm_map_fpl_club AS
+SELECT DISTINCT
+    ps.player_code,
+    {normalised_club} AS club_norm
+FROM player_week AS pw
+JOIN player_season AS ps
+    ON ps.season = pw.season AND ps.element = pw.element
+WHERE ps.player_code IS NOT NULL AND pw.team IS NOT NULL
+"""
+
+# TODO(JT): Make this query name more verbose
+TM_MAP_TM_QUERY = """
+CREATE OR REPLACE TEMP TABLE tm_map_tm AS
+SELECT
+    tm_player_id,
+    dob_date,
+    name AS tm_name,
+    player_link AS tm_player_link,
+    {name_normalised} AS name_norm,
+    {surname_normalised} AS surname_norm
+FROM tm_player
+"""
+
+# TODO(JT): Make this query name more verbose
+TM_MAP_TM_CLUB_QUERY = """
+CREATE OR REPLACE TEMP TABLE tm_map_tm_club AS
+WITH raw AS (
+    SELECT tm_player_id, team AS club FROM tm_player
+    UNION
+    SELECT tm_player_id, last_club FROM tm_player
+    UNION
+    SELECT tm_player_id, joined_club FROM tm_transfer
+    UNION
+    SELECT tm_player_id, left_club FROM tm_transfer
+),
+normalised AS (
+    SELECT tm_player_id, {club_normalised} AS club_norm
+    FROM raw
+    WHERE club IS NOT NULL
+)
+SELECT DISTINCT
+    n.tm_player_id,
+    coalesce(m.fpl_club_norm, n.club_norm) AS club_norm
+FROM normalised AS n
+LEFT JOIN tm_map_club AS m ON m.tm_club_norm = n.club_norm
+"""
+
+FOUND_OVERRIDES_QUERY = """
+SELECT
+    o.player_code,
+    o.tm_player_id,
+    'override' AS match_rule,
+    CAST(NULL AS DOUBLE) AS match_score,
+    coalesce(f.fpl_name, o.fpl_name) AS fpl_name,
+    coalesce(t.tm_name, o.tm_name) AS tm_name
+FROM tm_map_override AS o
+LEFT JOIN tm_map_fpl AS f ON f.player_code = o.player_code
+LEFT JOIN tm_map_tm AS t ON t.tm_player_id = o.tm_player_id
+"""
+
 _SOLE_ON_DOB = """
     NOT EXISTS (
         SELECT 1 FROM tm_map_tm AS other
@@ -383,9 +630,6 @@ _SOLE_ON_DOB = """
     )
 """
 
-# Both sides know a date of birth and they disagree. An exact name still
-# matches on it, but under its own rung name so the weakest evidence in
-# the map stays queryable.
 _DOB_CONFLICT = """
     (
         f.birth_date IS NOT NULL
@@ -403,275 +647,3 @@ _SHARED_CLUB = """
           AND tc.tm_player_id = t.tm_player_id
     )
 """
-
-
-@dataclass(frozen=True)
-class Rung:
-    """One rung of the waterfall, as the SQL that drives it.
-
-    Attributes
-    ----------
-    name : str
-        The value stored in ``match_rung``.
-    predicate : str
-        The join condition between the two sides.
-    score : str
-        The expression stored in ``match_score``.
-    """
-
-    name: str
-    predicate: str
-    score: str
-
-
-def _rungs(threshold: float) -> tuple[Rung, ...]:
-    """Return the automatic rungs, in the order they are tried."""
-    full = "jaro_winkler_similarity(f.name_norm, t.name_norm)"
-    surname = "jaro_winkler_similarity(f.surname_norm, t.surname_norm)"
-    same_dob = f"f.birth_date = t.dob_date AND {_SOLE_ON_DOB}"
-    cutoff = float(threshold)
-    return (
-        Rung(
-            "dob_exact_name",
-            f"{same_dob} AND f.name_norm = t.name_norm",
-            "1.0",
-        ),
-        Rung(
-            "dob_fuzzy_name",
-            f"{same_dob} AND {full} >= {cutoff}",
-            full,
-        ),
-        Rung(
-            "dob_surname",
-            f"{same_dob} AND {surname} >= {cutoff}",
-            surname,
-        ),
-        Rung(
-            "club_exact_name",
-            "(f.birth_date IS NULL OR t.dob_date IS NULL) "
-            f"AND f.name_norm = t.name_norm AND {_SHARED_CLUB}",
-            "1.0",
-        ),
-        Rung(
-            "exact_name",
-            f"f.name_norm = t.name_norm AND NOT {_DOB_CONFLICT}",
-            "1.0",
-        ),
-        Rung(
-            "exact_name_dob_conflict",
-            f"f.name_norm = t.name_norm AND {_DOB_CONFLICT}",
-            "1.0",
-        ),
-    )
-
-
-def build_player_map(
-    connection: "duckdb.DuckDBPyConnection",
-    overrides: pl.DataFrame | None = None,
-    club_map: pl.DataFrame | None = None,
-    threshold: float = NAME_SIMILARITY_THRESHOLD,
-) -> pl.DataFrame:
-    """Resolve every FPL player_code to a Transfermarkt player it can.
-
-    Parameters
-    ----------
-    connection : duckdb.DuckDBPyConnection
-        An open connection carrying the ``tm_*`` and identity tables.
-    overrides : pl.DataFrame | None, optional
-        Hand-written matches. Defaults to the committed override file.
-    club_map : pl.DataFrame | None, optional
-        The club map. Defaults to the committed club file.
-    threshold : float, optional
-        Minimum Jaro-Winkler similarity for the two fuzzy rungs.
-
-    Returns
-    -------
-    pl.DataFrame
-        One row per matched player, shaped to ``TM_PLAYER_MAP``.
-    """
-    overrides = load_overrides() if overrides is None else overrides
-    club_map = load_club_map() if club_map is None else club_map
-    _register_sources(connection, club_map)
-
-    matches = _override_matches(connection, overrides)
-    for rung in _rungs(threshold):
-        _claim(connection, matches)
-        found = connection.execute(
-            _RUNG_QUERY.format(
-                predicate=rung.predicate, score=rung.score, rung=rung.name
-            )
-        ).pl()
-        logger.info("Rung %s matched %d players.", rung.name, found.height)
-        matches = pl.concat([matches, _shape(found)])
-    return matches.sort("player_code")
-
-
-def _override_matches(
-    connection: "duckdb.DuckDBPyConnection", overrides: pl.DataFrame
-) -> pl.DataFrame:
-    """Return the override rows, shaped and with a null score.
-
-    The names in the file are the maintainer's own notes, so the stored
-    ones are re-read from each side instead -- a stale comment column must
-    not become the name the rest of the pipeline sees.
-    """
-    if overrides.is_empty():
-        return _shape(pl.DataFrame(schema=TM_PLAYER_MAP.schema))
-    _temp_table(connection, "tm_map_override", overrides)
-    found = connection.execute(
-        """
-        SELECT
-            o.player_code,
-            o.tm_player_id,
-            'override' AS match_rung,
-            CAST(NULL AS DOUBLE) AS match_score,
-            coalesce(f.fpl_name, o.fpl_name) AS fpl_name,
-            coalesce(t.tm_name, o.tm_name) AS tm_name
-        FROM tm_map_override AS o
-        LEFT JOIN tm_map_fpl AS f ON f.player_code = o.player_code
-        LEFT JOIN tm_map_tm AS t ON t.tm_player_id = o.tm_player_id
-        """
-    ).pl()
-    return _shape(found)
-
-
-def _shape(frame: pl.DataFrame) -> pl.DataFrame:
-    """Narrow a rung's output to the stored column order and dtypes."""
-    return TM_PLAYER_MAP.coerce(TM_PLAYER_MAP.conform(frame))
-
-
-def unmatched_report(
-    connection: "duckdb.DuckDBPyConnection",
-    matches: pl.DataFrame,
-    candidates: int = REPORT_CANDIDATES,
-) -> pl.DataFrame:
-    """Return unmatched FPL players and their best candidates.
-
-    The rows carry the override file's own columns first, so a correct
-    candidate is pasted straight across, with the evidence that produced
-    it alongside for eyeballing -- including the Transfermarkt page, so a
-    doubtful one is one click away.
-
-    Players with no ``player_week`` row at all are left out: they are
-    registered squad members who never appeared, so nothing downstream
-    reads them and mapping them by hand is wasted effort. They are still
-    matched into ``tm_player_map`` when the automatic rungs can manage it.
-
-    Parameters
-    ----------
-    connection : duckdb.DuckDBPyConnection
-        An open connection, after ``build_player_map`` has run.
-    matches : pl.DataFrame
-        What ``build_player_map`` returned.
-    candidates : int, optional
-        Candidates offered per unmatched player.
-
-    Returns
-    -------
-    pl.DataFrame
-        One row per candidate, best first within each player.
-    """
-    _claim(connection, matches)
-    return connection.execute(
-        f"""
-        WITH ranked AS (
-            SELECT
-                f.player_code,
-                t.tm_player_id,
-                f.fpl_name,
-                t.tm_name,
-                t.tm_player_link,
-                f.player_weeks,
-                f.birth_date,
-                t.dob_date,
-                jaro_winkler_similarity(f.name_norm, t.name_norm) AS score,
-                row_number() OVER (
-                    PARTITION BY f.player_code
-                    ORDER BY jaro_winkler_similarity(f.name_norm, t.name_norm)
-                        DESC, t.tm_player_id
-                ) AS rank
-            FROM tm_map_fpl AS f
-            LEFT JOIN tm_map_tm AS t
-                ON t.tm_player_id NOT IN (
-                    SELECT tm_player_id FROM tm_map_claimed
-                )
-            WHERE f.player_code NOT IN (SELECT player_code FROM tm_map_claimed)
-              AND f.player_weeks > 0
-        )
-        SELECT
-            player_code,
-            tm_player_id,
-            fpl_name,
-            tm_name,
-            tm_player_link,
-            player_weeks AS fpl_player_weeks,
-            birth_date AS fpl_birth_date,
-            dob_date AS tm_dob_date,
-            score AS name_similarity
-        FROM ranked
-        WHERE rank <= {int(candidates)}
-        ORDER BY player_code, rank
-        """
-    ).pl()
-
-
-def store_player_map(
-    connection: "duckdb.DuckDBPyConnection", matches: pl.DataFrame
-) -> None:
-    """Replace the stored map wholesale.
-
-    Wholesale because the committed CSV is the only durable hand-made
-    half: nothing accumulates in the table that a rebuild cannot
-    reproduce, so it can never drift from the files that made it.
-
-    Parameters
-    ----------
-    connection : duckdb.DuckDBPyConnection
-        An open connection.
-    matches : pl.DataFrame
-        What ``build_player_map`` returned.
-    """
-    TM_PLAYER_MAP.replace_all(connection, matches)
-
-
-def refresh_player_map(
-    connection: "duckdb.DuckDBPyConnection",
-    report_path: Path | None = None,
-) -> pl.DataFrame:
-    """Rebuild the stored map and write the candidate report beside it.
-
-    The report goes to the gitignored data folder rather than the mappings
-    folder: a stale report must never be mistaken for a real mapping.
-
-    Parameters
-    ----------
-    connection : duckdb.DuckDBPyConnection
-        An open connection.
-    report_path : Path | None, optional
-        Where to write the candidate report. Defaults to ``REPORT_PATH``.
-
-    Returns
-    -------
-    pl.DataFrame
-        The stored matches.
-    """
-    matches = build_player_map(connection)
-    store_player_map(connection, matches)
-    report = unmatched_report(connection, matches)
-    unmatched = (
-        report["player_code"].n_unique() if not report.is_empty() else 0
-    )
-    path = report_path or REPORT_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
-    report.write_csv(path)
-    logger.info(
-        "Matched %d players; %d unmatched. Candidates written to %s",
-        matches.height,
-        unmatched,
-        path,
-    )
-    for rung, count in (
-        matches["match_rung"].value_counts().sort("match_rung").iter_rows()
-    ):
-        logger.info("  %s: %d", rung, count)
-    return matches

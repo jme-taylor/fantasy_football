@@ -9,11 +9,10 @@ import pytest
 
 from fantasy_football.extraction import tm_player_map
 from fantasy_football.extraction.tm_player_map import (
-    build_player_map,
+    CANDIDATE_COUNT,
+    TransferMarktPlayerMap,
     load_club_map,
     load_overrides,
-    store_player_map,
-    unmatched_report,
 )
 from fantasy_football.storage.tables import (
     PLAYER_SEASON,
@@ -24,6 +23,9 @@ from fantasy_football.storage.tables import (
 )
 
 TM_BASE_URL = "https://www.transfermarkt.us/x/profil/spieler"
+
+COMMITTED_CLUBS_PATH = tm_player_map.CLUBS_PATH
+COMMITTED_OVERRIDES_PATH = tm_player_map.OVERRIDES_PATH
 
 CLUB_MAP = pl.DataFrame(
     {
@@ -119,28 +121,57 @@ def _add_tm_player(
     )
 
 
+@pytest.fixture(autouse=True)
+def mapping_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the module at test mapping files rather than committed ones."""
+    monkeypatch.setattr(tm_player_map, "CLUBS_PATH", _club_map_file(tmp_path))
+    monkeypatch.setattr(
+        tm_player_map, "OVERRIDES_PATH", _override_file(tmp_path)
+    )
+    monkeypatch.setattr(
+        tm_player_map, "CANDIDATE_PATH", tmp_path / "candidates.csv"
+    )
+
+
 def _build(
     connection: duckdb.DuckDBPyConnection,
     overrides: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Run the waterfall with the test club map and no committed files."""
-    return build_player_map(
-        connection,
-        overrides=NO_OVERRIDES if overrides is None else overrides,
-        club_map=CLUB_MAP,
-    )
+    if overrides is not None:
+        overrides.write_csv(tm_player_map.OVERRIDES_PATH)
+    return TransferMarktPlayerMap(connection).build_player_map()
 
 
-def test_committed_club_map_maps_transfermarkt_to_fpl_names() -> None:
+def _report(
+    connection: duckdb.DuckDBPyConnection,
+    matches: pl.DataFrame,
+    candidates: int = CANDIDATE_COUNT,
+) -> pl.DataFrame:
+    """Write the candidate report and read back what landed on disk."""
+    mapper = TransferMarktPlayerMap(connection, report_candidates=candidates)
+    mapper.create_unmatched_report(matches)
+    return pl.read_csv(tm_player_map.CANDIDATE_PATH)
+
+
+def test_committed_club_map_maps_transfermarkt_to_fpl_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The shipped club file reads and carries both columns."""
+    monkeypatch.setattr(tm_player_map, "CLUBS_PATH", COMMITTED_CLUBS_PATH)
     frame = load_club_map()
     assert frame.columns == ["tm_club", "fpl_club"]
     mapping = dict(zip(frame["tm_club"], frame["fpl_club"]))
     assert mapping["Manchester City"] == "Man City"
 
 
-def test_committed_overrides_file_reads() -> None:
+def test_committed_overrides_file_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The shipped override file parses, empty or not."""
+    monkeypatch.setattr(
+        tm_player_map, "OVERRIDES_PATH", COMMITTED_OVERRIDES_PATH
+    )
     assert load_overrides().columns == [
         "player_code",
         "tm_player_id",
@@ -163,18 +194,14 @@ def _override_file(directory: Path) -> Path:
     return path
 
 
-def _write_overrides(path: Path, rows: dict[str, list[object]]) -> Path:
-    """Write an override CSV to a temporary path."""
-    pl.DataFrame(rows).write_csv(path)
-    return path
+def _write_overrides(rows: dict[str, list[object]]) -> None:
+    """Write an override CSV where the loader will find it."""
+    pl.DataFrame(rows).write_csv(tm_player_map.OVERRIDES_PATH)
 
 
-def test_load_overrides_rejects_a_repeated_player_code(
-    tmp_path: Path,
-) -> None:
+def test_load_overrides_rejects_a_repeated_player_code() -> None:
     """Two Transfermarkt ids for one player is a one-to-many map."""
-    path = _write_overrides(
-        tmp_path / "o.csv",
+    _write_overrides(
         {
             "player_code": [1, 1],
             "tm_player_id": ["a", "b"],
@@ -183,15 +210,12 @@ def test_load_overrides_rejects_a_repeated_player_code(
         },
     )
     with pytest.raises(ValueError, match="player_code"):
-        load_overrides(path)
+        load_overrides()
 
 
-def test_load_overrides_rejects_a_repeated_tm_player_id(
-    tmp_path: Path,
-) -> None:
+def test_load_overrides_rejects_a_repeated_tm_player_id() -> None:
     """Two players sharing one Transfermarkt id would fan out the join."""
-    path = _write_overrides(
-        tmp_path / "o.csv",
+    _write_overrides(
         {
             "player_code": [1, 2],
             "tm_player_id": ["a", "a"],
@@ -200,7 +224,7 @@ def test_load_overrides_rejects_a_repeated_tm_player_id(
         },
     )
     with pytest.raises(ValueError, match="tm_player_id"):
-        load_overrides(path)
+        load_overrides()
 
 
 def test_exact_name_and_dob_match(db: duckdb.DuckDBPyConnection) -> None:
@@ -208,7 +232,7 @@ def test_exact_name_and_dob_match(db: duckdb.DuckDBPyConnection) -> None:
     _add_fpl_player(db, 111, "Erling", "Haaland", date(2000, 7, 21))
     _add_tm_player(db, "418560", "Erling Haaland", date(2000, 7, 21))
     matches = _build(db)
-    assert matches["match_rung"].to_list() == ["dob_exact_name"]
+    assert matches["match_rule"].to_list() == ["dob_exact_name"]
     assert matches["tm_player_id"].to_list() == ["418560"]
 
 
@@ -218,7 +242,7 @@ def test_accents_and_case_do_not_block_an_exact_match(
     """Normalisation strips the accent Transfermarkt keeps."""
     _add_fpl_player(db, 222, "Marc", "Guehi", date(2000, 7, 13))
     _add_tm_player(db, "413338", "Marc Guéhi", date(2000, 7, 13))
-    assert _build(db)["match_rung"].to_list() == ["dob_exact_name"]
+    assert _build(db)["match_rule"].to_list() == ["dob_exact_name"]
 
 
 def test_a_similar_name_on_a_shared_birthday_matches(
@@ -228,7 +252,7 @@ def test_a_similar_name_on_a_shared_birthday_matches(
     _add_fpl_player(db, 333, "Emiliano", "Martinez", date(1992, 9, 2))
     _add_tm_player(db, "111905", "Emiliano Martínez Romero", date(1992, 9, 2))
     matches = _build(db)
-    assert matches["match_rung"].to_list() == ["dob_fuzzy_name"]
+    assert matches["match_rule"].to_list() == ["dob_fuzzy_name"]
     assert matches["match_score"][0] >= 0.85
 
 
@@ -247,7 +271,7 @@ def test_a_shared_surname_matches_when_the_full_name_does_not(
     """The surname rung catches a name the two sources shorten differently."""
     _add_fpl_player(db, 555, "Bobby", "De Cordova-Reid", date(1993, 2, 2))
     _add_tm_player(db, "200104", "Bobby Reid", date(1993, 2, 2))
-    assert _build(db)["match_rung"].to_list() == ["dob_surname"]
+    assert _build(db)["match_rule"].to_list() == ["dob_surname"]
 
 
 def test_two_near_candidates_on_one_birthday_are_left_to_the_human(
@@ -269,7 +293,7 @@ def test_an_exact_name_wins_a_crowded_birthday(
     _add_tm_player(db, "2", "Dany Ings", date(1992, 7, 23))
     matches = _build(db)
     assert matches["tm_player_id"].to_list() == ["1"]
-    assert matches["match_rung"].to_list() == ["exact_name"]
+    assert matches["match_rule"].to_list() == ["exact_name"]
 
 
 def test_a_null_birth_date_falls_back_to_name_and_club(
@@ -280,7 +304,7 @@ def test_a_null_birth_date_falls_back_to_name_and_club(
     _add_tm_player(
         db, "88755", "Kevin De Bruyne", None, team="Manchester City"
     )
-    assert _build(db)["match_rung"].to_list() == ["club_exact_name"]
+    assert _build(db)["match_rule"].to_list() == ["club_exact_name"]
 
 
 def test_a_sole_exact_name_matches_without_a_shared_club(
@@ -289,7 +313,7 @@ def test_a_sole_exact_name_matches_without_a_shared_club(
     """Being the only one of that name is evidence enough on its own."""
     _add_fpl_player(db, 888, "James", "Smith", None, team="Man City")
     _add_tm_player(db, "3", "James Smith", None, team="Tottenham Hotspur")
-    assert _build(db)["match_rung"].to_list() == ["exact_name"]
+    assert _build(db)["match_rule"].to_list() == ["exact_name"]
 
 
 def test_two_players_of_the_same_name_are_left_to_the_human(
@@ -309,7 +333,7 @@ def test_an_exact_name_over_clashing_birthdays_is_flagged(
     _add_fpl_player(db, 890, "James", "Smith", date(1990, 1, 1))
     _add_tm_player(db, "6", "James Smith", date(1995, 5, 5))
     matches = _build(db)
-    assert matches["match_rung"].to_list() == ["exact_name_dob_conflict"]
+    assert matches["match_rule"].to_list() == ["exact_name_dob_conflict"]
 
 
 def test_a_club_matches_through_a_transfer_row(
@@ -330,7 +354,7 @@ def test_a_club_matches_through_a_transfer_row(
             )
         ),
     )
-    assert _build(db)["match_rung"].to_list() == ["club_exact_name"]
+    assert _build(db)["match_rule"].to_list() == ["club_exact_name"]
 
 
 def test_an_override_beats_the_automatic_match(
@@ -349,7 +373,7 @@ def test_an_override_beats_the_automatic_match(
         }
     )
     matches = _build(db, overrides=overrides)
-    assert matches["match_rung"].to_list() == ["override"]
+    assert matches["match_rule"].to_list() == ["override"]
     assert matches["tm_player_id"].to_list() == ["correct"]
 
 
@@ -380,7 +404,7 @@ def test_the_report_offers_candidates_in_the_override_schema(
     _add_fpl_player(db, 4321, "Bukayo", "Saka", date(2001, 9, 5))
     _add_tm_player(db, "far", "Wojciech Szczesny", date(1990, 4, 18))
     _add_tm_player(db, "near", "Bukayo Sako", date(1990, 4, 18))
-    report = unmatched_report(db, _build(db))
+    report = _report(db, _build(db))
     assert report.columns[:4] == [
         "player_code",
         "tm_player_id",
@@ -400,7 +424,7 @@ def test_a_matched_player_is_absent_from_the_report(
     """The report is the to-do list, so a solved player leaves it."""
     _add_fpl_player(db, 111, "Erling", "Haaland", date(2000, 7, 21))
     _add_tm_player(db, "418560", "Erling Haaland", date(2000, 7, 21))
-    assert unmatched_report(db, _build(db)).is_empty()
+    assert _report(db, _build(db)).is_empty()
 
 
 def test_storing_the_map_replaces_rather_than_accumulates(
@@ -410,8 +434,8 @@ def test_storing_the_map_replaces_rather_than_accumulates(
     _add_fpl_player(db, 111, "Erling", "Haaland", date(2000, 7, 21))
     _add_tm_player(db, "418560", "Erling Haaland", date(2000, 7, 21))
     matches = _build(db)
-    store_player_map(db, matches)
-    store_player_map(db, matches)
+    TM_PLAYER_MAP.replace_all(db, matches)
+    TM_PLAYER_MAP.replace_all(db, matches)
     assert TM_PLAYER_MAP.load(db).height == 1
 
 
@@ -441,7 +465,7 @@ def test_a_player_with_no_candidates_still_reaches_the_report(
 ) -> None:
     """An empty Transfermarkt side must not hide the work still to do."""
     _add_fpl_player(db, 31, "Someone", "Unscraped", date(2004, 1, 1))
-    report = unmatched_report(db, _build(db))
+    report = _report(db, _build(db))
     assert report["player_code"].to_list() == [31]
     assert report["tm_player_id"].to_list() == [None]
 
@@ -454,7 +478,7 @@ def test_the_stored_map_rejects_a_repeated_transfermarkt_id(
         {
             "player_code": [1, 2],
             "tm_player_id": ["same", "same"],
-            "match_rung": ["override", "override"],
+            "match_rule": ["override", "override"],
             "match_score": [None, None],
             "fpl_name": ["a", "b"],
             "tm_name": ["a", "b"],
@@ -466,24 +490,18 @@ def test_the_stored_map_rejects_a_repeated_transfermarkt_id(
 
 def test_refresh_writes_the_map_and_the_candidate_report(
     db: duckdb.DuckDBPyConnection,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One call rebuilds the table and leaves the to-do list on disk."""
-    monkeypatch.setattr(tm_player_map, "CLUBS_PATH", _club_map_file(tmp_path))
-    monkeypatch.setattr(
-        tm_player_map, "OVERRIDES_PATH", _override_file(tmp_path)
-    )
     _add_fpl_player(db, 111, "Erling", "Haaland", date(2000, 7, 21))
     _add_fpl_player(db, 222, "Someone", "Unscraped", date(2004, 1, 1))
     _add_tm_player(db, "418560", "Erling Haaland", date(2000, 7, 21))
-    report_path = tmp_path / "candidates.csv"
 
-    matches = tm_player_map.refresh_player_map(db, report_path=report_path)
+    matches = TransferMarktPlayerMap(db).refresh_player_map()
 
     assert matches["player_code"].to_list() == [111]
     assert TM_PLAYER_MAP.load(db).height == 1
-    assert pl.read_csv(report_path)["player_code"].to_list() == [222]
+    report = pl.read_csv(tm_player_map.CANDIDATE_PATH)
+    assert report["player_code"].to_list() == [222]
 
 
 def test_the_report_honours_the_candidate_limit(
@@ -495,7 +513,7 @@ def test_the_report_honours_the_candidate_limit(
         _add_tm_player(
             db, f"tm{index}", f"Bukayo Sak{index}", date(1990, 4, 18)
         )
-    report = unmatched_report(db, _build(db), candidates=1)
+    report = _report(db, _build(db), candidates=1)
     assert report.height == 1
 
 
@@ -507,7 +525,7 @@ def test_a_player_who_never_appeared_is_left_out_of_the_report(
         db, 41, "Never", "Played", date(2005, 1, 1), with_week=False
     )
     _add_tm_player(db, "7", "Someone Else", date(1999, 9, 9))
-    assert unmatched_report(db, _build(db)).is_empty()
+    assert _report(db, _build(db)).is_empty()
 
 
 def test_the_report_counts_the_player_weeks_behind_each_row(
@@ -516,7 +534,7 @@ def test_the_report_counts_the_player_weeks_behind_each_row(
     """The count is carried so a thin history is visible before deciding."""
     _add_fpl_player(db, 42, "Bukayo", "Saka", date(2001, 9, 5))
     _add_tm_player(db, "8", "Wojciech Szczesny", date(1990, 4, 18))
-    report = unmatched_report(db, _build(db))
+    report = _report(db, _build(db))
     assert report["fpl_player_weeks"].to_list() == [1]
 
 
@@ -527,7 +545,7 @@ def test_a_manager_is_never_matched_or_reported(
     _add_fpl_player(db, 51, "David", "Moyes", date(1963, 4, 25), position=None)
     _add_tm_player(db, "9", "David Moyes", date(1963, 4, 25))
     assert _build(db).is_empty()
-    assert unmatched_report(db, _build(db)).is_empty()
+    assert _report(db, _build(db)).is_empty()
 
 
 def test_a_player_managing_later_is_still_matched(
@@ -547,4 +565,4 @@ def test_a_player_managing_later_is_still_matched(
         position=None,
     )
     _add_tm_player(db, "3332", "Wayne Rooney", date(1985, 10, 24))
-    assert _build(db)["match_rung"].to_list() == ["dob_exact_name"]
+    assert _build(db)["match_rule"].to_list() == ["dob_exact_name"]

@@ -79,7 +79,7 @@ def _seed_map(
             {
                 "player_code": player_codes,
                 "tm_player_id": [f"tm{c}" for c in player_codes],
-                "match_rung": ["exact"] * n,
+                "match_rule": ["exact"] * n,
                 "match_score": [1.0] * n,
                 "fpl_name": [f"P{c}" for c in player_codes],
                 "tm_name": [f"P{c}" for c in player_codes],

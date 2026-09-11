@@ -72,11 +72,6 @@ BUCKET_PARTIAL = "1_to_59_minutes"
 BUCKET_SIXTY_PLUS = "60_minutes_plus"
 MINUTES_BUCKETS = [BUCKET_ZERO, BUCKET_PARTIAL, BUCKET_SIXTY_PLUS]
 
-# Features built by features/transfermarkt.py, listed apart from the FPL
-# ones so the two feature sources stay legible. Not all of them need a
-# Transfermarkt match: the prev-game and to-date minutes come from
-# player_match, and only the value, rank and arrival features go null for
-# an unmapped player.
 TM_FEATURES = [
     "value_tm",
     "players_same_tm_pos",

@@ -1,16 +1,3 @@
-"""Scrape Transfermarkt player pages into the raw ``tm_*`` tables.
-
-Everything here is stored twice: the string Transfermarkt served, and the
-value parsed out of it. Re-scraping costs two HTTP round-trips per player
-across thousands of players, so a parser bug must never be able to destroy
-data already paid for -- the raw column is what makes a bad parse a
-re-parse rather than a re-scrape.
-
-``shape_player`` is the seam between the network and storage. The parsers
-and the shaping are pure and unit-tested; only the thin scrape and loop
-functions below touch HTTP.
-"""
-
 import logging
 import math
 import re
@@ -34,8 +21,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TM_LEAGUE = "England Premier League"
+REQUEST_DELAY_SECONDS = 0.5
+TRANSFERMARKT_LEAGUE = "England Premier League"
 
+MONEY_REGEX = re.compile(r"(\d[\d.,]*)\s*(bn|m|k)?", re.IGNORECASE)
+COST_MULTIPLIER_LOOKUP = {"bn": 1_000_000_000, "m": 1_000_000, "k": 1_000, None: 1}
+DATE_FORMATS = ("%b %d, %Y", "%d.%m.%Y", "%Y-%m-%d")
 
 class PlayerLinkSource(Protocol):
     """The slice of ``ScraperFC.Transfermarkt`` link collection calls."""
@@ -53,27 +44,14 @@ class TransfermarktClient(PlayerLinkSource, Protocol):
         ...
 
 
-# Transfermarkt fronts with Cloudflare and throttles fast scrapers. Each
-# player already costs two sequential requests, so the sleep is a minority
-# of the runtime either way; start conservative-ish and dial up on 429s.
-REQUEST_DELAY_SECONDS = 0.5
-
-_MONEY = re.compile(r"(\d[\d.,]*)\s*(bn|m|k)?", re.IGNORECASE)
-
-_MULTIPLIERS = {"bn": 1_000_000_000, "m": 1_000_000, "k": 1_000, None: 1}
-
-
 def parse_money(value: str | None) -> int | None:
     """Parse a Transfermarkt money string into whole units of currency."""
     if value is None:
         return None
-    match = _MONEY.search(value)
+    match = MONEY_REGEX.search(value)
     if match is None:
         return None
     digits = match.group(1).replace(",", "")
-    # Two or more dots can only be thousands grouping; one is a decimal
-    # point. Transfermarkt serves the .us locale, but the market-value
-    # endpoint has been seen in European formatting.
     if digits.count(".") > 1:
         digits = digits.replace(".", "")
     try:
@@ -81,7 +59,7 @@ def parse_money(value: str | None) -> int | None:
     except ValueError:
         return None
     suffix = match.group(2)
-    multiplier = _MULTIPLIERS[suffix.lower() if suffix else None]
+    multiplier = COST_MULTIPLIER_LOOKUP[suffix.lower() if suffix else None]
     return int(round(amount * multiplier))
 
 
@@ -108,18 +86,13 @@ def classify_fee(fee: str | None) -> str:
     return "unknown"
 
 
-# Transfermarkt serves the .us locale, so player pages use "Jul 1, 2016".
-# The market-value endpoint has been seen in both that and the dotted
-# European form, and ISO costs nothing to accept.
-_DATE_FORMATS = ("%b %d, %Y", "%d.%m.%Y", "%Y-%m-%d")
-
 
 def parse_tm_date(value: str | None) -> date | None:
     """Parse a Transfermarkt date string, returning None if it is not a date."""
     if value is None:
         return None
     text = value.strip()
-    for fmt in _DATE_FORMATS:
+    for fmt in DATE_FORMATS:
         try:
             return datetime.strptime(text, fmt).date()
         except ValueError:
@@ -456,7 +429,7 @@ def collect_player_links(
     for season in seasons:
         try:
             links = transfermarkt.get_player_links(
-                year=season_to_tm_year(season), league=TM_LEAGUE
+                year=season_to_tm_year(season), league=TRANSFERMARKT_LEAGUE
             )
         except Exception:
             logger.exception(
