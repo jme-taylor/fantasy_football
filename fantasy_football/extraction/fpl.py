@@ -44,16 +44,33 @@ class FplAPI:
 
     def __init__(self):
         """Initialize the FplAPI class."""
-        self._bootstrap_data = self.get_bootstrap_data()
+        self._bootstrap_data: BootStrapResponse | None = None
         self._players = None
         self._fixtures = None
+
+    @property
+    def bootstrap_data(self) -> BootStrapResponse:
+        """The bootstrap data, fetched once on first use and then cached.
+
+        Fetching lazily rather than in ``__init__`` keeps constructing an
+        ``FplAPI`` free, so callers that only touch the entry or fixture
+        endpoints never pay for a bootstrap request.
+
+        Returns
+        -------
+        BootStrapResponse
+            The parsed bootstrap data.
+        """
+        if self._bootstrap_data is None:
+            self._bootstrap_data = self.get_bootstrap_data()
+        return self._bootstrap_data
 
     def get_bootstrap_data(self) -> BootStrapResponse:
         """Get the bootstrap data from the FPL API.
 
         Returns
         -------
-        dict
+        BootStrapResponse
             The bootstrap data from the FPL API.
         """
         response_json = requests.get(
@@ -69,7 +86,7 @@ class FplAPI:
         list[FplTeamInfo]
             A list of all teams from the FPL API.
         """
-        teams_list = self._bootstrap_data.teams
+        teams_list = self.bootstrap_data.teams
         teams = []
         for team in teams_list:
             fpl_team = FplTeamInfo(
@@ -94,7 +111,7 @@ class FplAPI:
             A list of all players from the FPL API.
         """
         if self._players is None:
-            elements = self._bootstrap_data.elements
+            elements = self.bootstrap_data.elements
             players = []
             for player in elements:
                 fpl_player = FplPlayer(
@@ -161,7 +178,7 @@ class FplAPI:
             The gameweek number, or None once the season is over and no
             event is flagged as next.
         """
-        events = self._bootstrap_data.events
+        events = self.bootstrap_data.events
         for event in events:
             if event.is_next:
                 return event.id

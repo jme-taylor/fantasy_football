@@ -1,0 +1,1057 @@
+{
+  "chips": [
+    {
+      "chip_type": "transfer",
+      "id": 1,
+      "name": "wildcard",
+      "number": 1,
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "start_event": 2,
+      "stop_event": 19
+    },
+    {
+      "chip_type": "transfer",
+      "id": 2,
+      "name": "wildcard",
+      "number": 1,
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "start_event": 20,
+      "stop_event": 38
+    },
+    {
+      "chip_type": "transfer",
+      "id": 3,
+      "name": "freehit",
+      "number": 1,
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "start_event": 2,
+      "stop_event": 19
+    },
+    {
+      "chip_type": "team",
+      "id": 4,
+      "name": "bboost",
+      "number": 1,
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "start_event": 1,
+      "stop_event": 19
+    },
+    {
+      "chip_type": "team",
+      "id": 5,
+      "name": "3xc",
+      "number": 1,
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "start_event": 1,
+      "stop_event": 19
+    },
+    {
+      "chip_type": "transfer",
+      "id": 6,
+      "name": "freehit",
+      "number": 1,
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "start_event": 20,
+      "stop_event": 38
+    },
+    {
+      "chip_type": "team",
+      "id": 7,
+      "name": "bboost",
+      "number": 1,
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "start_event": 20,
+      "stop_event": 38
+    },
+    {
+      "chip_type": "team",
+      "id": 8,
+      "name": "3xc",
+      "number": 1,
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "start_event": 20,
+      "stop_event": 38
+    }
+  ],
+  "element_stats": [
+    {
+      "label": "Minutes played",
+      "name": "minutes"
+    },
+    {
+      "label": "Goals scored",
+      "name": "goals_scored"
+    },
+    {
+      "label": "Assists",
+      "name": "assists"
+    },
+    {
+      "label": "Clean sheets",
+      "name": "clean_sheets"
+    },
+    {
+      "label": "Goals conceded",
+      "name": "goals_conceded"
+    },
+    {
+      "label": "Own goals",
+      "name": "own_goals"
+    },
+    {
+      "label": "Penalties saved",
+      "name": "penalties_saved"
+    },
+    {
+      "label": "Penalties missed",
+      "name": "penalties_missed"
+    },
+    {
+      "label": "Yellow cards",
+      "name": "yellow_cards"
+    },
+    {
+      "label": "Red cards",
+      "name": "red_cards"
+    },
+    {
+      "label": "Saves",
+      "name": "saves"
+    },
+    {
+      "label": "Bonus",
+      "name": "bonus"
+    },
+    {
+      "label": "Bonus Points System",
+      "name": "bps"
+    },
+    {
+      "label": "Influence",
+      "name": "influence"
+    },
+    {
+      "label": "Creativity",
+      "name": "creativity"
+    },
+    {
+      "label": "Threat",
+      "name": "threat"
+    },
+    {
+      "label": "ICT Index",
+      "name": "ict_index"
+    },
+    {
+      "label": "Clearances, blocks and interceptions",
+      "name": "clearances_blocks_interceptions"
+    },
+    {
+      "label": "Recoveries",
+      "name": "recoveries"
+    },
+    {
+      "label": "Tackles",
+      "name": "tackles"
+    },
+    {
+      "label": "Defensive Contribution",
+      "name": "defensive_contribution"
+    },
+    {
+      "label": "Game(s) Started",
+      "name": "starts"
+    },
+    {
+      "label": "Expected Goals",
+      "name": "expected_goals"
+    },
+    {
+      "label": "Expected Assists",
+      "name": "expected_assists"
+    },
+    {
+      "label": "Expected Goal Involvements",
+      "name": "expected_goal_involvements"
+    },
+    {
+      "label": "Expected Goals Conceded",
+      "name": "expected_goals_conceded"
+    }
+  ],
+  "element_types": [
+    {
+      "element_count": 71,
+      "id": 1,
+      "plural_name": "Goalkeepers",
+      "plural_name_short": "GKP",
+      "singular_name": "Goalkeeper",
+      "singular_name_short": "GKP",
+      "squad_max_play": 1,
+      "squad_max_select": null,
+      "squad_min_play": 1,
+      "squad_min_select": null,
+      "squad_select": 2,
+      "sub_positions_locked": [
+        12
+      ],
+      "ui_shirt_specific": true
+    },
+    {
+      "element_count": 215,
+      "id": 2,
+      "plural_name": "Defenders",
+      "plural_name_short": "DEF",
+      "singular_name": "Defender",
+      "singular_name_short": "DEF",
+      "squad_max_play": 5,
+      "squad_max_select": null,
+      "squad_min_play": 3,
+      "squad_min_select": null,
+      "squad_select": 5,
+      "sub_positions_locked": [],
+      "ui_shirt_specific": false
+    },
+    {
+      "element_count": 292,
+      "id": 3,
+      "plural_name": "Midfielders",
+      "plural_name_short": "MID",
+      "singular_name": "Midfielder",
+      "singular_name_short": "MID",
+      "squad_max_play": 5,
+      "squad_max_select": null,
+      "squad_min_play": 2,
+      "squad_min_select": null,
+      "squad_select": 5,
+      "sub_positions_locked": [],
+      "ui_shirt_specific": false
+    },
+    {
+      "element_count": 78,
+      "id": 4,
+      "plural_name": "Forwards",
+      "plural_name_short": "FWD",
+      "singular_name": "Forward",
+      "singular_name_short": "FWD",
+      "squad_max_play": 3,
+      "squad_max_select": null,
+      "squad_min_play": 1,
+      "squad_min_select": null,
+      "squad_select": 3,
+      "sub_positions_locked": [],
+      "ui_shirt_specific": false
+    }
+  ],
+  "elements": [
+    {
+      "assists": 0,
+      "birth_date": "1995-09-15",
+      "bonus": 0,
+      "bps": 60,
+      "can_select": true,
+      "can_transact": true,
+      "chance_of_playing_next_round": null,
+      "chance_of_playing_this_round": null,
+      "clean_sheets": 2,
+      "clean_sheets_per_90": 0.67,
+      "clearances_blocks_interceptions": 4,
+      "code": 154561,
+      "corners_and_indirect_freekicks_order": null,
+      "corners_and_indirect_freekicks_text": "",
+      "cost_change_event": 0,
+      "cost_change_event_fall": 0,
+      "cost_change_start": 0,
+      "cost_change_start_fall": 0,
+      "creativity": "0.0",
+      "creativity_rank": 642,
+      "creativity_rank_type": 71,
+      "defensive_contribution": 0,
+      "defensive_contribution_per_90": 0.0,
+      "direct_freekicks_order": null,
+      "direct_freekicks_text": "",
+      "dreamteam_count": 0,
+      "element_type": 4,
+      "ep_next": "5.0",
+      "ep_this": "5.0",
+      "event_points": 3,
+      "expected_assists": "0.01",
+      "expected_assists_per_90": 0.0,
+      "expected_goal_involvements": "0.01",
+      "expected_goal_involvements_per_90": 0.0,
+      "expected_goals": "0.00",
+      "expected_goals_conceded": "0.92",
+      "expected_goals_conceded_per_90": 0.31,
+      "expected_goals_per_90": 0.0,
+      "first_name": "Erling",
+      "form": "5.0",
+      "form_rank": 50,
+      "form_rank_type": 3,
+      "goals_conceded": 1,
+      "goals_conceded_per_90": 0.33,
+      "goals_scored": 0,
+      "has_temporary_code": false,
+      "ict_index": "4.7",
+      "ict_index_rank": 235,
+      "ict_index_rank_type": 16,
+      "id": 1,
+      "in_dreamteam": false,
+      "influence": "46.2",
+      "influence_rank": 128,
+      "influence_rank_type": 15,
+      "known_name": "Haaland",
+      "minutes": 270,
+      "news": "",
+      "news_added": null,
+      "now_cost": 140,
+      "now_cost_rank": 62,
+      "now_cost_rank_type": 1,
+      "opta_code": "p154561",
+      "own_goals": 0,
+      "penalties_missed": 0,
+      "penalties_order": null,
+      "penalties_saved": 0,
+      "penalties_text": "",
+      "photo": "154561.jpg",
+      "points_per_game": "5.0",
+      "points_per_game_rank": 55,
+      "points_per_game_rank_type": 4,
+      "price_change_calibrating": false,
+      "price_change_hourly_rate": 541,
+      "price_change_locked_until": null,
+      "price_change_percent": "16.9",
+      "price_change_projections": [
+        {
+          "likelihood": 1,
+          "offset": 0,
+          "projected_percent": "18.6"
+        },
+        {
+          "likelihood": 2,
+          "offset": 1,
+          "projected_percent": "25.7"
+        },
+        {
+          "likelihood": 2,
+          "offset": 2,
+          "projected_percent": "32.8"
+        }
+      ],
+      "recoveries": 30,
+      "red_cards": 0,
+      "region": 200,
+      "removed": false,
+      "saves": 5,
+      "saves_per_90": 1.67,
+      "scout_news_link": "",
+      "scout_risks": [],
+      "second_name": "Haaland",
+      "selected_by_percent": 60.5,
+      "selected_rank": 5,
+      "selected_rank_type": 1,
+      "special": false,
+      "squad_number": null,
+      "starts": 3,
+      "starts_per_90": 1.0,
+      "status": "a",
+      "tackles": 0,
+      "team": 2,
+      "team_code": 7,
+      "team_join_date": "2024-07-04",
+      "threat": "0.0",
+      "threat_rank": 640,
+      "threat_rank_type": 71,
+      "total_points": 15,
+      "transfers_in": 504866,
+      "transfers_in_event": 193184,
+      "transfers_out": 476380,
+      "transfers_out_event": 165674,
+      "value_form": "0.8",
+      "value_season": "2.5",
+      "web_name": "Haaland",
+      "yellow_cards": 0
+    },
+    {
+      "assists": 0,
+      "birth_date": "1994-10-03",
+      "bonus": 0,
+      "bps": 0,
+      "can_select": true,
+      "can_transact": true,
+      "chance_of_playing_next_round": null,
+      "chance_of_playing_this_round": null,
+      "clean_sheets": 0,
+      "clean_sheets_per_90": 0,
+      "clearances_blocks_interceptions": 0,
+      "code": 109745,
+      "corners_and_indirect_freekicks_order": null,
+      "corners_and_indirect_freekicks_text": "",
+      "cost_change_event": -1,
+      "cost_change_event_fall": 1,
+      "cost_change_start": -1,
+      "cost_change_start_fall": 1,
+      "creativity": "0.0",
+      "creativity_rank": 511,
+      "creativity_rank_type": 53,
+      "defensive_contribution": 0,
+      "defensive_contribution_per_90": 0,
+      "direct_freekicks_order": null,
+      "direct_freekicks_text": "",
+      "dreamteam_count": 0,
+      "element_type": 3,
+      "ep_next": "0.0",
+      "ep_this": "0.0",
+      "event_points": 0,
+      "expected_assists": "0.00",
+      "expected_assists_per_90": 0,
+      "expected_goal_involvements": "0.00",
+      "expected_goal_involvements_per_90": 0,
+      "expected_goals": "0.00",
+      "expected_goals_conceded": "0.00",
+      "expected_goals_conceded_per_90": 0,
+      "expected_goals_per_90": 0,
+      "first_name": "Bukayo",
+      "form": "0.0",
+      "form_rank": 534,
+      "form_rank_type": 66,
+      "goals_conceded": 0,
+      "goals_conceded_per_90": 0,
+      "goals_scored": 0,
+      "has_temporary_code": false,
+      "ict_index": "0.0",
+      "ict_index_rank": 517,
+      "ict_index_rank_type": 66,
+      "id": 2,
+      "in_dreamteam": false,
+      "influence": "0.0",
+      "influence_rank": 511,
+      "influence_rank_type": 66,
+      "known_name": "Saka",
+      "minutes": 0,
+      "news": "",
+      "news_added": null,
+      "now_cost": 100,
+      "now_cost_rank": 369,
+      "now_cost_rank_type": 18,
+      "opta_code": "p109745",
+      "own_goals": 0,
+      "penalties_missed": 0,
+      "penalties_order": null,
+      "penalties_saved": 0,
+      "penalties_text": "",
+      "photo": "109745.jpg",
+      "points_per_game": "0.0",
+      "points_per_game_rank": 534,
+      "points_per_game_rank_type": 66,
+      "price_change_calibrating": false,
+      "price_change_hourly_rate": -3,
+      "price_change_locked_until": null,
+      "price_change_percent": "-14.7",
+      "price_change_projections": [
+        {
+          "likelihood": -1,
+          "offset": 0,
+          "projected_percent": "-15.4"
+        },
+        {
+          "likelihood": -1,
+          "offset": 1,
+          "projected_percent": "-18.5"
+        },
+        {
+          "likelihood": -2,
+          "offset": 2,
+          "projected_percent": "-21.6"
+        }
+      ],
+      "recoveries": 0,
+      "red_cards": 0,
+      "region": 200,
+      "removed": false,
+      "saves": 0,
+      "saves_per_90": 0,
+      "scout_news_link": "",
+      "scout_risks": [],
+      "second_name": "Saka",
+      "selected_by_percent": 45.2,
+      "selected_rank": 462,
+      "selected_rank_type": 52,
+      "special": false,
+      "squad_number": null,
+      "starts": 0,
+      "starts_per_90": 0,
+      "status": "a",
+      "tackles": 0,
+      "team": 1,
+      "team_code": 3,
+      "team_join_date": "2025-07-01",
+      "threat": "0.0",
+      "threat_rank": 470,
+      "threat_rank_type": 52,
+      "total_points": 0,
+      "transfers_in": 1172,
+      "transfers_in_event": 251,
+      "transfers_out": 3319,
+      "transfers_out_event": 716,
+      "value_form": "0.0",
+      "value_season": "0.0",
+      "web_name": "Saka",
+      "yellow_cards": 0
+    }
+  ],
+  "events": [
+    {
+      "average_entry_score": 50,
+      "can_enter": false,
+      "can_manage": false,
+      "chip_plays": [
+        {
+          "chip_name": "bboost",
+          "num_played": 814606
+        },
+        {
+          "chip_name": "3xc",
+          "num_played": 250816
+        }
+      ],
+      "cup_leagues_created": false,
+      "data_checked": true,
+      "deadline_time": "2026-08-21T17:30:00Z",
+      "deadline_time_epoch": 1787333400,
+      "deadline_time_game_offset": 0,
+      "finished": true,
+      "h2h_ko_matches_created": false,
+      "highest_score": 131,
+      "highest_scoring_entry": 120245,
+      "id": 1,
+      "is_current": false,
+      "is_next": false,
+      "is_previous": true,
+      "most_captained": 411,
+      "most_selected": 411,
+      "most_transferred_in": 1,
+      "most_vice_captained": 1,
+      "name": "Gameweek 1",
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "ranked_count": 8903411,
+      "release_time": null,
+      "released": true,
+      "top_element": 115,
+      "top_element_info": {
+        "id": 115,
+        "points": 17
+      },
+      "transfers_made": 0
+    },
+    {
+      "average_entry_score": 81,
+      "can_enter": false,
+      "can_manage": false,
+      "chip_plays": [
+        {
+          "chip_name": "bboost",
+          "num_played": 338660
+        },
+        {
+          "chip_name": "freehit",
+          "num_played": 78863
+        },
+        {
+          "chip_name": "wildcard",
+          "num_played": 279227
+        },
+        {
+          "chip_name": "3xc",
+          "num_played": 233946
+        }
+      ],
+      "cup_leagues_created": true,
+      "data_checked": true,
+      "deadline_time": "2026-08-28T17:30:00Z",
+      "deadline_time_epoch": 1787938200,
+      "deadline_time_game_offset": 0,
+      "finished": true,
+      "h2h_ko_matches_created": true,
+      "highest_score": 161,
+      "highest_scoring_entry": 2241815,
+      "id": 2,
+      "is_current": true,
+      "is_next": false,
+      "is_previous": false,
+      "most_captained": 411,
+      "most_selected": 165,
+      "most_transferred_in": 115,
+      "most_vice_captained": 1,
+      "name": "Gameweek 2",
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "ranked_count": 9904815,
+      "release_time": null,
+      "released": true,
+      "top_element": 426,
+      "top_element_info": {
+        "id": 426,
+        "points": 23
+      },
+      "transfers_made": 11562127
+    },
+    {
+      "average_entry_score": 51,
+      "can_enter": false,
+      "can_manage": false,
+      "chip_plays": [
+        {
+          "chip_name": "bboost",
+          "num_played": 144735
+        },
+        {
+          "chip_name": "freehit",
+          "num_played": 421239
+        },
+        {
+          "chip_name": "wildcard",
+          "num_played": 709478
+        },
+        {
+          "chip_name": "3xc",
+          "num_played": 1787071
+        }
+      ],
+      "cup_leagues_created": true,
+      "data_checked": true,
+      "deadline_time": "2026-09-04T17:30:00Z",
+      "deadline_time_epoch": 1788543000,
+      "deadline_time_game_offset": 0,
+      "finished": true,
+      "h2h_ko_matches_created": true,
+      "highest_score": 119,
+      "highest_scoring_entry": 2613539,
+      "id": 3,
+      "is_current": false,
+      "is_next": true,
+      "is_previous": false,
+      "most_captained": 411,
+      "most_selected": 411,
+      "most_transferred_in": 399,
+      "most_vice_captained": 426,
+      "name": "Gameweek 3",
+      "overrides": {
+        "element_types": [],
+        "pick_multiplier": null,
+        "rules": {},
+        "scoring": {}
+      },
+      "ranked_count": 10408519,
+      "release_time": null,
+      "released": true,
+      "top_element": 204,
+      "top_element_info": {
+        "id": 204,
+        "points": 15
+      },
+      "transfers_made": 27412065
+    }
+  ],
+  "game_config": {
+    "rules": {
+      "cup_qualifying_method": null,
+      "cup_start_event_id": null,
+      "cup_stop_event_id": null,
+      "cup_type": null,
+      "element_sell_at_purchase_price": false,
+      "featured_entries": [],
+      "league_h2h_tiebreak_stats": [
+        "+goals_scored",
+        "-goals_conceded"
+      ],
+      "league_join_private_max": 30,
+      "league_join_public_max": 5,
+      "league_ko_first_instead_of_random": false,
+      "league_max_ko_rounds_private_h2h": 3,
+      "league_max_size_private_h2h": 16,
+      "league_max_size_public_classic": 20,
+      "league_max_size_public_h2h": 20,
+      "league_points_h2h_draw": 1,
+      "league_points_h2h_lose": 0,
+      "league_points_h2h_win": 3,
+      "league_prefix_public": "League",
+      "max_extra_free_transfers": 4,
+      "percentile_ranks": [
+        1,
+        5,
+        10,
+        15,
+        20,
+        25,
+        30,
+        35,
+        40,
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95
+      ],
+      "squad_special_max": null,
+      "squad_special_min": null,
+      "squad_squadplay": 11,
+      "squad_squadsize": 15,
+      "squad_team_limit": 3,
+      "squad_total_spend": 1000,
+      "stats_form_days": 30,
+      "sys_vice_captain_enabled": true,
+      "transfers_cap": 20,
+      "transfers_sell_on_fee": 0.5,
+      "ui_currency_multiplier": 10,
+      "ui_special_shirt_exclusions": [],
+      "ui_use_special_shirts": false,
+      "underdog_differential": 5
+    },
+    "scoring": {
+      "assists": 3,
+      "bonus": 1,
+      "bps": 0,
+      "clean_sheets": {
+        "DEF": 4,
+        "FWD": 0,
+        "GKP": 4,
+        "MID": 1
+      },
+      "clearances_blocks_interceptions": 0,
+      "creativity": 0,
+      "defensive_contribution": {
+        "DEF": 2,
+        "FWD": 2,
+        "GKP": 0,
+        "MID": 2
+      },
+      "expected_assists": 0,
+      "expected_goal_involvements": 0,
+      "expected_goals": 0,
+      "expected_goals_conceded": 0,
+      "goals_conceded": {
+        "DEF": -1,
+        "FWD": 0,
+        "GKP": -1,
+        "MID": 0
+      },
+      "goals_scored": {
+        "DEF": 6,
+        "FWD": 4,
+        "GKP": 10,
+        "MID": 5
+      },
+      "ict_index": 0,
+      "influence": 0,
+      "long_play": 2,
+      "mng_clean_sheets": {
+        "DEF": 0,
+        "FWD": 0,
+        "GKP": 0,
+        "MID": 0
+      },
+      "mng_draw": {
+        "DEF": 0,
+        "FWD": 0,
+        "GKP": 0,
+        "MID": 0
+      },
+      "mng_goals_scored": {
+        "DEF": 0,
+        "FWD": 0,
+        "GKP": 0,
+        "MID": 0
+      },
+      "mng_loss": 0,
+      "mng_underdog_draw": {
+        "DEF": 0,
+        "FWD": 0,
+        "GKP": 0,
+        "MID": 0
+      },
+      "mng_underdog_win": {
+        "DEF": 0,
+        "FWD": 0,
+        "GKP": 0,
+        "MID": 0
+      },
+      "mng_win": {
+        "DEF": 0,
+        "FWD": 0,
+        "GKP": 0,
+        "MID": 0
+      },
+      "own_goals": -2,
+      "penalties_missed": -2,
+      "penalties_saved": 5,
+      "recoveries": 0,
+      "red_cards": -3,
+      "saves": 1,
+      "short_play": 1,
+      "special_multiplier": 1,
+      "starts": 0,
+      "tackles": 0,
+      "threat": 0,
+      "yellow_cards": -1
+    },
+    "settings": {
+      "entry_per_event": false,
+      "price_change_deadlines": [
+        "2026-09-11T23:00:00Z",
+        "2026-09-12T23:00:00Z",
+        "2026-09-13T23:00:00Z"
+      ],
+      "static_content_url": "https://fantasy.premierleague.com/gcs/plfpl-prod-static-content/plfpl-production/2026_27/",
+      "timezone": "UTC"
+    },
+    "status": {
+      "price_change_last_updated": "2026-09-11T17:20:18.583824Z"
+    }
+  },
+  "game_settings": {
+    "cup_qualifying_method": null,
+    "cup_start_event_id": null,
+    "cup_stop_event_id": null,
+    "cup_type": null,
+    "element_sell_at_purchase_price": false,
+    "featured_entries": [],
+    "league_h2h_tiebreak_stats": [
+      "+goals_scored",
+      "-goals_conceded"
+    ],
+    "league_join_private_max": 30,
+    "league_join_public_max": 5,
+    "league_ko_first_instead_of_random": false,
+    "league_max_ko_rounds_private_h2h": 3,
+    "league_max_size_private_h2h": 16,
+    "league_max_size_public_classic": 20,
+    "league_max_size_public_h2h": 20,
+    "league_points_h2h_draw": 1,
+    "league_points_h2h_lose": 0,
+    "league_points_h2h_win": 3,
+    "league_prefix_public": "League",
+    "max_extra_free_transfers": 4,
+    "percentile_ranks": [
+      1,
+      5,
+      10,
+      15,
+      20,
+      25,
+      30,
+      35,
+      40,
+      45,
+      50,
+      55,
+      60,
+      65,
+      70,
+      75,
+      80,
+      85,
+      90,
+      95
+    ],
+    "squad_special_max": null,
+    "squad_special_min": null,
+    "squad_squadplay": 11,
+    "squad_squadsize": 15,
+    "squad_team_limit": 3,
+    "squad_total_spend": 1000,
+    "stats_form_days": 30,
+    "sys_vice_captain_enabled": true,
+    "timezone": "UTC",
+    "transfers_cap": 20,
+    "transfers_sell_on_fee": 0.5,
+    "ui_currency_multiplier": 10,
+    "ui_special_shirt_exclusions": [],
+    "ui_use_special_shirts": false,
+    "underdog_differential": 5
+  },
+  "phases": [
+    {
+      "highest_score": 307,
+      "id": 1,
+      "name": "Overall",
+      "start_event": 1,
+      "stop_event": 38
+    },
+    {
+      "highest_score": 249,
+      "id": 2,
+      "name": "August",
+      "start_event": 1,
+      "stop_event": 2
+    },
+    {
+      "highest_score": 119,
+      "id": 3,
+      "name": "September",
+      "start_event": 3,
+      "stop_event": 5
+    },
+    {
+      "highest_score": null,
+      "id": 4,
+      "name": "October",
+      "start_event": 6,
+      "stop_event": 9
+    },
+    {
+      "highest_score": null,
+      "id": 5,
+      "name": "November",
+      "start_event": 10,
+      "stop_event": 12
+    },
+    {
+      "highest_score": null,
+      "id": 6,
+      "name": "December",
+      "start_event": 13,
+      "stop_event": 18
+    },
+    {
+      "highest_score": null,
+      "id": 7,
+      "name": "January",
+      "start_event": 19,
+      "stop_event": 23
+    },
+    {
+      "highest_score": null,
+      "id": 8,
+      "name": "February",
+      "start_event": 24,
+      "stop_event": 27
+    },
+    {
+      "highest_score": null,
+      "id": 9,
+      "name": "March",
+      "start_event": 28,
+      "stop_event": 30
+    },
+    {
+      "highest_score": null,
+      "id": 10,
+      "name": "April",
+      "start_event": 31,
+      "stop_event": 33
+    },
+    {
+      "highest_score": null,
+      "id": 11,
+      "name": "May",
+      "start_event": 34,
+      "stop_event": 38
+    }
+  ],
+  "teams": [
+    {
+      "code": 3,
+      "draw": 0,
+      "form": null,
+      "id": 1,
+      "link_url": "",
+      "loss": 0,
+      "name": "Arsenal",
+      "played": 0,
+      "points": 0,
+      "position": 2,
+      "pulse_id": 1,
+      "short_name": "ARS",
+      "strength": null,
+      "strength_attack_away": 0,
+      "strength_attack_home": 0,
+      "strength_defence_away": 0,
+      "strength_defence_home": 0,
+      "strength_overall_away": 5,
+      "strength_overall_home": 4,
+      "team_division": null,
+      "unavailable": false,
+      "win": 0
+    },
+    {
+      "code": 7,
+      "draw": 0,
+      "form": null,
+      "id": 2,
+      "link_url": "",
+      "loss": 0,
+      "name": "Manchester City",
+      "played": 0,
+      "points": 0,
+      "position": 17,
+      "pulse_id": 2,
+      "short_name": "MCI",
+      "strength": null,
+      "strength_attack_away": 0,
+      "strength_attack_home": 0,
+      "strength_defence_away": 0,
+      "strength_defence_home": 0,
+      "strength_overall_away": 4,
+      "strength_overall_home": 3,
+      "team_division": null,
+      "unavailable": false,
+      "win": 0
+    }
+  ],
+  "total_players": 10677877
+}
