@@ -407,9 +407,10 @@ def register_team_form(
     # first, so a real database doesn't log the same count twice.
     if inclusive:
         return
-    unordered = connection.sql(
+    row = connection.sql(
         f"SELECT count(*) FROM {_MATCH_VIEW} WHERE kickoff_time IS NULL"
-    ).fetchone()[0]
+    ).fetchone()
+    unordered = row[0] if row else None
     if unordered:
         logger.warning(
             "%d team_match rows have no kickoff_time and so no position in "

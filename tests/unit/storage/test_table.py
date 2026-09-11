@@ -9,12 +9,14 @@ from fantasy_football.storage.tables import MINUTES_PREDICTION
 
 WIDGET = Table(
     name="widget",
-    schema={
-        "season": pl.Utf8,
-        "element": pl.Int64,
-        "label": pl.Utf8,
-        "ratio": pl.Float64,
-    },
+    schema=pl.Schema(
+        {
+            "season": pl.Utf8,
+            "element": pl.Int64,
+            "label": pl.Utf8,
+            "ratio": pl.Float64,
+        }
+    ),
     primary_key=("season", "element"),
     order_by=("season", "element"),
 )
@@ -120,7 +122,7 @@ def test_coerce_applies_the_normalise_hook_first():
     """A normalise hook runs before column selection."""
     table = Table(
         name="widget",
-        schema={"season": pl.Utf8, "element": pl.Int64},
+        schema=pl.Schema({"season": pl.Utf8, "element": pl.Int64}),
         primary_key=("season", "element"),
         order_by=("season",),
         normalise=lambda f: f.with_columns(pl.col("element") * 10),
@@ -133,7 +135,7 @@ def test_load_applies_the_enrich_hook():
     """An enrich hook runs after reading."""
     table = Table(
         name="widget",
-        schema={"season": pl.Utf8, "element": pl.Int64},
+        schema=pl.Schema({"season": pl.Utf8, "element": pl.Int64}),
         primary_key=("season", "element"),
         order_by=("season",),
         enrich=lambda f: f.with_columns(pl.col("element") + 100),
@@ -155,7 +157,7 @@ def test_load_skips_enrich_on_an_empty_table():
     """An empty read returns early without enriching."""
     table = Table(
         name="widget",
-        schema={"season": pl.Utf8, "element": pl.Int64},
+        schema=pl.Schema({"season": pl.Utf8, "element": pl.Int64}),
         primary_key=("season", "element"),
         order_by=("season",),
         enrich=lambda f: (_ for _ in ()).throw(AssertionError("enriched")),
@@ -441,7 +443,7 @@ def test_ddl_declares_each_unique_group():
     """A unique group beyond the primary key reaches the create statement."""
     table = Table(
         name="widget_unique",
-        schema={"season": pl.Utf8, "element": pl.Int64},
+        schema=pl.Schema({"season": pl.Utf8, "element": pl.Int64}),
         primary_key=("season",),
         order_by=("season",),
         unique=(("element",),),

@@ -9,7 +9,7 @@ from fantasy_football.storage import engine
 
 logger = logging.getLogger(__name__)
 
-_DUCKDB_TYPES: dict[pl.DataType, str] = {
+_DUCKDB_TYPES: dict[type[pl.DataType], str] = {
     pl.Utf8: "VARCHAR",
     pl.Int64: "BIGINT",
     pl.Boolean: "BOOLEAN",
@@ -52,14 +52,14 @@ class Table:
     """A declarative description of one stored table.
 
     ``eq=False`` is paired with ``frozen=True`` because ``schema`` is a
-    dict and therefore unhashable. The nine specs are module-level
+    ``pl.Schema`` -- a dict subclass -- and therefore unhashable. The nine specs are module-level
     singletons, so identity equality is the correct semantics.
 
     Attributes
     ----------
     name : str
         The table name in DuckDB.
-    schema : dict[str, pl.DataType]
+    schema : pl.Schema
         Column order and dtypes. The single source of truth for both.
     primary_key : tuple[str, ...]
         Columns forming the primary key. These become NOT NULL.
@@ -74,7 +74,7 @@ class Table:
     """
 
     name: str
-    schema: dict[str, pl.DataType]
+    schema: pl.Schema
     primary_key: tuple[str, ...]
     order_by: tuple[str, ...]
     unique: tuple[tuple[str, ...], ...] = ()

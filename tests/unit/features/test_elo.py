@@ -13,7 +13,10 @@ from fantasy_football.features.elo import build_team_elo, normalize_elo_frame
 
 def _clubelo_df(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(
-        rows, columns=["Rank", "Club", "Country", "Level", "Elo", "From", "To"]
+        rows,
+        columns=pd.Index(
+            ["Rank", "Club", "Country", "Level", "Elo", "From", "To"]
+        ),
     )
 
 

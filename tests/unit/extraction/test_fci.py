@@ -750,7 +750,9 @@ def test_build_current_season_passes_now_to_played_gameweeks(
     from fantasy_football.storage.database import get_connection
 
     extractor = _preseason_extractor(mocker)
-    played = extractor.fpl_cache.played_gameweeks
+    played = mocker.patch.object(
+        extractor.fpl_cache, "played_gameweeks", return_value=[]
+    )
     mocker.patch.object(extractor, "fetch_season_frames")
     now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
 

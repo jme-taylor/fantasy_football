@@ -676,6 +676,7 @@ def test_inclusive_view_rolling_rate_includes_the_current_appearance(
         ).fetchone()
         # All three appearances count, including gw3's own 9 tackles:
         # (2 + 4 + 9) tackles / 270 minutes = 5.0 per 90.
+        assert inclusive is not None
         assert inclusive[0] == 3
         assert inclusive[1] == pytest.approx(5.0)
 
@@ -686,6 +687,7 @@ def test_inclusive_view_rolling_rate_includes_the_current_appearance(
         ).fetchone()
         # Only the two prior appearances count, excluding gw3's own 9:
         # (2 + 4) tackles / 180 minutes = 3.0 per 90.
+        assert exclusive is not None
         assert exclusive[0] == 2
         assert exclusive[1] == pytest.approx(3.0)
     finally:
@@ -705,17 +707,21 @@ def test_inclusive_view_season_to_date_includes_the_current_match(
     )
     try:
         register_match_form(connection, inclusive=True)
-        inclusive_total = connection.sql(
+        row = connection.sql(
             "SELECT yellow_cards_season_to_date "
             "FROM player_match_form_inclusive WHERE gw = 3"
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        inclusive_total = row[0]
         assert inclusive_total == 1
 
         register_match_form(connection, inclusive=False)
-        exclusive_total = connection.sql(
+        row = connection.sql(
             "SELECT yellow_cards_season_to_date "
             "FROM player_match_form WHERE gw = 3"
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        exclusive_total = row[0]
         assert exclusive_total == 0
     finally:
         connection.close()

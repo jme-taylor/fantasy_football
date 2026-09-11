@@ -1,4 +1,7 @@
+import copy
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -7,6 +10,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from fantasy_football.extraction.fpl import FplAPI
+from fantasy_football.extraction.fpl_schema import BootStrapResponse
 from fantasy_football.fpl_types import (
     FplFixture,
     FplFixtures,
@@ -19,48 +23,33 @@ from fantasy_football.fpl_types import (
     TeamFixtures,
 )
 
+FIXTURES = Path(__file__).parents[2] / "fixtures"
+
+
+def bootstrap_payload() -> dict[str, Any]:
+    """Load the trimmed bootstrap-static response (2 teams, 2 elements)."""
+    return json.loads((FIXTURES / "bootstrap.json").read_text())
+
+
+def bootstrap_with_elements(*elements: dict[str, Any]) -> BootStrapResponse:
+    """Parse the bootstrap fixture with its elements overridden field by field.
+
+    Each override is merged onto the fixture's first element, so a test only
+    has to state the fields it cares about and still gets a fully valid
+    response back.
+    """
+    payload = bootstrap_payload()
+    template = payload["elements"][0]
+    payload["elements"] = [
+        {**copy.deepcopy(template), **overrides} for overrides in elements
+    ]
+    return BootStrapResponse(**payload)
+
 
 @pytest.fixture
-def mock_bootstrap_data() -> dict[str, Any]:
-    """Create mock bootstrap data for testing."""
-    return {
-        "teams": [
-            {
-                "id": 1,
-                "code": 3,
-                "name": "Arsenal",
-                "short_name": "ARS",
-            },
-            {
-                "id": 2,
-                "code": 7,
-                "name": "Manchester City",
-                "short_name": "MCI",
-            },
-        ],
-        "elements": [
-            {
-                "id": 1,
-                "first_name": "Erling",
-                "second_name": "Haaland",
-                "web_name": "Haaland",
-                "selected_by_percent": 60.5,
-                "now_cost": 140,
-                "team": 2,
-                "element_type": 4,
-            },
-            {
-                "id": 2,
-                "first_name": "Bukayo",
-                "second_name": "Saka",
-                "web_name": "Saka",
-                "selected_by_percent": 45.2,
-                "now_cost": 100,
-                "team": 1,
-                "element_type": 3,
-            },
-        ],
-    }
+def mock_bootstrap_data() -> BootStrapResponse:
+    """Create parsed bootstrap data for testing."""
+    return BootStrapResponse(**bootstrap_payload())
 
 
 @pytest.fixture
@@ -151,26 +140,44 @@ class TestFplAPI:
     def test_get_bootstrap_data(
         self,
         fpl_api: FplAPI,
-        mock_bootstrap_data: dict[str, Any],
         mocker: MockerFixture,
     ) -> None:
         """Test get_bootstrap_data method."""
         # Mock the requests.get method
         mock_response = MagicMock()
-        mock_response.json.return_value = mock_bootstrap_data
+        mock_response.json.return_value = bootstrap_payload()
         mocker.patch("requests.get", return_value=mock_response)
 
         # Call the method
         result = fpl_api.get_bootstrap_data()
 
         # Assert
-        assert result == mock_bootstrap_data
-        assert fpl_api._bootstrap_data == mock_bootstrap_data
+        assert isinstance(result, BootStrapResponse)
+        assert [team.short_name for team in result.teams] == ["ARS", "MCI"]
+        assert [element.web_name for element in result.elements] == [
+            "Haaland",
+            "Saka",
+        ]
+
+    def test_bootstrap_data_is_fetched_once_and_cached(
+        self,
+        fpl_api: FplAPI,
+        mocker: MockerFixture,
+    ) -> None:
+        """Every caller shares one request, and construction makes none."""
+        get_bootstrap_data = mocker.patch.object(
+            fpl_api,
+            "get_bootstrap_data",
+            return_value=BootStrapResponse(**bootstrap_payload()),
+        )
+
+        assert fpl_api.bootstrap_data is fpl_api.bootstrap_data
+        get_bootstrap_data.assert_called_once()
 
     def test_get_teams(
         self,
         fpl_api: FplAPI,
-        mock_bootstrap_data: dict[str, Any],
+        mock_bootstrap_data: BootStrapResponse,
         mocker: MockerFixture,
     ) -> None:
         """Test get_teams method."""
@@ -192,7 +199,7 @@ class TestFplAPI:
     def test_get_players(
         self,
         fpl_api: FplAPI,
-        mock_bootstrap_data: dict[str, Any],
+        mock_bootstrap_data: BootStrapResponse,
         mocker: MockerFixture,
     ) -> None:
         """Test get_players method."""
@@ -905,21 +912,19 @@ class TestFplAPI:
         mocker.patch.object(
             api,
             "get_bootstrap_data",
-            return_value={
-                "elements": [
-                    {
-                        "id": 1,
-                        "first_name": "Test",
-                        "second_name": "Player",
-                        "web_name": "Player",
-                        "selected_by_percent": "1.0",
-                        "now_cost": 50,
-                        "team": 1,
-                        "element_type": 3,
-                        "chance_of_playing_this_round": 75,
-                    }
-                ]
-            },
+            return_value=bootstrap_with_elements(
+                {
+                    "id": 1,
+                    "first_name": "Test",
+                    "second_name": "Player",
+                    "web_name": "Player",
+                    "selected_by_percent": 1.0,
+                    "now_cost": 50,
+                    "team": 1,
+                    "element_type": 3,
+                    "chance_of_playing_this_round": 75,
+                }
+            ),
         )
 
         players = api.get_players()
@@ -935,22 +940,20 @@ class TestFplAPI:
         mocker.patch.object(
             api,
             "get_bootstrap_data",
-            return_value={
-                "elements": [
-                    {
-                        "id": 55,
-                        "first_name": "Ollie",
-                        "second_name": "Watkins",
-                        "web_name": "Watkins",
-                        "selected_by_percent": "1.0",
-                        "now_cost": 78,
-                        "team": 2,
-                        "element_type": 4,
-                        "chance_of_playing_this_round": None,
-                        "status": "u",
-                    }
-                ]
-            },
+            return_value=bootstrap_with_elements(
+                {
+                    "id": 55,
+                    "first_name": "Ollie",
+                    "second_name": "Watkins",
+                    "web_name": "Watkins",
+                    "selected_by_percent": 1.0,
+                    "now_cost": 78,
+                    "team": 2,
+                    "element_type": 4,
+                    "chance_of_playing_this_round": None,
+                    "status": "u",
+                }
+            ),
         )
 
         players = api.get_players()

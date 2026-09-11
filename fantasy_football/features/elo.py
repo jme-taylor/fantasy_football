@@ -78,6 +78,7 @@ def _cache_is_fresh(path: Path) -> bool:
     return age_hours < ELO_CACHE_TTL_HOURS
 
 
+# TODO(JT): Try and remove pandas dependecy here
 def build_team_elo(*, force: bool = False) -> pl.DataFrame:
     """Scrape ClubElo for every team in ``CLUBELO_TO_FPL`` and write CSV.
 
@@ -121,7 +122,9 @@ def build_team_elo(*, force: bool = False) -> pl.DataFrame:
         pd.concat(frames, ignore_index=True)
         if frames
         else pd.DataFrame(
-            columns=["Rank", "Club", "Country", "Level", "Elo", "From", "To"]
+            columns=pd.Index(
+                ["Rank", "Club", "Country", "Level", "Elo", "From", "To"]
+            )
         )
     )
     df = normalize_elo_frame(combined)

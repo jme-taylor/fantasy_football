@@ -1,7 +1,11 @@
 import polars as pl
 import requests
-from pydantic import BaseModel
 
+from fantasy_football.extraction.fpl_schema import (
+    BootStrapResponse,
+    FixtureResponse,
+    FplFixtureResponses,
+)
 from fantasy_football.fpl_types import (
     Entry,
     EntryPicks,
@@ -18,13 +22,8 @@ from fantasy_football.fpl_types import (
     TeamFixtures,
 )
 
-# The optimiser's squad read is designed to fail soft, which a hung
-# connection would defeat by never failing at all.
 REQUEST_TIMEOUT_SECONDS = 30
-
-# FPL serves a challenge page to obviously scripted clients.
 USER_AGENT = "Mozilla/5.0"
-
 PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
     "element",
     "gw",
@@ -38,41 +37,6 @@ PLAYER_MATCH_HISTORY_COLUMNS: list[str] = [
 ]
 
 
-class FixtureResponse(BaseModel):
-    """Class for storing a fixture response from the FPL API."""
-
-    class FixtureStatistic(BaseModel):  # noqa : DCO1
-        class TeamStatistic(BaseModel):  # noqa : DCO1
-            value: int | None = None
-            element: int | None = None
-
-        identifier: str
-        a: list[TeamStatistic]
-        h: list[TeamStatistic]
-
-    code: int
-    event: int | None = None
-    finished: bool
-    finished_provisional: bool
-    id: int
-    kickoff_time: str | None = None
-    minutes: int
-    provisional_start_time: bool
-    started: bool | None = None
-    team_a: int
-    team_a_score: int | None = None
-    team_h: int
-    team_h_score: int | None = None
-    stats: list[FixtureStatistic]
-    team_h_difficulty: int
-    team_a_difficulty: int
-    pulse_id: int
-
-
-class FplFixtureResponses(BaseModel):  # noqa : DCO1
-    fixtures: list[FixtureResponse]
-
-
 class FplAPI:
     """Class for interacting with the Fantasy Premier League API."""
 
@@ -80,24 +44,39 @@ class FplAPI:
 
     def __init__(self):
         """Initialize the FplAPI class."""
-        self._bootstrap_data = None
+        self._bootstrap_data: BootStrapResponse | None = None
         self._players = None
         self._fixtures = None
 
-    def get_bootstrap_data(self) -> dict:
+    @property
+    def bootstrap_data(self) -> BootStrapResponse:
+        """The bootstrap data, fetched once on first use and then cached.
+
+        Fetching lazily rather than in ``__init__`` keeps constructing an
+        ``FplAPI`` free, so callers that only touch the entry or fixture
+        endpoints never pay for a bootstrap request.
+
+        Returns
+        -------
+        BootStrapResponse
+            The parsed bootstrap data.
+        """
+        if self._bootstrap_data is None:
+            self._bootstrap_data = self.get_bootstrap_data()
+        return self._bootstrap_data
+
+    def get_bootstrap_data(self) -> BootStrapResponse:
         """Get the bootstrap data from the FPL API.
 
         Returns
         -------
-        dict
+        BootStrapResponse
             The bootstrap data from the FPL API.
         """
-        if self._bootstrap_data is None:
-            response_json = requests.get(
-                self.BASE_URL + "bootstrap-static/"
-            ).json()
-            self._bootstrap_data = response_json
-        return self._bootstrap_data
+        response_json = requests.get(
+            self.BASE_URL + "bootstrap-static/"
+        ).json()
+        return BootStrapResponse(**response_json)
 
     def get_teams(self) -> list[FplTeamInfo]:
         """Get the teams from the bootstrap data.
@@ -107,15 +86,14 @@ class FplAPI:
         list[FplTeamInfo]
             A list of all teams from the FPL API.
         """
-        data = self.get_bootstrap_data()
-        teams_list = data.get("teams")
+        teams_list = self.bootstrap_data.teams
         teams = []
         for team in teams_list:
             fpl_team = FplTeamInfo(
-                id=team.get("id"),
-                code=team.get("code"),
-                name=team.get("name"),
-                short_name=team.get("short_name"),
+                id=team.id,
+                code=team.code,
+                name=team.name,
+                short_name=team.short_name,
             )
             teams.append(fpl_team)
         return teams
@@ -133,23 +111,20 @@ class FplAPI:
             A list of all players from the FPL API.
         """
         if self._players is None:
-            bootstrap_dict = self.get_bootstrap_data()
-            elements = bootstrap_dict.get("elements")
+            elements = self.bootstrap_data.elements
             players = []
             for player in elements:
                 fpl_player = FplPlayer(
-                    id=player.get("id"),
-                    first_name=player.get("first_name"),
-                    second_name=player.get("second_name"),
-                    web_name=player.get("web_name"),
-                    selected_by_percent=player.get("selected_by_percent"),
-                    now_cost=player.get("now_cost"),
-                    team_id=player.get("team"),
-                    element_type=player.get("element_type"),
-                    chance_of_playing_this_round=player.get(
-                        "chance_of_playing_this_round"
-                    ),
-                    status=player.get("status"),
+                    id=player.id,
+                    first_name=player.first_name,
+                    second_name=player.second_name,
+                    web_name=player.web_name,
+                    selected_by_percent=player.selected_by_percent,
+                    now_cost=player.now_cost,
+                    team_id=player.team,
+                    element_type=player.element_type,
+                    chance_of_playing_this_round=player.chance_of_playing_this_round,
+                    status=player.status,
                 )
                 players.append(fpl_player)
             self._players = players
@@ -203,10 +178,10 @@ class FplAPI:
             The gameweek number, or None once the season is over and no
             event is flagged as next.
         """
-        events = self.get_bootstrap_data().get("events", [])
+        events = self.bootstrap_data.events
         for event in events:
-            if event.get("is_next"):
-                return event["id"]
+            if event.is_next:
+                return event.id
         return None
 
     def _get(self, path: str):
@@ -322,6 +297,8 @@ class FplAPI:
             is_captain = squad_player.get("is_captain")
             is_vice_captain = squad_player.get("is_vice_captain")
             player = self.find_player_by_id(player_id)
+            if player is None:
+                continue
             squad_player = FplSquadPlayer(
                 player=player,
                 position=position,
