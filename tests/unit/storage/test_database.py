@@ -54,11 +54,11 @@ def test_get_connection_is_idempotent(tmp_path: Path) -> None:
     first.close()
     second = get_connection(db_path)
     try:
-        count = second.execute("SELECT COUNT(*) FROM player_week").fetchone()[
-            0
-        ]
+        row = second.execute("SELECT COUNT(*) FROM player_week").fetchone()
     finally:
         second.close()
+    assert row is not None
+    count = row[0]
     assert count == 0
 
 
@@ -503,9 +503,9 @@ def test_player_match_pk_disambiguates_double_gameweek(
         ]
     )
     PLAYER_MATCH.upsert_current(connection, frame, "2024-25")
-    count = connection.execute("SELECT COUNT(*) FROM player_match").fetchone()[
-        0
-    ]
+    row = connection.execute("SELECT COUNT(*) FROM player_match").fetchone()
+    assert row is not None
+    count = row[0]
     assert count == 2
 
 
@@ -533,9 +533,9 @@ def test_write_immutable_player_match_is_noop_when_present(
     PLAYER_MATCH.write_immutable(connection, frame, "2023-24")
     assert PLAYER_MATCH.seasons_present(connection) == {"2023-24"}
     PLAYER_MATCH.write_immutable(connection, frame, "2023-24")
-    count = connection.execute("SELECT COUNT(*) FROM player_match").fetchone()[
-        0
-    ]
+    row = connection.execute("SELECT COUNT(*) FROM player_match").fetchone()
+    assert row is not None
+    count = row[0]
     assert count == 1
 
 

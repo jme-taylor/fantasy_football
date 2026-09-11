@@ -7,6 +7,7 @@ import duckdb
 import polars as pl
 import pytest_mock
 
+from fantasy_football.extraction.fpl import FplAPI
 from fantasy_football.extraction.snapshot import (
     build_snapshot,
     load_player_snapshot,
@@ -16,7 +17,7 @@ from fantasy_football.fpl_types import FplPlayer, FplTeamInfo
 from fantasy_football.storage.tables import PLAYER_SNAPSHOT
 
 
-def _api(mocker: pytest_mock.MockerFixture) -> object:
+def _api(mocker: pytest_mock.MockerFixture) -> FplAPI:
     """Build a mock FPL API with two players across two clubs.
 
     Parameters
@@ -26,7 +27,7 @@ def _api(mocker: pytest_mock.MockerFixture) -> object:
 
     Returns
     -------
-    object
+    FplAPI
         A mock exposing ``get_players`` and ``get_teams``.
     """
     api = mocker.Mock()

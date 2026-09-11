@@ -151,7 +151,9 @@ def _scraped_player(
                     "€10.00m",
                 ]
             ],
-            columns=["Season", "Date", "Left", "Joined", "MV", "Fee"],
+            columns=pd.Index(
+                ["Season", "Date", "Left", "Joined", "MV", "Fee"]
+            ),
         )
     player = pd.Series(dtype=object)
     player["Name"] = "Nick Pope"
@@ -216,7 +218,7 @@ def test_shape_player_numbers_transfers_newest_first() -> None:
                 "free transfer",
             ],
         ],
-        columns=["Season", "Date", "Left", "Joined", "MV", "Fee"],
+        columns=pd.Index(["Season", "Date", "Left", "Joined", "MV", "Fee"]),
     )
     _, transfer, _ = shape_player(
         _scraped_player(transfer_history=transfers), SCRAPED_AT
@@ -257,7 +259,9 @@ def test_shape_player_handles_a_player_with_no_history_at_all() -> None:
     scraped = _scraped_player(
         market_value_history=None,
         transfer_history=pd.DataFrame(
-            columns=["Season", "Date", "Left", "Joined", "MV", "Fee"]
+            columns=pd.Index(
+                ["Season", "Date", "Left", "Joined", "MV", "Fee"]
+            ),
         ),
     )
     scraped.at[0, "Market value history"] = None

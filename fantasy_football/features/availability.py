@@ -85,7 +85,7 @@ def add_rolling_minutes(
     played_carry = stream.filter(pl.col("minutes").is_not_null()).select(
         "_row",
         pl.col("minutes")
-        .rolling_mean(window_size=rolling_window, min_periods=1)
+        .rolling_mean(window_size=rolling_window, min_samples=1)
         .over("player_code")
         .alias("_carry"),
     )
@@ -98,7 +98,7 @@ def add_rolling_minutes(
         .then(
             pl.col("minutes")
             .shift(1)
-            .rolling_mean(window_size=rolling_window, min_periods=1)
+            .rolling_mean(window_size=rolling_window, min_samples=1)
             .over("player_code")
         )
         .otherwise(pl.col("_carry"))

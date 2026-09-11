@@ -16,21 +16,19 @@ from fantasy_football.storage.tables import PLAYER_SEASON, PLAYER_SNAPSHOT
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
-# FPL's status code for a player who is no longer in the league. It is
-# kept in bootstrap-static for weeks after a transfer out, priced and
-# clubbed as if nothing happened, so it is the only signal that they have
-# gone -- chance_of_playing_this_round stays null for them.
 DEPARTED_STATUS = "u"
 
-ROSTER_SCHEMA: dict[str, pl.DataType] = {
-    "name": pl.Utf8,
-    "position": pl.Utf8,
-    "team": pl.Utf8,
-    "element": pl.Int64,
-    "player_code": pl.Int64,
-    "value": pl.Int64,
-    "is_departed": pl.Boolean,
-}
+ROSTER_SCHEMA: pl.Schema = pl.Schema(
+    {
+        "name": pl.Utf8,
+        "position": pl.Utf8,
+        "team": pl.Utf8,
+        "element": pl.Int64,
+        "player_code": pl.Int64,
+        "value": pl.Int64,
+        "is_departed": pl.Boolean,
+    }
+)
 
 
 def is_departed() -> pl.Expr:

@@ -50,7 +50,7 @@ def last_played_gw(player_week: pl.DataFrame, season: str) -> int:
     stored = player_week.filter(pl.col("season") == season)
     if stored.is_empty():
         return 0
-    return int(stored["gw"].max() or 0)
+    return int(stored.select(pl.col("gw").max()).item() or 0)
 
 
 # TODO (JT): Do something with DI and team_fixture here

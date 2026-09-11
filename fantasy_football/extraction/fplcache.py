@@ -22,12 +22,14 @@ logger = logging.getLogger(__name__)
 
 # Schema of the per-(season, gw, element) availability frame emitted by
 # build_player_chance_of_playing.
-_CHANCE_OF_PLAYING_SCHEMA: dict[str, pl.DataType] = {
-    "season": pl.Utf8,
-    "gw": pl.Int64,
-    "element": pl.Int64,
-    "chance_of_playing_this_round": pl.Int64,
-}
+_CHANCE_OF_PLAYING_SCHEMA: pl.Schema = pl.Schema(
+    {
+        "season": pl.Utf8,
+        "gw": pl.Int64,
+        "element": pl.Int64,
+        "chance_of_playing_this_round": pl.Int64,
+    }
+)
 
 
 def _season_window(season: str) -> tuple[datetime, datetime]:

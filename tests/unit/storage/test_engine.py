@@ -38,7 +38,7 @@ def test_insert_frame_round_trips(conn):
     """A frame inserted through the engine reads back unchanged."""
     engine.insert_frame(conn, "widget", frame([("2024-25", 1, "a")]))
     result = engine.select(
-        conn, "widget", ["season", "element", "label"], ["season", "element"]
+        conn, "widget", ["season", "element", "label"], ("season", "element")
     )
     assert result.rows() == [("2024-25", 1, "a")]
 
@@ -57,7 +57,7 @@ def test_select_applies_column_order_and_sort(conn):
     engine.insert_frame(
         conn, "widget", frame([("2024-25", 2, "b"), ("2024-25", 1, "a")])
     )
-    result = engine.select(conn, "widget", ["element", "season"], ["element"])
+    result = engine.select(conn, "widget", ["element", "season"], ("element",))
     assert result.columns == ["element", "season"]
     assert result["element"].to_list() == [1, 2]
 
@@ -68,7 +68,7 @@ def test_delete_season_removes_only_that_season(conn):
         conn, "widget", frame([("2024-25", 1, "a"), ("2025-26", 1, "b")])
     )
     engine.delete_season(conn, "widget", "2024-25")
-    result = engine.select(conn, "widget", ["season"], ["season"])
+    result = engine.select(conn, "widget", ["season"], ("season",))
     assert result["season"].to_list() == ["2025-26"]
 
 
@@ -85,5 +85,5 @@ def test_drop_then_create_empties_the_table(conn):
     engine.insert_frame(conn, "widget", frame([("2024-25", 1, "a")]))
     engine.drop(conn, "widget")
     engine.create(conn, DDL)
-    result = engine.select(conn, "widget", ["season"], ["season"])
+    result = engine.select(conn, "widget", ["season"], ("season",))
     assert result.is_empty()

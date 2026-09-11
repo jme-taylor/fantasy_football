@@ -231,10 +231,12 @@ def test_own_goal_counts_towards_goals_for(tmp_path: Path) -> None:
     )
     try:
         team_form.register_team_form(connection)
-        result = connection.sql(
+        row = connection.sql(
             "SELECT goals_for FROM team_match "
             "WHERE gw = 1 AND team = 'Man Utd'"
-        ).fetchone()[0]
+        ).fetchone()
+        assert row is not None
+        result = row[0]
         assert result == 1
     finally:
         connection.close()

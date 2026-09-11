@@ -56,19 +56,23 @@ MERGED_GW_COLUMNS: list[str] = [
 # columns drift: ``bonus`` infers as Int64 in some gameweeks and Float64 in
 # others. Either case breaks the diagonal concat with a SchemaError, so we pin
 # the schema explicitly rather than trusting per-file inference.
-SNAPSHOT_SCHEMA: dict[str, pl.DataType] = {
-    "id": pl.Int64,
-    "first_name": pl.Utf8,
-    "second_name": pl.Utf8,
-    "now_cost": pl.Float64,
-    "event_points": pl.Int64,
-    "bonus": pl.Int64,
-}
-MATCHSTATS_SCHEMA: dict[str, pl.DataType] = {
-    "player_id": pl.Int64,
-    "minutes_played": pl.Int64,
-    "match_id": pl.Utf8,
-}
+SNAPSHOT_SCHEMA: pl.Schema = pl.Schema(
+    {
+        "id": pl.Int64,
+        "first_name": pl.Utf8,
+        "second_name": pl.Utf8,
+        "now_cost": pl.Float64,
+        "event_points": pl.Int64,
+        "bonus": pl.Int64,
+    }
+)
+MATCHSTATS_SCHEMA: pl.Schema = pl.Schema(
+    {
+        "player_id": pl.Int64,
+        "minutes_played": pl.Int64,
+        "match_id": pl.Utf8,
+    }
+)
 
 
 def build_merged_gw(
