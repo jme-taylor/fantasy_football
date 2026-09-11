@@ -25,8 +25,14 @@ REQUEST_DELAY_SECONDS = 0.5
 TRANSFERMARKT_LEAGUE = "England Premier League"
 
 MONEY_REGEX = re.compile(r"(\d[\d.,]*)\s*(bn|m|k)?", re.IGNORECASE)
-COST_MULTIPLIER_LOOKUP = {"bn": 1_000_000_000, "m": 1_000_000, "k": 1_000, None: 1}
+COST_MULTIPLIER_LOOKUP = {
+    "bn": 1_000_000_000,
+    "m": 1_000_000,
+    "k": 1_000,
+    None: 1,
+}
 DATE_FORMATS = ("%b %d, %Y", "%d.%m.%Y", "%Y-%m-%d")
+
 
 class PlayerLinkSource(Protocol):
     """The slice of ``ScraperFC.Transfermarkt`` link collection calls."""
@@ -84,7 +90,6 @@ def classify_fee(fee: str | None) -> str:
     if parse_money(text) is not None:
         return "transfer"
     return "unknown"
-
 
 
 def parse_tm_date(value: str | None) -> date | None:
