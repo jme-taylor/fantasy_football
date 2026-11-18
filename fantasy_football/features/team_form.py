@@ -44,10 +44,11 @@ the one measure here sensitive to a missing player row, which is what
 ``players`` records.
 
 *Team names come from the fixture slug*, resolved through
-``FCI_SLUG_TO_FPL``, rather than from ``player_week.team``. The slug map
-holds one canonical name per club, so a club FPL renames between seasons
-(``"Ipswich"`` to ``"Ipswich Town"``) does not split into two partitions
-and lose its history mid-window.
+``fci_club``, rather than from ``player_week.team``. ``team`` is the name
+FPL uses that season, so it joins ``team_fixture`` and the forward path;
+the window partitions on ``club``, the canonical name, so a club FPL
+renames between seasons (``"Ipswich"`` to ``"Ipswich Town"``) does not
+split into two partitions and lose its history mid-window.
 
 One known contamination: assigning players to sides still runs through
 ``opta_match.is_home``, which reads ``player_week.team``. A player whose
@@ -200,20 +201,24 @@ WITH sides AS (
 named AS (
     SELECT
         s.*,
+        CASE WHEN s.is_home THEN home.club ELSE away.club END AS club,
         CASE WHEN s.is_home THEN home.team ELSE away.team END AS team,
         CASE WHEN s.is_home THEN away.team ELSE home.team END AS opposition
     FROM sides AS s
-    LEFT JOIN fci_slug_map AS home
-        ON home.slug = regexp_extract(
+    LEFT JOIN fci_club AS home
+        ON  home.season = s.season
+        AND home.slug   = regexp_extract(
             s.match_id, '^\\d{{2}}-\\d{{2}}-prem-(.+)-vs-(.+)$', 1)
-    LEFT JOIN fci_slug_map AS away
-        ON away.slug = regexp_extract(
+    LEFT JOIN fci_club AS away
+        ON  away.season = s.season
+        AND away.slug   = regexp_extract(
             s.match_id, '^\\d{{2}}-\\d{{2}}-prem-(.+)-vs-(.+)$', 2)
 )
 SELECT
     n.season,
     n.gw,
     n.match_id,
+    n.club,
     n.team,
     n.opposition,
     n.is_home,
@@ -351,7 +356,7 @@ SELECT
         AS days_since_last_match
 FROM {_MATCH_VIEW}
 WINDOW form AS (
-    PARTITION BY team
+    PARTITION BY club
     ORDER BY kickoff_time
     {window_frame(rolling_window, inclusive)}
 )

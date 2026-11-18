@@ -7,14 +7,21 @@
 without a bridge the only honest join is at gameweek grain -- which
 collapses the two legs of a double gameweek into one row.
 
-This module registers three temporary views that supply the bridge:
+This module registers four temporary views that supply the bridge:
 
 ``fci_slug_map``
-    ``FCI_SLUG_TO_FPL`` as a relation: slug -> FPL club name.
+    ``FCI_SLUG_TO_FPL`` and ``FPL_TEAM_ALIASES`` as a relation: one row
+    per slug and FPL name the club has carried, beside its canonical
+    ``club`` name.
 ``fpl_team_id``
     FPL team id <-> club name, per season. Derived from the data rather
     than hardcoded, by matching each ``player_match`` leg to its
     ``team_fixture`` row on the player's club and kickoff time.
+``fci_club``
+    ``fci_slug_map`` narrowed to the FPL name each season's
+    ``team_fixture`` actually uses,
+    so a club FPL renames (``"Ipswich"`` to ``"Ipswich Town"``) resolves
+    to the name ``player_week`` and ``team_fixture`` carry that season.
 ``opta_match``
     Premier League ``player_match_opta`` rows carrying a resolved
     ``opponent`` and ``is_home``, so they join straight to
@@ -43,7 +50,7 @@ from typing import TYPE_CHECKING
 
 import polars as pl
 
-from fantasy_football.constants import FCI_SLUG_TO_FPL
+from fantasy_football.constants import FCI_SLUG_TO_FPL, FPL_TEAM_ALIASES
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -71,6 +78,21 @@ JOIN team_fixture AS tf
     AND tf.kickoff_time = m.kickoff_time
 """
 
+# Either column of team_fixture names a club that season; reading both
+# means a fixture seeded from one side still resolves its opponent.
+_FCI_CLUB_SQL = """
+CREATE OR REPLACE TEMP VIEW fci_club AS
+WITH season_team AS (
+    SELECT season, team FROM team_fixture
+    UNION
+    SELECT season, opposition FROM team_fixture
+)
+SELECT DISTINCT t.season, s.slug, s.club, s.team
+FROM fci_slug_map AS s
+JOIN season_team AS t
+    ON t.team = s.team
+"""
+
 _OPTA_MATCH_SQL = f"""
 CREATE OR REPLACE TEMP VIEW opta_match AS
 WITH resolved AS (
@@ -82,10 +104,12 @@ WITH resolved AS (
     FROM player_match_opta AS o
     JOIN player_week AS w
         USING (season, gw, element)
-    LEFT JOIN fci_slug_map AS home
-        ON home.slug = regexp_extract(o.match_id, '{_HOME_SLUG}', 1)
-    LEFT JOIN fci_slug_map AS away
-        ON away.slug = regexp_extract(o.match_id, '{_HOME_SLUG}', 2)
+    LEFT JOIN fci_club AS home
+        ON  home.season = o.season
+        AND home.slug   = regexp_extract(o.match_id, '{_HOME_SLUG}', 1)
+    LEFT JOIN fci_club AS away
+        ON  away.season = o.season
+        AND away.slug   = regexp_extract(o.match_id, '{_HOME_SLUG}', 2)
     WHERE o.competition = 'prem'
 )
 SELECT
@@ -103,19 +127,24 @@ JOIN fpl_team_id AS t
 
 
 def slug_frame() -> pl.DataFrame:
-    """Return ``FCI_SLUG_TO_FPL`` as a two-column frame.
+    """Return ``FCI_SLUG_TO_FPL`` and its aliases as a frame.
 
     Returns
     -------
     pl.DataFrame
-        Columns ``slug`` and ``team``, one row per known FCI slug.
+        Columns ``slug``, ``club`` and ``team``: one row per known FCI
+        slug and FPL name its club has carried, with ``club`` the
+        canonical name shared by all of them.
     """
+    rows = [
+        (slug, club, team)
+        for slug, club in FCI_SLUG_TO_FPL.items()
+        for team in [club, *FPL_TEAM_ALIASES.get(club, [])]
+    ]
     return pl.DataFrame(
-        {
-            "slug": list(FCI_SLUG_TO_FPL),
-            "team": list(FCI_SLUG_TO_FPL.values()),
-        },
-        schema={"slug": pl.Utf8, "team": pl.Utf8},
+        rows,
+        schema={"slug": pl.Utf8, "club": pl.Utf8, "team": pl.Utf8},
+        orient="row",
     )
 
 
@@ -147,8 +176,48 @@ def unknown_slugs(connection: "DuckDBPyConnection") -> list[str]:
     return sorted(set(found.to_list()) - set(FCI_SLUG_TO_FPL) - {""})
 
 
+def unresolved_slugs(connection: "DuckDBPyConnection") -> list[str]:
+    """Return ``season: slug`` pairs whose club has no FPL name that season.
+
+    A known slug only resolves through ``fci_club`` when one of its names
+    is in that season's ``team_fixture``. A club FPL renames, without the
+    new name in ``FPL_TEAM_ALIASES``, would otherwise drop out of
+    ``opta_match`` silently -- along with every opponent it faced.
+
+    Parameters
+    ----------
+    connection : duckdb.DuckDBPyConnection
+        An open connection with the lookup views registered.
+
+    Returns
+    -------
+    list[str]
+        Sorted ``"<season>: <slug>"`` entries; empty when all resolve.
+    """
+    rows = connection.sql(
+        f"""
+        WITH used AS (
+            SELECT DISTINCT season, regexp_extract(match_id, '{_HOME_SLUG}', 1) AS slug
+            FROM player_match_opta WHERE competition = 'prem'
+            UNION
+            SELECT DISTINCT season, regexp_extract(match_id, '{_HOME_SLUG}', 2) AS slug
+            FROM player_match_opta WHERE competition = 'prem'
+        )
+        SELECT u.season, u.slug
+        FROM used AS u
+        JOIN fci_slug_map AS s USING (slug)
+        ANTI JOIN fci_club AS c USING (season, slug)
+        GROUP BY ALL
+        ORDER BY ALL
+        """
+    ).fetchall()
+    return [f"{season}: {slug}" for season, slug in rows]
+
+
 def register_lookups(connection: "DuckDBPyConnection") -> None:
-    """Create the ``fci_slug_map``, ``fpl_team_id`` and ``opta_match`` views.
+    """Create the four fixture-bridge views.
+
+    ``fci_slug_map``, ``fpl_team_id``, ``fci_club`` and ``opta_match``.
 
     Parameters
     ----------
@@ -162,6 +231,7 @@ def register_lookups(connection: "DuckDBPyConnection") -> None:
         "SELECT * FROM fci_slug_map_frame"
     )
     connection.execute(_FPL_TEAM_ID_SQL)
+    connection.execute(_FCI_CLUB_SQL)
     connection.execute(_OPTA_MATCH_SQL)
 
     missing = unknown_slugs(connection)
@@ -171,4 +241,13 @@ def register_lookups(connection: "DuckDBPyConnection") -> None:
             "FCI_SLUG_TO_FPL: %s. Their matches are missing from "
             "opta_match until the constant is updated.",
             ", ".join(missing),
+        )
+    unresolved = unresolved_slugs(connection)
+    if unresolved:
+        logger.warning(
+            "FCI club slug(s) with no FPL name in that season's "
+            "team_fixture: %s. FPL has likely renamed the club; add the "
+            "new name to FPL_TEAM_ALIASES, or its matches are missing "
+            "from opta_match.",
+            ", ".join(unresolved),
         )
