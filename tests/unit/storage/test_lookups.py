@@ -104,12 +104,20 @@ def connection(tmp_path: Path):
 
 
 def test_slug_frame_has_a_row_per_known_slug() -> None:
-    """The constant is exposed as a two-column relation."""
+    """The constant is exposed as a relation keyed on the slug."""
     frame = lookups.slug_frame()
-    assert frame.columns == ["slug", "team"]
-    assert frame.height == len(lookups.FCI_SLUG_TO_FPL)
+    assert frame.columns == ["slug", "club", "team"]
+    assert set(frame["slug"]) == set(lookups.FCI_SLUG_TO_FPL)
     row = frame.filter(pl.col("slug") == "manchester-united")
     assert row["team"].item() == "Man Utd"
+    assert row["club"].item() == "Man Utd"
+
+
+def test_slug_frame_lists_every_name_a_renamed_club_carries() -> None:
+    """A rename adds a row per FPL name, all under one canonical club."""
+    rows = lookups.slug_frame().filter(pl.col("slug") == "ipswich-town")
+    assert rows["team"].to_list() == ["Ipswich", "Ipswich Town"]
+    assert rows["club"].to_list() == ["Ipswich", "Ipswich"]
 
 
 def test_brighton_respellings_resolve_to_one_club() -> None:
@@ -198,3 +206,87 @@ def test_unknown_slugs_flags_an_unmapped_club(connection) -> None:
         },
     )
     assert lookups.unknown_slugs(connection) == ["luton-town"]
+
+
+def _seed_renamed_club(connection: duckdb.DuckDBPyConnection) -> None:
+    """Add a 2026-27 Man Utd home game against Ipswich Town.
+
+    ``team_fixture`` names the club "Ipswich Town" that season while the
+    slug map's canonical name is still "Ipswich".
+    """
+    kickoff = datetime(2026, 8, 22, 15, 0)
+    _append(
+        PLAYER_WEEK,
+        connection,
+        {
+            "season": ["2026-27"],
+            "gw": [1],
+            "element": [1],
+            "position": ["DEF"],
+            "team": ["Man Utd"],
+        },
+    )
+    _append(
+        PLAYER_MATCH,
+        connection,
+        {
+            "season": ["2026-27"],
+            "gw": [1],
+            "element": [1],
+            "opponent": [9],
+            "is_home": [True],
+            "minutes": [90],
+            "kickoff_time": [kickoff],
+        },
+    )
+    _append(
+        TEAM_FIXTURE,
+        connection,
+        {
+            "season": ["2026-27"],
+            "gw": [1],
+            "team": ["Man Utd"],
+            "is_home": [True],
+            "opposition": ["Ipswich Town"],
+            "kickoff_time": [kickoff],
+        },
+    )
+    _append(
+        PLAYER_MATCH_OPTA,
+        connection,
+        {
+            "season": ["2026-27"],
+            "gw": [1],
+            "element": [1],
+            "match_id": ["26-27-prem-manchester-united-vs-ipswich-town"],
+            "competition": ["prem"],
+            "minutes_played": [90],
+            "tackles": [4],
+        },
+    )
+
+
+def test_opta_match_resolves_a_club_under_its_season_name(
+    tmp_path: Path,
+) -> None:
+    """A renamed opponent still resolves, so the row is not dropped."""
+    connection = _connection(tmp_path)
+    _seed_renamed_club(connection)
+    lookups.register_lookups(connection)
+    result = connection.sql(
+        "SELECT opponent, is_home, tackles FROM opta_match "
+        "WHERE season = '2026-27'"
+    ).pl()
+    assert result.rows() == [(9, True, 4)]
+    assert lookups.unresolved_slugs(connection) == []
+
+
+def test_unresolved_slugs_flags_a_club_with_no_name_that_season(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rename missing from FPL_TEAM_ALIASES is reported, not swallowed."""
+    monkeypatch.setattr(lookups, "FPL_TEAM_ALIASES", {})
+    connection = _connection(tmp_path)
+    _seed_renamed_club(connection)
+    lookups.register_lookups(connection)
+    assert lookups.unresolved_slugs(connection) == ["2026-27: ipswich-town"]

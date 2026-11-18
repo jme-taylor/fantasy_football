@@ -164,8 +164,8 @@ CLUBELO_TO_FPL: dict[str, list[str]] = {
     "Wolves": ["Wolves"],
 }
 
-# Mapping from the club slug embedded in an FCI ``match_id`` to the FPL club
-# name used by ``team_fixture.team``. FCI slugs are full legal club names
+# Mapping from the club slug embedded in an FCI ``match_id`` to the club's
+# canonical FPL name. FCI slugs are full legal club names
 # ("manchester-united") where FPL uses short ones ("Man Utd"), so the two
 # cannot be reconciled by string normalisation alone. It is many-to-one
 # because FCI respells slugs between seasons: Brighton is
@@ -173,6 +173,8 @@ CLUBELO_TO_FPL: dict[str, list[str]] = {
 # and both must resolve to the same club.
 # This is what lets per-match FCI stats join to a specific player_match leg
 # rather than being summed to gameweek grain -- see storage/lookups.py.
+# A club FPL has since renamed keeps its first name here; the later ones
+# go in FPL_TEAM_ALIASES.
 # Update this when the team set changes (promotions/relegations).
 FCI_SLUG_TO_FPL: dict[str, str] = {
     "afc-bournemouth": "Bournemouth",
@@ -183,9 +185,11 @@ FCI_SLUG_TO_FPL: dict[str, str] = {
     "brighton-hove-albion": "Brighton",
     "burnley": "Burnley",
     "chelsea": "Chelsea",
+    "coventry-city": "Coventry City",
     "crystal-palace": "Crystal Palace",
     "everton": "Everton",
     "fulham": "Fulham",
+    "hull-city": "Hull City",
     "ipswich-town": "Ipswich",
     "leeds-united": "Leeds",
     "leicester-city": "Leicester",
@@ -199,6 +203,15 @@ FCI_SLUG_TO_FPL: dict[str, str] = {
     "tottenham-hotspur": "Spurs",
     "west-ham-united": "West Ham",
     "wolverhampton-wanderers": "Wolves",
+}
+
+# Later FPL names for a club, keyed by its canonical name in
+# FCI_SLUG_TO_FPL. team_fixture says "Ipswich" in 2024-25 and "Ipswich
+# Town" in 2026-27; storage/lookups.py resolves each slug to whichever
+# name the season actually uses, while the canonical name keeps the
+# club's rolling form in one partition across the rename.
+FPL_TEAM_ALIASES: dict[str, list[str]] = {
+    "Ipswich": ["Ipswich Town"],
 }
 
 # First season with player <> team mapping
