@@ -1,33 +1,3 @@
-"""The goalkeeper saves rate model.
-
-FPL pays a point per three saves, which is a floor rather than a rate,
-so this head predicts *saves per 90* and :class:`SavesComponent` does
-the flooring at composition. Regressing on ``floor(saves / 3)`` instead
-would round twice -- once in the target and again in the component --
-and throw away the difference between a keeper expected to make 2.9
-saves and one expected to make 2.1, who are paid differently in
-expectation and identically after rounding.
-
-Unpooled, unlike the goals and assists heads. There is nobody to pool
-with: an outfielder's saves column is a mass of exact zeros, and the
-process producing a keeper's has no outfield counterpart.
-
-The training window is FCI's, and the reason is the team form rather
-than anything about keepers. Saves are mostly shots faced, which is a
-team quantity, and ``team_match_form`` is built from FCI player rows --
-so ``xg_against_rolling_5`` and its siblings do not exist before
-2024-25. Vaastav's ``saves`` column goes back to 2016-17, but a longer
-frame bought by median-filling the danger features would be fitting the
-population mean to eight seasons of keepers.
-
-Known omissions, both deliberate. Penalty saves pay five points and are
-in no component: a keeper faces about four penalties a season and saves
-one, so a head for it would model roughly five points of noise. And
-there is no shot-quality feature -- ``xgot_faced`` is exactly that, and
-it is the obvious first addition once there are more than two seasons
-of it.
-"""
-
 import logging
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass

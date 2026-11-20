@@ -1,22 +1,3 @@
-"""The defensive-contribution rate models.
-
-FPL pays two points for reaching a threshold on a count of defensive
-actions. That is a threshold on a count, not a smooth quantity, and it is
-the one part of a score that a points regressor has no way to represent.
-
-The rule runs off two different counts. A defender needs 10 CBIT --
-clearances, blocks, interceptions and tackles. A midfielder or forward
-needs 12 CBIRT, the same four plus recoveries. Two counts and two
-thresholds mean two heads: one regressor predicts one quantity, and a
-single rate cannot be both.
-
-What each model predicts is the *rate* per 90, with no minutes feature
-anywhere in it. Minutes turn that rate into an expected count and the
-count distribution turns the expected count into the probability of
-clearing the threshold, both at composition time. Splitting it that way
-is what lets minutes be applied exactly once across every component.
-"""
-
 import logging
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass

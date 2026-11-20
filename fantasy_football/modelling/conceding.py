@@ -1,39 +1,3 @@
-"""The team conceding head, behind clean sheets and the deduction.
-
-Goals conceded is a team's quantity. Eleven players share one clean
-sheet, and the per-player variation in what they were on the pitch for
-is substitution timing, not defending. So this head trains on one row
-per team-fixture and the fan-out puts the same prediction on every
-defender of that team -- where a player-grain fit would model the same
-number eleven times over and read the duplication as evidence.
-
-**Per match, not per 90.** Every sibling head predicts a rate and lets
-minutes scale it. A team fixture is always ninety minutes, so the
-prediction here is already a match-level expected count: no weight
-column, no per-90 division, no minutes floor on the target. Minutes
-re-enter once, in :class:`ConcedingComponent`, and only on the deduction
-leg.
-
-The target reads FCI's own team counter rather than summing player
-goals, because an own goal is conceded by a team and credited to no
-player. FCI covers 2024-25 onwards including the live season, so unlike
-the goals and assists heads there is no second source to fall back to
-and no coalesce -- its absence here is deliberate, not an oversight.
-
-``team_match`` is built from ``opta_match``, so a club sitting in
-``team_fixture`` without match data -- the known 2025-26 contamination --
-produces no training row at all. The guard is the derivation, not a
-filter.
-
-What the component pays is *not* what this head targets, and that is
-the first time a carve-out has broken the "one definition, two
-aliasings" rule. It has to: this head predicts a team's goals, while
-FPL pays a player for his own on-pitch clean sheet. The invariant that
-still holds is that :func:`conceding_points_sql` and
-:class:`ConcedingComponent` describe the same *rule*; the team rate is
-an intermediate quantity, not a component.
-"""
-
 import logging
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass

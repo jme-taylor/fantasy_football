@@ -283,207 +283,131 @@ from `2022-23` (fplcache's earliest snapshots, set by `FPLCACHE_FIRST_SEASON`).
 > there. `player_season`, which is built from a different source
 > (`players_raw.csv`, present for every season), still has rows for both.
 
-## Minutes-played model
+## Points models
+
+The points modelling is powered by various machine learning models, that map to the [FPL scoring system](https://www.premierleague.com/en/news/2174909/fpl-basics-scoring). These are then combined in `modelling/points.py` to get an overall 
+expected points for the player (per match) that can then be rolled up to a gameweek level, and used by the optimiser for transfer and selection decisions. Below, we describe in more detail each point component's model.
+
+### Minutes players model
 
 `modelling/minutes.py` trains a single 3-class gradient-boosted classifier
 (XGBoost) that predicts each
 player's minutes bucket for an upcoming match: benched (`0_minutes`), partial
-(`1_to_59_minutes`), or a full-ish shift (`60_minutes_plus`). It is scored on
-the two decision boundaries the downstream points models care about —
-probability of *any* appearance and probability of a *60+ minute* appearance —
-cross-validated with an expanding window over seasons, then refit on all
-seasons and logged to MLflow (experiment `minutes_played_classification`).
+(`1_to_59_minutes`), or a full-ish shift (`60_minutes_plus`). These are then converted into
+probabilities of appearing and probabilites of playing 60 minutes plus, which are the points scoring elements of
+minutes for fantasy football that we care about. It also allows us to get an expected minutes component, that we can then combine with the outputs of other models (e.g goals scored, yellow cards rate) to get a player's expected points for a single match.
 
-Numeric features pass through the pipeline unimputed and unscaled: XGBoost
-learns a missing-direction per split, which says more than a median stand-in,
-and trees are indifferent to scale. Categoricals are one-hot encoded with
-nulls mapped to an explicit `unknown` category, and the label encoder lives
-inside the estimator so `classes_` stays string-valued end to end.
+Scoring is measured in the `minutes_played_classification` experiment in MLflow. The following metrics are recorded:
 
-Its features are assembled from the `player_match`, `player_week`,
-`player_availability`, `player_season` and `tm_*` tables. Contemporaneous
-features (knowable at the deadline): number of same-position teammates, FPL
-chance-of-playing, positional availability (fit same-club, same-position
-rivals ahead and at the same position), rolling 5-match minutes, and games
-played so far this season. Cross-season features, joined through
-`player_season.player_code` (see [Storage](#storage)): previous-season minutes
-and start rate, seasons played in the Premier League, seasons since the player
-was last in the Premier League, age, whether the player is a Premier League
-newcomer, and whether their club was promoted.
+| Metric | Description |
+|--------|-------------|
+|`logloss_appear`|Log loss of the probability of appearance|
+|`logloss_60`|Log loss of the probability of playing 60 minutes plus|
+|`brier_appear`||
+|`brier_60`||
+|`e_min_mae`||
+|`auc_appear`||
+|`auc_60`||
 
-Transfermarkt features (`features/transfermarkt.py`) run on two clocks.
-Features derived from matches the player has played — minutes in each of the
-last two games, days between them, season-to-date minutes and share of the
-club's position-group minutes — **freeze** at the last played match, so a
-forward gameweek inherits the state entering it and does not drift. Features
-derived from the calendar — market value as of the fixture, and the count,
-value and recency of rivals signed into the same position group within the
-last 365 days — read the fixture's **own kickoff**, because a valuation or a
-signing is a known fact at prediction time. Freezing those would hide a summer
-signing from every pre-season prediction, which is the failure that motivated
-the model: a keeper predicted as his club's number one after a replacement had
-already been bought.
+### Assists model
 
-The `tm_*` tables are populated by hand (`scripts/scrape_transfermarkt.py`),
-so `main()` calls `check_transfermarkt_freshness()` before predicting. It
-fails loudly on valuations older than 45 days, and on fewer than 90% of the
-season's actual appearers mapping to Transfermarkt — two different failures
-that otherwise share one symptom, a model quietly reading nulls. Players with
-no Transfermarkt match are never filtered out: their TM features are null and
-the model reads the absence as signal. These
-reach across the summer break, which is what lets the model say anything
-useful about a player at GW1 of a new season, before any in-season evidence
-exists — previously it had nothing but contemporaneous, in-season signal. The
-model runs on every data refresh from `main`, and both `run_minutes_model()`
-and `backfill_minutes()` are called bare — a modelling failure is **fatal**
-and aborts `main()` before prediction and optimisation run, it is not logged
-and swallowed. This is deliberate fail-fast behaviour, but it has a sharp
-first-run consequence: `backfill_minutes()` calls `get_production_model()`,
-which raises if the `production` alias has never been set, so a fresh clone
-with no manually-promoted alias will abort `main()` on its very first run,
-before the points models run. The first run after cloning must include a
-manual promotion of a trained version to `production` in the MLflow UI (see
-[Registry, promotion and backfill](#registry-promotion-and-backfill)) before
-`main()` can complete.
+`modelling/assists.py` trains a regression model that outputs the per 90 expected assists for a given player. This only does per 90, rather than classification, as it is used in combination with the minutes model to give an expected points from assists for the single match that player is in.
 
-**Measured impact (2026-07-30).** Training on the real database end to end,
-7-fold expanding-window CV, comparing the run with the new cross-season
-features against the most recent prior run (contemporaneous features only):
+Scoring is measured in the `assists-rate-model` experiment in MLflow. The following metrics are recorded:
 
-| metric | pre-branch baseline | with cross-season features | after dropping `days_since_team_join` | change vs baseline |
-|---|---|---|---|---|
-| `logloss_appear_mean` | 0.630 | 0.378 | 0.378 | lower is better — improved |
-| `logloss_60_mean` | 0.637 | 0.349 | 0.349 | lower is better — improved |
-| `auc_appear_mean` | 0.798 | 0.910 | 0.910 | higher is better — improved |
-| `auc_60_mean` | 0.777 | 0.917 | 0.917 | higher is better — improved |
-| `brier_appear_mean` | 0.212 | 0.118 | 0.118 | lower is better — improved |
-| `e_min_mae_mean` | 30.93 | 19.57 | 19.56 | lower is better — improved |
+| Metric | Description |
+|--------|-------------|
+|`poisson_deviance`||
+|`brier`||
+|`logloss`||
+|`base_rate_brier`||
+|`skill_score`||
+|`assisting_rate`||
+|`rate_mae`||
+|`top_decile_ratio`||
 
-The new features improved every CV metric over the pre-branch baseline, and
-fold-to-fold variance (the `_std` companions to each metric above) also
-dropped substantially, suggesting the gain is not a single lucky fold.
-`days_since_team_join` was removed from the model's feature list (it is
-100% null in 6 of 8 training seasons and 564/564 null in 2026-27, and its
-non-nullness correlated with season membership well enough to risk acting as
-a season proxy) — see the comment on `NUM_FEATURES` in `modelling/minutes.py`.
-Re-measuring after the removal changed nothing beyond noise: every metric
-above is within ±0.001 of the run that still had the column, confirming the
-median-imputed, near-constant column was carrying no real signal for the
-model to lose. `fit_rivals_ahead` is still all-null in at least one CV fold,
-which the imputer skips with a warning rather than a failure; this remains a
-candidate for follow-up but did not prevent training. This run was **not**
-promoted — promotion to `production` remains a manual step in the MLflow UI.
+### Conceding model
 
-### Registry, promotion and backfill
+`modelling/conceding.py` trains a Poisson gradient-boosted regressor that outputs the expected goals conceded by a team in a given fixture. Unlike the other models, this is trained at the team level rather than the player level, and predicts per match rather than per 90, as goals conceded is a team quantity shared by every player on the pitch. The same prediction is then fanned out to every goalkeeper, defender and midfielder of that team, and converted into a probability of a clean sheet and an expected deduction for goals conceded (scaled by the player's expected minutes), giving the expected points from conceding for a single match.
 
-Every training run **registers** a new version of the model in the MLflow Model
-Registry under `minutes_played_classifier`. It does **not** move any alias.
-Promotion is manual: assign the `production` alias to a chosen version in the
-MLflow UI (open the *Models* tab, pick a version, add the alias `production`).
+Scoring is measured in the `team-conceding-model` experiment in MLflow. The following metrics are recorded:
 
-On each `main` run, `run_minutes_backfill()` loads
-`models:/minutes_played_classifier@production` and writes per-match predictions
-to the `minutes_prediction` table. The backfill is **version-gated**: the
-current season is re-scored every run (new gameweeks arrive continuously), while
-historic seasons are re-scored **only** when the production version changes (or
-rows/seasons are missing). Each stored row records the `model_version` that
-produced it, which is what the gate compares against. Before the first manual
-promotion — i.e. with no `production` alias set — the backfill is a logged
-no-op.
+| Metric | Description |
+|--------|-------------|
+|`poisson_deviance`||
+|`mae`||
+|`calibration`||
+|`clean_sheet_brier`||
+|`base_rate_brier`||
+|`skill_score`||
+|`clean_sheet_rate`||
+|`deduction_mae`||
 
-> **Known leakage.** The single production ("champion") model scores its own
-> training seasons, so the historic predictions are **in-sample**. This is fine
-> for evaluation and the optimiser, but a points model that trains on these
-> predictions as a feature learns from a mildly over-optimistic signal it won't
-> have at real prediction time. Accepted for now; the leak-free fix is to store
-> out-of-fold expanding-window predictions for historic seasons instead.
+### Defensive contributions (DEFCON)
 
-> **Planned: gated auto-promotion.** Manual promotion will eventually be
-> replaced by automatically promoting a freshly trained version to `production`
-> only when it beats the current champion on a CV metric (e.g.
-> `logloss_appear`), removing the manual UI step.
+`modelling/defcon.py` has two defensive contribution regression models that both predict the rates of the stats that make up defensive contributions within FPL. The reasoning for having two of these is that defenders are measured on defensive contributions that include clearances, blocks, interceptions and tackles, whereas forwards and midfielders are measured on defensive contributions that include all of the defenders metric plus ball recoveries.
 
-### Defender points model
+The defender defcon models is scored and measured in `def-defcon-rate-model` within MLflow. The midfielder and forwards defcon model is scored and measured in the `mid-fwd-cbirt-rate-model` within MLflow. They both use the following metrics:
 
-`modelling/defender.py` trains a random forest on match-grain defender
-rows and writes its predictions to `points_prediction`. Every run of
-`main.py` retrains and registers a new version under
-`defender_points_regressor`; **which version is live is a manual alias
-move in the MLflow UI.**
+| Metric | Description |
+|--------|-------------|
+|`brier`||
+|`logloss`||
+|`base_rate_brier`||
+|`skill_score`||
+|`hit_rate`||
+|`rate_mae`||
 
-Because there is no formula fallback for defenders, `main.py` cannot
-complete on a fresh database until a version has been promoted. The
-first run trains and registers, then fails at prediction time with a
-message naming the model and alias. Promote a version and every
-subsequent run works. Failing here is deliberate: the optimiser needs
-five defenders, so continuing would hand it an infeasible squad problem
-far from the cause.
+### Goals
 
-The same applies to every other position: each is served from its own
-registered model's forward predictions, and the optimiser's input loader
-fails when a whole position has none for a gameweek in the horizon.
+`modelling/goals.py` trains a regression model that predicts the per 90 rate of goals for a player. This is then combined with the expected minutes to create a player's points from goals. 
 
-## Roadmap
+The mode is scored and measured in MLflow under the `goals-rate-model` experiment using the following metrics:
 
-The high-level milestones are:
+| Metric | Description |
+|--------|-------------|
+|`poisson_deviance`||
+|`brier`||
+|`logloss`||
+|`base_rate_brier`||
+|`skill_score`||
+|`scoring_rate`||
+|`rate_mae`||
+|`top_decile_ratio`||
 
-* [X] Fetch and download a basic dataset of all weekly data
-* [X] Transform it into a rolling points dataset
-* [X] Build a simple model of rolling points weighted by opponent strength and home/away
-* [X] Build an optimisation algorithm on top of the predicted points
-* [X] Format the optimiser output into concrete team / transfer decisions
-* [X] Get a new datasource for future/current data now that Vastaav has sunsetted their project
-* [X] Backtest against a mid-season gameweek and ensure all decisions respect FPL rules
-* [X] Migrate the data layer from Polars + CSVs to a DuckDB store
-* [~] Define metrics for evaluating model quality (per-position models + MLflow evaluation)
-  * [X] Choose regression metrics suited to low, zero-inflated FPL points (skill score, Spearman, precision@k, MAE, RMSE, Poisson deviance)
-  * [X] Stand up MLflow tracking with simple start/stop scripts
-  * [X] Baseline-score each position's model using the current rolling-points formula
-  * [ ] Replace the removed rolling-origin replay with a harness that scores all four position models on one scale
-* [~] Build a minutes-played model to feed appearance probabilities into the points models
-  * [X] Per-fixture `player_match` table and point-in-time `player_availability` table
-  * [X] Availability / valuation features
-  * [X] 3-class classifier with expanding-window CV, scored on appearance and 60+ boundaries, logged to MLflow
-  * [X] Register each trained model in the MLflow Model Registry (manual `production` promotion via the UI)
-  * [X] Version-gated backfill of production predictions to the `minutes_prediction` table
-  * [X] Cross-season player identity (`player_season`, keyed on FPL's stable `player_code`) feeding prior-season history and cold-start features into the model
-  * [ ] Gated auto-promotion (promote a new version only when it beats the champion)
-  * [ ] Feed its appearance probabilities into the per-position points models
-* [ ] Dig into the worst-performing position and investigate its scoring errors
-* [ ] Identify and incorporate additional features to improve the model
+### Yellow Cards
 
-The rolling-points formula that used to serve as the baseline (scored per
-position over all historical gameweeks) only narrowly beat predicting each
-player's recent average — its value was in *ranking* players (Spearman ≈
-0.6–0.8 by position) rather than predicting exact point totals. It has been
-removed now that every position is served by its own model; beating that
-recorded bar is the focus of the next milestones.
+`modelling/yellow_cards.py` trains a regression model that predicts the amount of yellow cards per 90 a player will get. This is combined with the expected minutes to create a player's points from yellow cards.
 
-### Looking further ahead
+The mode is scored and measured in MLflow under the `yellow-cards-rate-model` experiment using the following metrics:
 
-Shortened from `notepad.md`, the longer-term plan once the minutes model is
-integrated:
+| Metric | Description |
+|--------|-------------|
+|`poisson_deviance`||
+|`brier`||
+|`base_rate_brier`||
+|`skill_score`||
+|`player_rate_skill`||
+|`booking_rate`||
+|`rate_mae`||
+|`top_decile_ratio`||
 
-* **Minutes model** — add a random and an informed baseline, then evaluate the
-  full model's scoring impact before wiring its appearance probabilities into
-  the per-position points models.
-* **Points models** — research where the per-position models are weakest, find
-  features that address it, and measure the lift.
-* **Operations** — retrain every model weekly on historic data and test for
-  drift; richer dummy-data fixtures in `conftest.py`; code-coverage metrics and
-  CI checks.
-* **Application** — a Streamlit frontend (pick a team from the bootstrap or
-  load one by FPL ID) and API endpoints; possibly a reinforcement-learning
-  agent as an alternative to the pure optimiser.
 
-Open questions still being worked through include how to handle double
-gameweeks, chips (wildcard, triple captain, etc.), managerial changes,
-disciplinary suspensions, mid-season transfers, and backtesting how good the
-optimiser actually is. Promoted teams and new players are handled by the
-minutes model's `is_promoted_club` / `is_pl_newcomer` cold-start features
-(measured to improve every CV metric, see
-[Minutes-played model](#minutes-played-model)); it is no longer an open
-question there.
+### Saves
+
+`modelling/saves.py` trains a regression model that predicts the amount of saves a goalkeeper will make per 90. This is combined wih their expected minutes to create a player's points from saves.
+
+The mode is scored and measured in MLflow under the `goalkeeper-saves-model` experiment using the following metrics:
+
+| Metric | Description |
+|--------|-------------|
+|`poisson_deviance`||
+|`mae`||
+|`calibration`||
+|`points_mae`||
+|`base_rate_points_mae`||
+|`skill_score`||
+
 
 ## Resources
 
